@@ -1,3 +1,31 @@
+# DLIM LLVM fork
+
+DLIM implementation is at `llvm/lib/Transforms/Utils/DLIM.cpp`, and DLIM tests
+are at `llvm/test/Transforms/DLIM`.
+
+To build, use the following:
+```
+cd llvm
+cmake -G Ninja -B build -DLLVM_ENABLE_PROJECTS="clang;compiler-rt" -DLLVM_TARGETS_TO_BUILD="X86" .
+cd build
+ninja
+```
+
+To run all LLVM regression tests, run `ninja check-llvm` from the `llvm/build` directory.
+
+To run only the DLIM regression tests, run `./build/bin/llvm-lit -v ./tests/Transforms/DLIM` from the `llvm` directory.
+
+To run the DLIM pass on an arbitrary bitcode file, run
+`./build/bin/opt -passes=dlim file.ll`
+from the `llvm` directory.  If you're only interested in the output (stats),
+you can add the `-disable-output` flag, which will avoid writing the
+"transformed" bitcode. (As of this writing, the DLIM pass is read-only and
+doesn't do any transformations.)
+
+Original README follows.
+
+---
+
 # The LLVM Compiler Infrastructure
 
 This directory and its sub-directories contain source code for LLVM,
