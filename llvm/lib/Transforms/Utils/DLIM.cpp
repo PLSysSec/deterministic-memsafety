@@ -28,6 +28,10 @@ static SmallDenseSet<T, N> setIntersect(const SmallDenseSet<T, N> &a, const Smal
 // not constant 0.
 static bool areAllGEPIndicesZero(const GetElementPtrInst &gep);
 
+// Return a string describing the given set of clean ptrs (for debugging purposes)
+template<unsigned N>
+static std::string describeCleanPointers(const SmallDenseSet<const Value*, N> &clean_ptrs);
+
 class DLIMAnalysis {
 public:
   /// Creates and initializes the Analysis but doesn't actually run the analysis
@@ -111,18 +115,18 @@ private:
         // then remove any of them that aren't clean at the end of other predecessors
         SmallDenseSet<const Value*, 8> clean_ptrs =
           SmallDenseSet<const Value*, 8>(firstPred_pbs.clean_ptrs_end.begin(), firstPred_pbs.clean_ptrs_end.end());
-        LLVM_DEBUG(dbgs() << "DLIM:   first predecessor has " << clean_ptrs.size() << " clean ptrs at end\n");
+        LLVM_DEBUG(dbgs() << "DLIM:   first predecessor has " << describeCleanPointers(clean_ptrs) << " at end\n");
         for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
           const BasicBlock* otherPred = *it;
           const PerBlockState& otherPred_pbs = block_states.find(otherPred)->getSecond();
-          LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << otherPred_pbs.clean_ptrs_end.size() << " clean ptrs at end\n");
+          LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << describeCleanPointers(otherPred_pbs.clean_ptrs_end) << " at end\n");
           clean_ptrs = setIntersect(std::move(clean_ptrs), otherPred_pbs.clean_ptrs_end);
         }
         // whatever's left is now the set of clean ptrs at beginning of this block
         changed |= !setsAreEqual(pbs.clean_ptrs_beg, clean_ptrs);
         pbs.clean_ptrs_beg = std::move(clean_ptrs);
       }
-      LLVM_DEBUG(dbgs() << "DLIM:   at beginning of block, we now have " << pbs.clean_ptrs_beg.size() << " clean ptrs\n");
+      LLVM_DEBUG(dbgs() << "DLIM:   at beginning of block, we now have " << describeCleanPointers(pbs.clean_ptrs_beg) << "\n");
 
       // The pointers which are currently clean. This begins as
       // `pbs.clean_ptrs_beg`, and as we go through the block, gets
@@ -206,7 +210,7 @@ private:
 
       // Now that we've processed all the instructions, we have the final list
       // of clean pointers as of the end of the block
-      LLVM_DEBUG(dbgs() << "DLIM:   at end of block, we now have " << clean_ptrs.size() << " clean ptrs\n");
+      LLVM_DEBUG(dbgs() << "DLIM:   at end of block, we now have " << describeCleanPointers(clean_ptrs) << "\n");
       changed |= !setsAreEqual(pbs.clean_ptrs_end, clean_ptrs);
       pbs.clean_ptrs_end = std::move(clean_ptrs);
     }
@@ -287,4 +291,29 @@ static bool areAllGEPIndicesZero(const GetElementPtrInst &gep) {
     }
   }
   return true;
+}
+
+#include <sstream>  // ostringstream
+
+// Return a string describing the given set of clean ptrs (for debugging purposes)
+template<unsigned N>
+static std::string describeCleanPointers(const SmallDenseSet<const Value*, N> &clean_ptrs) {
+  switch (clean_ptrs.size()) {
+    case 0: return "0 clean ptrs";
+    case 1: {
+      const Value* clean_ptr = *clean_ptrs.begin();
+      std::ostringstream out;
+      out << "1 clean ptr (" << clean_ptr->getNameOrAsOperand() << ")";
+      return out.str();
+    }
+    default: {
+      std::ostringstream out;
+      out << clean_ptrs.size() << " clean ptrs (";
+      for (const Value* clean_ptr : clean_ptrs) {
+        out << clean_ptr->getNameOrAsOperand() << ", ";
+      }
+      out << ")";
+      return out.str();
+    }
+  }
 }
