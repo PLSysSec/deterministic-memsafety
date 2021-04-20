@@ -152,19 +152,6 @@ private:
       // (and of course we want to count clean/dirty loads/stores)
       for (const Instruction &inst : block) {
         switch (inst.getOpcode()) {
-          case Instruction::Load: {
-            const LoadInst& load = cast<LoadInst>(inst);
-            const Value* ptr = load.getPointerOperand();
-            // first count this for stats purposes
-            if (clean_ptrs.contains(ptr)) {
-              results.clean_loads++;
-            } else {
-              results.dirty_loads++;
-            }
-            // now, the pointer becomes clean
-            clean_ptrs.insert(ptr);
-            break;
-          }
           case Instruction::Store: {
             const StoreInst& store = cast<StoreInst>(inst);
             const Value* ptr = store.getPointerOperand();
@@ -176,6 +163,26 @@ private:
             }
             // now, the pointer becomes clean
             clean_ptrs.insert(ptr);
+            break;
+          }
+          case Instruction::Load: {
+            const LoadInst& load = cast<LoadInst>(inst);
+            const Value* ptr = load.getPointerOperand();
+            // first count this for stats purposes
+            if (clean_ptrs.contains(ptr)) {
+              results.clean_loads++;
+            } else {
+              results.dirty_loads++;
+            }
+            // now, the pointer becomes clean
+            clean_ptrs.insert(ptr);
+
+            if (load.getType()->isPointerTy()) {
+              // in this case, we loaded a pointer from memory, and have to
+              // worry about whether it's clean or not.
+              // For now, our assumption is it's clean.
+              clean_ptrs.insert(&load);
+            }
             break;
           }
           case Instruction::Alloca: {

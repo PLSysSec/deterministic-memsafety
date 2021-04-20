@@ -366,3 +366,15 @@ define void @func_param_clean(i32* %ptr) {
 
 ; This checks that pointers loaded from memory are considered clean
 ; (which is our current assumption).
+; CHECK-LABEL: clean_from_mem
+; CHECK-NEXT: Clean loads: 2
+; CHECK-NEXT: Dirty loads: 0
+; CHECK-NEXT: Clean stores: 0
+; CHECK-NEXT: Dirty stores: 0
+define i32 @clean_from_mem(i32 %arg) {
+  %ptrptr = alloca [4 x i32*]
+  %castedptrptr = bitcast [4 x i32*]* %ptrptr to i32**
+  %loadedptr = load i32*, i32** %castedptrptr
+  %res = load i32, i32* %loadedptr
+  ret i32 %res
+}
