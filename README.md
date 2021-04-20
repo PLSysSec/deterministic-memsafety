@@ -13,7 +13,7 @@ ninja
 
 To run all LLVM regression tests, run `ninja check-llvm` from the `llvm/build` directory.
 
-To run only the DLIM regression tests, run `./build/bin/llvm-lit -v ./tests/Transforms/DLIM` from the `llvm` directory.
+To run only the DLIM regression tests, run `./build/bin/llvm-lit -v ./test/Transforms/DLIM` from the `llvm` directory.
 
 To run the DLIM pass on an arbitrary bitcode file, run
 `./build/bin/opt -passes=dlim file.ll`
