@@ -352,6 +352,35 @@ end:
   ret i32 %res
 }
 
+; In this test, the same pointer is used clean in one branch, but dirty in the
+; other. At the bottom, we must pessimistically assume dirty.
+; CHECK-LABEL: half_dirty
+; CHECK-NEXT: Clean loads: 0
+; CHECK-NEXT: Dirty loads: 1
+; CHECK-NEXT: Clean stores: 0
+; CHECK-NEXT: Dirty stores: 2
+define i32 @half_dirty(i32 %arg) {
+start:
+  %initialptr = alloca [4 x i32]  ; clean
+  %castedptr = bitcast [4 x i32]* %initialptr to i32*  ; clean
+  %ptr = getelementptr i32, i32* %castedptr, i32 1  ; dirty
+  %cond = icmp ugt i32 %arg, 4
+  br i1 %cond, label %branch1, label %branch2
+
+branch1:
+  store i32 7, i32* %ptr  ; now ptr is clean
+  br label %end
+
+branch2:
+  %anotherptr = getelementptr i32, i32* %ptr, i32 1  ; both ptr and anotherptr are still dirty
+  store i32 7, i32* %anotherptr  ; now anotherptr is clean, but ptr is still dirty
+  br label %end
+
+end:
+  %res = load i32, i32* %ptr  ; must assume dirty since it's dirty if we come from branch2
+  ret i32 %res
+}
+
 ; This checks that function parameters are considered clean pointers
 ; (which is our current assumption).
 ; CHECK-LABEL: func_param_clean
