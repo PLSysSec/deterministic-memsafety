@@ -323,6 +323,34 @@ end:
 
 ; This checks that loading from a PHI'd pointer, where one possibility is
 ; clean and one is dirty, is a dirty load.
+; CHECK-LABEL: phi_one_dirty
+; CHECK-NEXT: Clean loads: 0
+; CHECK-NEXT: Dirty loads: 1
+; CHECK-NEXT: Clean stores: 0
+; CHECK-NEXT: Dirty stores: 0
+define i32 @phi_one_dirty(i32 %arg) {
+start:
+  %ptr = alloca [4 x i32]  ; clean
+  %castedptr = bitcast [4 x i32]* %ptr to i32*  ; clean
+  %cond = icmp ugt i32 %arg, 4
+  br i1 %cond, label %end, label %loop
+
+loop:
+  %loop_ptr = phi i32* [ %castedptr, %start ], [ %newptr, %body ]  ; dirty because newptr is dirty
+  %loop_res = phi i32 [ %arg, %start ], [ %new_res, %body ]
+  %loaded = load i32, i32* %loop_ptr  ; should be dirty load
+  %loop_cond = icmp ugt i32 %arg, 3
+  br i1 %cond, label %end, label %body
+
+body:
+  %newptr = getelementptr i32, i32* %loop_ptr, i32 1  ; dirty
+  %new_res = add i32 %loop_res, %loaded
+  br label %loop
+
+end:
+  %res = phi i32 [ %loop_res, %loop ], [ %arg, %start ]
+  ret i32 %res
+}
 
 ; This checks that function parameters are considered clean pointers
 ; (which is our current assumption).
