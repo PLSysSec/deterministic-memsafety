@@ -291,6 +291,35 @@ end:
 
 ; This checks that loading from a PHI'd pointer, where both possibilities
 ; are clean, is a clean load.
+; CHECK-LABEL: phi_both_clean
+; CHECK-NEXT: Clean loads: 1
+; CHECK-NEXT: Dirty loads: 0
+; CHECK-NEXT: Clean stores: 0
+; CHECK-NEXT: Dirty stores: 1
+define i32 @phi_both_clean(i32 %arg) {
+start:
+  %ptr = alloca [4 x i32]  ; clean
+  %castedptr = bitcast [4 x i32]* %ptr to i32*  ; clean
+  %cond = icmp ugt i32 %arg, 4
+  br i1 %cond, label %end, label %loop
+
+loop:
+  %loop_ptr = phi i32* [ %castedptr, %start ], [ %newptr, %body ]  ; clean
+  %loop_res = phi i32 [ %arg, %start ], [ %new_res, %body ]
+  %loaded = load i32, i32* %loop_ptr  ; should be clean load
+  %loop_cond = icmp ugt i32 %arg, 3
+  br i1 %cond, label %end, label %body
+
+body:
+  %newptr = getelementptr i32, i32* %loop_ptr, i32 1  ; dirty
+  store i32 1, i32* %newptr  ; dirty store, but now %newptr is clean
+  %new_res = add i32 %loop_res, %loaded
+  br label %loop
+
+end:
+  %res = phi i32 [ %loop_res, %loop ], [ %arg, %start ]
+  ret i32 %res
+}
 
 ; This checks that loading from a PHI'd pointer, where one possibility is
 ; clean and one is dirty, is a dirty load.

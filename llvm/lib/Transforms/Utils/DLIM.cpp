@@ -199,6 +199,26 @@ private:
             }
             break;
           }
+          case Instruction::PHI: {
+            const PHINode& phi = cast<PHINode>(inst);
+            if (phi.getType()->isPointerTy()) {
+              // phi: if all inputs are clean in their corresponding blocks, result is clean
+              // else result is dirty
+              bool all_clean = true;
+              for (const Use& use : phi.incoming_values()) {
+                const BasicBlock* bb = phi.getIncomingBlock(use);
+                auto& clean_ptrs_end_of_bb = block_states.find(bb)->getSecond().clean_ptrs_end;
+                const Value* value = use.get();
+                if (!clean_ptrs_end_of_bb.contains(value)) {
+                  all_clean = false;
+                }
+              }
+              if (all_clean) {
+                clean_ptrs.insert(&phi);
+              }
+            }
+            break;
+          }
           default:
             if (inst.getType()->isPointerTy()) {
               errs() << "Encountered a pointer-producing instruction which we don't have a case for. Does it produce a clean or dirty pointer?\n";
