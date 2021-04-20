@@ -92,6 +92,15 @@ private:
         std::pair<const BasicBlock*, PerBlockState>(&block, std::move(pbs))
       );
     }
+
+    // also, per our current assumptions, if any function parameters are
+    // pointers, mark them clean in the function's entry block
+    PerBlockState& entry_block_pbs = block_states.find(&F.getEntryBlock())->getSecond();
+    for (const Argument& arg : F.args()) {
+      if (arg.getType()->isPointerTy()) {
+        entry_block_pbs.clean_ptrs_beg.insert(&arg);
+      }
+    }
   }
 
   /// Returns `true` if any change was made to internal state
@@ -102,7 +111,7 @@ private:
     bool changed = false;
 
     for (const BasicBlock &block : F) {
-      auto &pbs = block_states.find(&block)->getSecond();
+      PerBlockState& pbs = block_states.find(&block)->getSecond();
       LLVM_DEBUG(dbgs() << "DLIM: analyzing block which previously had " << pbs.clean_ptrs_beg.size() << " clean ptrs at beginning and " << pbs.clean_ptrs_end.size() << " clean ptrs at end\n");
 
       // first: if any variable is clean at the end of all of this block's

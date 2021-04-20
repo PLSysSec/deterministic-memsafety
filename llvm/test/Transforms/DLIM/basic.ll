@@ -354,6 +354,15 @@ end:
 
 ; This checks that function parameters are considered clean pointers
 ; (which is our current assumption).
+; CHECK-LABEL: func_param_clean
+; CHECK-NEXT: Clean loads: 0
+; CHECK-NEXT: Dirty loads: 0
+; CHECK-NEXT: Clean stores: 1
+; CHECK-NEXT: Dirty stores: 0
+define void @func_param_clean(i32* %ptr) {
+  store i32 3, i32* %ptr
+  ret void
+}
 
 ; This checks that pointers loaded from memory are considered clean
 ; (which is our current assumption).
