@@ -2,8 +2,11 @@
 
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Support/Debug.h"
 
 using namespace llvm;
+
+#define DEBUG_TYPE "DLIM"
 
 // SmallDenseSet doesn't seem to have a set-equality operator, so for now we
 // just implement a fairly naive one
@@ -53,7 +56,7 @@ public:
 
     bool changed = true;
     while (changed) {
-      //dbgs() << "DLIM: starting an iteration\n";
+      LLVM_DEBUG(dbgs() << "DLIM: starting an iteration\n");
       changed = this->doIteration(results);
     }
 
@@ -96,7 +99,7 @@ private:
 
     for (const BasicBlock &block : F) {
       auto &pbs = block_states.find(&block)->getSecond();
-      //dbgs() << "DLIM: analyzing block which previously had " << pbs.clean_ptrs_beg.size() << " clean ptrs at beginning and " << pbs.clean_ptrs_end.size() << " clean ptrs at end\n";
+      LLVM_DEBUG(dbgs() << "DLIM: analyzing block which previously had " << pbs.clean_ptrs_beg.size() << " clean ptrs at beginning and " << pbs.clean_ptrs_end.size() << " clean ptrs at end\n");
 
       // first: if any variable is clean at the end of all of this block's
       // predecessors, then it is also clean at the beginning of this block
@@ -108,18 +111,18 @@ private:
         // then remove any of them that aren't clean at the end of other predecessors
         SmallDenseSet<const Value*, 8> clean_ptrs =
           SmallDenseSet<const Value*, 8>(firstPred_pbs.clean_ptrs_end.begin(), firstPred_pbs.clean_ptrs_end.end());
-        //dbgs() << "DLIM:   first predecessor has " << clean_ptrs.size() << " clean ptrs at end\n";
+        LLVM_DEBUG(dbgs() << "DLIM:   first predecessor has " << clean_ptrs.size() << " clean ptrs at end\n");
         for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
           const BasicBlock* otherPred = *it;
           const PerBlockState& otherPred_pbs = block_states.find(otherPred)->getSecond();
-          //dbgs() << "DLIM:   next predecessor has " << otherPred_pbs.clean_ptrs_end.size() << " clean ptrs at end\n";
+          LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << otherPred_pbs.clean_ptrs_end.size() << " clean ptrs at end\n");
           clean_ptrs = setIntersect(std::move(clean_ptrs), otherPred_pbs.clean_ptrs_end);
         }
         // whatever's left is now the set of clean ptrs at beginning of this block
         changed |= !setsAreEqual(pbs.clean_ptrs_beg, clean_ptrs);
         pbs.clean_ptrs_beg = std::move(clean_ptrs);
       }
-      //dbgs() << "DLIM:   at beginning of block, we now have " << pbs.clean_ptrs_beg.size() << " clean ptrs\n";
+      LLVM_DEBUG(dbgs() << "DLIM:   at beginning of block, we now have " << pbs.clean_ptrs_beg.size() << " clean ptrs\n");
 
       // The pointers which are currently clean. This begins as
       // `pbs.clean_ptrs_beg`, and as we go through the block, gets
@@ -194,7 +197,7 @@ private:
           }
           default:
             if (inst.getType()->isPointerTy()) {
-              dbgs() << "Encountered a pointer-producing instruction which we don't have a case for. Does it produce a clean or dirty pointer?\n";
+              errs() << "Encountered a pointer-producing instruction which we don't have a case for. Does it produce a clean or dirty pointer?\n";
               inst.dump();
             }
             break;
@@ -203,7 +206,7 @@ private:
 
       // Now that we've processed all the instructions, we have the final list
       // of clean pointers as of the end of the block
-      //dbgs() << "DLIM:   at end of block, we now have " << clean_ptrs.size() << " clean ptrs\n";
+      LLVM_DEBUG(dbgs() << "DLIM:   at end of block, we now have " << clean_ptrs.size() << " clean ptrs\n");
       changed |= !setsAreEqual(pbs.clean_ptrs_end, clean_ptrs);
       pbs.clean_ptrs_end = std::move(clean_ptrs);
     }

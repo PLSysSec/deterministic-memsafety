@@ -17,10 +17,12 @@ To run only the DLIM regression tests, run `./build/bin/llvm-lit -v ./test/Trans
 
 To run the DLIM pass on an arbitrary bitcode file, run
 `./build/bin/opt -passes=dlim file.ll`
-from the `llvm` directory.  If you're only interested in the output (stats),
-you can add the `-disable-output` flag, which will avoid writing the
-"transformed" bitcode. (As of this writing, the DLIM pass is read-only and
-doesn't do any transformations.)
+from the `llvm` directory.
+To get detailed debugging information, add the `-debug` flag.
+If you're only interested in the output (stats), you can add the
+`-disable-output` flag, which will avoid writing the "transformed" bitcode. (As
+of this writing, the DLIM pass is read-only and doesn't do any
+transformations.)
 
 Original README follows.
 
