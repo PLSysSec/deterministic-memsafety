@@ -173,6 +173,34 @@ define void @passing_args() {
   ret void
 }
 
+; This checks our counting of returning clean/dirty ptrs from functions.
+; CHECK-LABEL: return_clean
+; CHECK: Returning a clean ptr from a func: 1
+; CHECK-NEXT: Returning a dirty ptr from a func: 0
+define i32* @return_clean() {
+  %ptr = alloca [4 x i32]
+  %cleanptr = bitcast [4 x i32]* %ptr to i32*
+  ret i32* %cleanptr
+}
+; CHECK-LABEL: return_dirty
+; CHECK: Returning a clean ptr from a func: 0
+; CHECK-NEXT: Returning a dirty ptr from a func: 1
+define i32* @return_dirty() {
+  %ptr = alloca [4 x i32]
+  %cleanptr = bitcast [4 x i32]* %ptr to i32*
+  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 2
+  ret i32* %dirtyptr
+}
+; CHECK-LABEL: return_void
+; CHECK: Returning a clean ptr from a func: 0
+; CHECK-NEXT: Returning a dirty ptr from a func: 0
+define void @return_void() {
+  %ptr = alloca [4 x i32]
+  %cleanptr = bitcast [4 x i32]* %ptr to i32*
+  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 2
+  ret void
+}
+
 ; This checks that the load is still clean even when the alloca was in a
 ; different block.
 ; CHECK-LABEL: clean_load_different_block
