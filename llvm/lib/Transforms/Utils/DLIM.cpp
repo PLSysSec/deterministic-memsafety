@@ -43,15 +43,21 @@ public:
   /// This struct holds the results of the analysis
   typedef struct Results {
     // How many loads have a clean pointer as address
-    unsigned clean_loads;
+    unsigned loads_clean_addr;
     // How many loads have a dirty pointer as address
-    unsigned dirty_loads;
+    unsigned loads_dirty_addr;
     // How many stores have a clean pointer as address (we don't count the data
     // being stored, even if it's a pointer)
-    unsigned clean_stores;
+    unsigned stores_clean_addr;
     // How many stores have a dirty pointer as address (we don't count the data
     // being stored, even if it's a pointer)
-    unsigned dirty_stores;
+    unsigned stores_dirty_addr;
+    // How many times are we storing a clean pointer to memory (this doesn't
+    // care whether the address of the store is clean or dirty)
+    unsigned stores_clean_val;
+    // How many times are we storing a dirty pointer to memory (this doesn't
+    // care whether the address of the store is clean or dirty)
+    unsigned stores_dirty_val;
   } Results;
 
   /// Runs the analysis and returns the `Results`
@@ -154,15 +160,24 @@ private:
         switch (inst.getOpcode()) {
           case Instruction::Store: {
             const StoreInst& store = cast<StoreInst>(inst);
-            const Value* ptr = store.getPointerOperand();
-            // first count this for stats purposes
-            if (clean_ptrs.contains(ptr)) {
-              results.clean_stores++;
-            } else {
-              results.dirty_stores++;
+            // first count the stored value for stats purposes (if it's a pointer)
+            const Value* storedVal = store.getValueOperand();
+            if (storedVal->getType()->isPointerTy()) {
+              if (clean_ptrs.contains(storedVal)) {
+                results.stores_clean_val++;
+              } else {
+                results.stores_dirty_val++;
+              }
             }
-            // now, the pointer becomes clean
-            clean_ptrs.insert(ptr);
+            // next count the address for stats purposes
+            const Value* addr = store.getPointerOperand();
+            if (clean_ptrs.contains(addr)) {
+              results.stores_clean_addr++;
+            } else {
+              results.stores_dirty_addr++;
+            }
+            // now, the pointer used as an address becomes clean
+            clean_ptrs.insert(addr);
             break;
           }
           case Instruction::Load: {
@@ -170,9 +185,9 @@ private:
             const Value* ptr = load.getPointerOperand();
             // first count this for stats purposes
             if (clean_ptrs.contains(ptr)) {
-              results.clean_loads++;
+              results.loads_clean_addr++;
             } else {
-              results.dirty_loads++;
+              results.loads_dirty_addr++;
             }
             // now, the pointer becomes clean
             clean_ptrs.insert(ptr);
@@ -270,10 +285,12 @@ PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   DLIMAnalysis::Results results = DLIMAnalysis(F).run();
 
   dbgs() << F.getName() << ":\n";
-  dbgs() << "Clean loads: " << results.clean_loads << "\n";
-  dbgs() << "Dirty loads: " << results.dirty_loads << "\n";
-  dbgs() << "Clean stores: " << results.clean_stores << "\n";
-  dbgs() << "Dirty stores: " << results.dirty_stores << "\n";
+  dbgs() << "Loads with clean addr: " << results.loads_clean_addr << "\n";
+  dbgs() << "Loads with dirty addr: " << results.loads_dirty_addr << "\n";
+  dbgs() << "Stores with clean addr: " << results.stores_clean_addr << "\n";
+  dbgs() << "Stores with dirty addr: " << results.stores_dirty_addr << "\n";
+  dbgs() << "Storing a clean ptr to mem: " << results.stores_clean_val << "\n";
+  dbgs() << "Storing a dirty ptr to mem: " << results.stores_dirty_val << "\n";
   dbgs() << "\n";
 
   // Right now, the pass only analyzes the IR and doesn't make any changes, so

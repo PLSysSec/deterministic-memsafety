@@ -2,10 +2,10 @@
 
 ; This checks that a pointer fresh from an alloca is considered clean.
 ; CHECK-LABEL: clean_load
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @clean_load() {
   %ptr = alloca i32, align 4
   %res = load i32, i32* %ptr, align 4
@@ -14,10 +14,10 @@ define i32 @clean_load() {
 
 ; This checks that a pointer fresh from an alloca is considered clean.
 ; CHECK-LABEL: clean_store
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 1
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 1
+; CHECK-NEXT: Stores with dirty addr: 0
 define void @clean_store(i32 %arg) {
   %ptr = alloca i32, align 4
   store i32 %arg, i32* %ptr, align 4
@@ -26,10 +26,10 @@ define void @clean_store(i32 %arg) {
 
 ; This checks that bitcasting a clean pointer is still a clean pointer.
 ; CHECK-LABEL: bitcast_clean
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i8 @bitcast_clean(i32 %arg) {
   %ptr = alloca i32, align 4
   %newptr = bitcast i32* %ptr to i8*
@@ -39,10 +39,10 @@ define i8 @bitcast_clean(i32 %arg) {
 
 ; This checks that a pointer we've done arithmetic on is considered dirty.
 ; CHECK-LABEL: dirty_load
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 1
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @dirty_load() {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -54,10 +54,10 @@ define i32 @dirty_load() {
 ; This checks that some more complicated pointer arithmetic also results in a
 ; dirty pointer.
 ; CHECK-LABEL: dirty_load_more_complicated
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 1
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @dirty_load_more_complicated() {
   %ptr = alloca [4 x { i32, i32 }]
   %castedptr = bitcast [4 x { i32, i32 }]* %ptr to { i32, i32 }*
@@ -68,10 +68,10 @@ define i32 @dirty_load_more_complicated() {
 
 ; This checks that a pointer we've added 0 to is still clean.
 ; CHECK-LABEL: gep_still_clean
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @gep_still_clean() {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -82,10 +82,10 @@ define i32 @gep_still_clean() {
 
 ; This checks that bitcasting a dirty pointer is still a dirty pointer.
 ; CHECK-LABEL: bitcast_dirty
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 1
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i8 @bitcast_dirty(i32 %arg) {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -97,10 +97,10 @@ define i8 @bitcast_dirty(i32 %arg) {
 
 ; This checks that loading from a dirty pointer makes it clean.
 ; CHECK-LABEL: load_makes_clean
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 1
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @load_makes_clean() {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -112,10 +112,10 @@ define i32 @load_makes_clean() {
 
 ; This checks that storing to a dirty pointer makes it clean.
 ; CHECK-LABEL: store_makes_clean
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 1
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 1
 define i32 @store_makes_clean(i32 %arg) {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -125,13 +125,33 @@ define i32 @store_makes_clean(i32 %arg) {
   ret i32 %res
 }
 
+; This checks our counting of storing clean/dirty pointers.
+; CHECK-LABEL: store_clean_dirty
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 4
+; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Storing a clean ptr to mem: 2
+; CHECK-NEXT: Storing a dirty ptr to mem: 2
+define void @store_clean_dirty() {
+  %ptr = alloca [4 x i32]
+  %cleanptr = bitcast [4 x i32]* %ptr to i32*
+  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 2
+  %addr = alloca i32*
+  store i32* %cleanptr, i32** %addr
+  store i32* %dirtyptr, i32** %addr
+  store i32* %cleanptr, i32** %addr
+  store i32* %dirtyptr, i32** %addr
+  ret void
+}
+
 ; This checks that the load is still clean even when the alloca was in a
 ; different block.
 ; CHECK-LABEL: clean_load_different_block
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @clean_load_different_block(i32 %arg) {
   %ptr = alloca i32, align 4
   %cond = icmp sgt i32 %arg, 4
@@ -153,10 +173,10 @@ end:
 ; This checks that the load is still dirty even when the GEP was in a
 ; different block.
 ; CHECK-LABEL: dirty_load_different_block
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 1
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @dirty_load_different_block(i32 %arg) {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -180,10 +200,10 @@ end:
 ; This checks that a GEP result adding 0 is still clean, even when the
 ; alloca was in a different block.
 ; CHECK-LABEL: clean_gep_far_alloca
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @clean_gep_far_alloca(i32 %arg) {
   %ptr = alloca i32, align 4
   %cond = icmp sgt i32 %arg, 4
@@ -206,10 +226,10 @@ end:
 ; This checks that the load is still clean even when the clean pointer
 ; comes from either of two predecessors of the block. (No PHI.)
 ; CHECK-LABEL: clean_load_two_preds_no_phi
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @clean_load_two_preds_no_phi(i32 %arg) {
   %ptr = alloca i32, align 4
   %cond = icmp sgt i32 %arg, 4
@@ -229,10 +249,10 @@ end:
 ; Same as the above case, but the pointer starts dirty and is made clean in
 ; both predecessors.
 ; CHECK-LABEL: clean_load_two_dirty_preds_no_phi
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 2
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 2
 define i32 @clean_load_two_dirty_preds_no_phi(i32 %arg) {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -258,10 +278,10 @@ end:
 ; This checks that you can jump through many blocks and the clean pointer still
 ; stays clean.
 ; CHECK-LABEL: many_blocks
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @many_blocks(i32 %arg) {
   %ptr = alloca i32, align 4
   %cond = icmp sgt i32 %arg, 4
@@ -292,10 +312,10 @@ end:
 ; This checks that loading from a PHI'd pointer, where both possibilities
 ; are clean, is a clean load.
 ; CHECK-LABEL: phi_both_clean
-; CHECK-NEXT: Clean loads: 1
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 1
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 1
 define i32 @phi_both_clean(i32 %arg) {
 start:
   %ptr = alloca [4 x i32]  ; clean
@@ -324,10 +344,10 @@ end:
 ; This checks that loading from a PHI'd pointer, where one possibility is
 ; clean and one is dirty, is a dirty load.
 ; CHECK-LABEL: phi_one_dirty
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 1
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @phi_one_dirty(i32 %arg) {
 start:
   %ptr = alloca [4 x i32]  ; clean
@@ -355,10 +375,10 @@ end:
 ; In this test, the same pointer is used clean in one branch, but dirty in the
 ; other. At the bottom, we must pessimistically assume dirty.
 ; CHECK-LABEL: half_dirty
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 1
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 2
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 2
 define i32 @half_dirty(i32 %arg) {
 start:
   %initialptr = alloca [4 x i32]  ; clean
@@ -384,10 +404,10 @@ end:
 ; This checks that function parameters are considered clean pointers
 ; (which is our current assumption).
 ; CHECK-LABEL: func_param_clean
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 1
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 1
+; CHECK-NEXT: Stores with dirty addr: 0
 define void @func_param_clean(i32* %ptr) {
   store i32 3, i32* %ptr
   ret void
@@ -396,10 +416,10 @@ define void @func_param_clean(i32* %ptr) {
 ; This checks that pointers returned from calls are considered clean
 ; (which is our current assumption).
 ; CHECK-LABEL: func_ret_clean
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 2
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 2
+; CHECK-NEXT: Stores with dirty addr: 0
 declare i32* @asdfjkl()
 declare i32* @fdsajkl()
 define void @func_ret_clean() {
@@ -413,10 +433,10 @@ define void @func_ret_clean() {
 ; This checks that pointers loaded from memory are considered clean
 ; (which is our current assumption).
 ; CHECK-LABEL: clean_from_mem
-; CHECK-NEXT: Clean loads: 2
-; CHECK-NEXT: Dirty loads: 0
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 2
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @clean_from_mem(i32 %arg) {
   %ptrptr = alloca [4 x i32*]
   %castedptrptr = bitcast [4 x i32*]* %ptrptr to i32**
@@ -427,10 +447,10 @@ define i32 @clean_from_mem(i32 %arg) {
 
 ; This checks that `inttoptr` produces dirty pointers
 ; CHECK-LABEL: inttoptr_dirty
-; CHECK-NEXT: Clean loads: 0
-; CHECK-NEXT: Dirty loads: 1
-; CHECK-NEXT: Clean stores: 0
-; CHECK-NEXT: Dirty stores: 0
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
 define i32 @inttoptr_dirty(i64 %arg) {
   %ptr = inttoptr i64 %arg to i32*
   %res = load i32, i32* %ptr
