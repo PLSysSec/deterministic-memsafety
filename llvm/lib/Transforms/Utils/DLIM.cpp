@@ -234,6 +234,18 @@ private:
             }
             break;
           }
+          case Instruction::Select: {
+            const SelectInst& select = cast<SelectInst>(inst);
+            if (select.getType()->isPointerTy()) {
+              // output is clean if both inputs are clean
+              const Value* true_input = select.getTrueValue();
+              const Value* false_input = select.getFalseValue();
+              if (clean_ptrs.contains(true_input) && clean_ptrs.contains(false_input)) {
+                clean_ptrs.insert(&select);
+              }
+            }
+            break;
+          }
           case Instruction::PHI: {
             const PHINode& phi = cast<PHINode>(inst);
             if (phi.getType()->isPointerTy()) {

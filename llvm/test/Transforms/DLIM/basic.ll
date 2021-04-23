@@ -429,6 +429,26 @@ end:
   ret i32 %res
 }
 
+; This tests that select of two clean pointers is clean, and select of a clean
+; and a dirty pointer is dirty.
+; CHECK-LABEL: select_ptrs
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 1
+; CHECK-NEXT: Stores with dirty addr: 1
+define void @select_ptrs(i1 %arg1, i1 %arg2) {
+  %initialptr1 = alloca [4 x i32]
+  %cleanptr1 = bitcast [4 x i32]* %initialptr1 to i32*
+  %initialptr2 = alloca [4 x i32]
+  %cleanptr2 = bitcast [4 x i32]* %initialptr2 to i32*
+  %dirtyptr = getelementptr i32, i32* %cleanptr1, i32 2
+  %ptr1 = select i1 %arg1, i32* %cleanptr1, i32* %cleanptr2
+  store i32 37, i32* %ptr1
+  %ptr2 = select i1 %arg2, i32* %cleanptr1, i32* %dirtyptr
+  store i32 63, i32* %ptr2
+  ret void
+}
+
 ; This checks that function parameters are considered clean pointers
 ; (which is our current assumption).
 ; CHECK-LABEL: func_param_clean
