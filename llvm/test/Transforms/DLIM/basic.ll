@@ -393,6 +393,23 @@ define void @func_param_clean(i32* %ptr) {
   ret void
 }
 
+; This checks that pointers returned from calls are considered clean
+; (which is our current assumption).
+; CHECK-LABEL: func_ret_clean
+; CHECK-NEXT: Clean loads: 0
+; CHECK-NEXT: Dirty loads: 0
+; CHECK-NEXT: Clean stores: 2
+; CHECK-NEXT: Dirty stores: 0
+declare i32* @asdfjkl()
+declare i32* @fdsajkl()
+define void @func_ret_clean() {
+  %ptr1 = call i32* @asdfjkl()
+  %ptr2 = call nonnull align 8 dereferenceable(64) i32* @fdsajkl()
+  store i32 3, i32* %ptr1
+  store i32 4, i32* %ptr2
+  ret void
+}
+
 ; This checks that pointers loaded from memory are considered clean
 ; (which is our current assumption).
 ; CHECK-LABEL: clean_from_mem
@@ -405,5 +422,17 @@ define i32 @clean_from_mem(i32 %arg) {
   %castedptrptr = bitcast [4 x i32*]* %ptrptr to i32**
   %loadedptr = load i32*, i32** %castedptrptr
   %res = load i32, i32* %loadedptr
+  ret i32 %res
+}
+
+; This checks that `inttoptr` produces dirty pointers
+; CHECK-LABEL: inttoptr_dirty
+; CHECK-NEXT: Clean loads: 0
+; CHECK-NEXT: Dirty loads: 1
+; CHECK-NEXT: Clean stores: 0
+; CHECK-NEXT: Dirty stores: 0
+define i32 @inttoptr_dirty(i64 %arg) {
+  %ptr = inttoptr i64 %arg to i32*
+  %res = load i32, i32* %ptr
   ret i32 %res
 }

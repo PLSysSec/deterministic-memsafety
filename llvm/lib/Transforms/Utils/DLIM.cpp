@@ -235,6 +235,17 @@ private:
             }
             break;
           }
+          case Instruction::IntToPtr: {
+            // inttoptr always produces a dirty result
+            // so do nothing
+            break;
+          }
+          case Instruction::Call: {
+            const CallInst& call = cast<CallInst>(inst);
+            // For now, our assumption is that pointers returned from calls are clean
+            clean_ptrs.insert(&call);
+            break;
+          }
           default:
             if (inst.getType()->isPointerTy()) {
               errs() << "Encountered a pointer-producing instruction which we don't have a case for. Does it produce a clean or dirty pointer?\n";
