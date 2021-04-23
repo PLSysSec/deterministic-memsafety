@@ -58,6 +58,10 @@ public:
     // How many times are we storing a dirty pointer to memory (this doesn't
     // care whether the address of the store is clean or dirty)
     unsigned stores_dirty_val;
+    // How many times are we passing a clean pointer to a function
+    unsigned passing_clean_ptr;
+    // How many times are we passing a dirty pointer to a function
+    unsigned passing_dirty_ptr;
   } Results;
 
   /// Runs the analysis and returns the `Results`
@@ -112,7 +116,7 @@ private:
   /// Returns `true` if any change was made to internal state
   bool doIteration(Results &results) {
     // Reset the results - we'll collect them new
-    results = { 0, 0, 0, 0 };
+    results = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
     bool changed = false;
 
@@ -257,6 +261,17 @@ private:
           }
           case Instruction::Call: {
             const CallInst& call = cast<CallInst>(inst);
+            // count call arguments for stats purposes
+            for (const Use& arg : call.args()) {
+              const Value* value = arg.get();
+              if (value->getType()->isPointerTy()) {
+                if (clean_ptrs.contains(value)) {
+                  results.passing_clean_ptr++;
+                } else {
+                  results.passing_dirty_ptr++;
+                }
+              }
+            }
             // For now, our assumption is that pointers returned from calls are clean
             clean_ptrs.insert(&call);
             break;
@@ -291,6 +306,8 @@ PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   dbgs() << "Stores with dirty addr: " << results.stores_dirty_addr << "\n";
   dbgs() << "Storing a clean ptr to mem: " << results.stores_clean_val << "\n";
   dbgs() << "Storing a dirty ptr to mem: " << results.stores_dirty_val << "\n";
+  dbgs() << "Passing a clean ptr to a func: " << results.passing_clean_ptr << "\n";
+  dbgs() << "Passing a dirty ptr to a func: " << results.passing_dirty_ptr << "\n";
   dbgs() << "\n";
 
   // Right now, the pass only analyzes the IR and doesn't make any changes, so

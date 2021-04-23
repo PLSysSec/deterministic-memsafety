@@ -145,6 +145,34 @@ define void @store_clean_dirty() {
   ret void
 }
 
+; This checks our counting of passing clean/dirty args to functions.
+; CHECK-LABEL: passing_args
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Storing a clean ptr to mem: 0
+; CHECK-NEXT: Storing a dirty ptr to mem: 0
+; CHECK-NEXT: Passing a clean ptr to a func: 6
+; CHECK-NEXT: Passing a dirty ptr to a func: 4
+declare i32* @takes_ptr(i32*)
+declare i32* @takes_two_ptrs(i32*, i32*)
+declare void @takes_lots_of_things(i32, i64, i32*, i64*, i1)
+define void @passing_args() {
+  %ptr = alloca [4 x i32]
+  %cleanptr = bitcast [4 x i32]* %ptr to i32*
+  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 2
+  %res1 = call i32* @takes_ptr(i32* %cleanptr)
+  %res2 = call i32* @takes_ptr(i32* %dirtyptr)
+  %res3 = call i32* @takes_ptr(i32* %cleanptr)
+  %res4 = call i32* @takes_ptr(i32* %dirtyptr)
+  %res5 = call i32* @takes_two_ptrs(i32* %cleanptr, i32* %dirtyptr)
+  %res6 = call i32* @takes_two_ptrs(i32* %cleanptr, i32* %cleanptr)
+  %clean64ptr = bitcast i32* %cleanptr to i64*
+  call void @takes_lots_of_things(i32 76, i64 0, i32* %dirtyptr, i64* %clean64ptr, i1 1)
+  ret void
+}
+
 ; This checks that the load is still clean even when the alloca was in a
 ; different block.
 ; CHECK-LABEL: clean_load_different_block
