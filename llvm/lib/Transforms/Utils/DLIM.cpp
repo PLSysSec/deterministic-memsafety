@@ -66,6 +66,9 @@ public:
     unsigned returning_clean_ptr;
     // How many times are we returning a dirty pointer from a function
     unsigned returning_dirty_ptr;
+    // How many times did we produce a pointer via a 'inttoptr' instruction
+    // (Note that we consider these to be dirty pointers)
+    unsigned inttoptrs;
   } Results;
 
   /// Runs the analysis and returns the `Results`
@@ -272,6 +275,7 @@ private:
           }
           case Instruction::IntToPtr: {
             // inttoptr always produces a dirty result
+            results.inttoptrs++;
             // so do nothing
             break;
           }
@@ -338,6 +342,7 @@ PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   dbgs() << "Passing a dirty ptr to a func: " << results.passing_dirty_ptr << "\n";
   dbgs() << "Returning a clean ptr from a func: " << results.returning_clean_ptr << "\n";
   dbgs() << "Returning a dirty ptr from a func: " << results.returning_dirty_ptr << "\n";
+  dbgs() << "Producing a ptr (assumed dirty) from inttoptr: " << results.inttoptrs << "\n";
   dbgs() << "\n";
 
   // Right now, the pass only analyzes the IR and doesn't make any changes, so

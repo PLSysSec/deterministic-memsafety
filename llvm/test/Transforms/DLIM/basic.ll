@@ -477,6 +477,19 @@ define void @select_ptrs(i1 %arg1, i1 %arg2) {
   ret void
 }
 
+; This checks that inttoptr produces dirty pointers
+; CHECK-LABEL: inttoptr_dirty
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK: Producing a ptr (assumed dirty) from inttoptr: 1
+define void @inttoptr_dirty(i64 %arg) {
+  %ptr = inttoptr i64 %arg to i32*
+  %loaded = load i32, i32* %ptr
+  ret void
+}
+
 ; This checks that function parameters are considered clean pointers
 ; (which is our current assumption).
 ; CHECK-LABEL: func_param_clean
@@ -518,17 +531,5 @@ define i32 @clean_from_mem(i32 %arg) {
   %castedptrptr = bitcast [4 x i32*]* %ptrptr to i32**
   %loadedptr = load i32*, i32** %castedptrptr
   %res = load i32, i32* %loadedptr
-  ret i32 %res
-}
-
-; This checks that `inttoptr` produces dirty pointers
-; CHECK-LABEL: inttoptr_dirty
-; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with dirty addr: 1
-; CHECK-NEXT: Stores with clean addr: 0
-; CHECK-NEXT: Stores with dirty addr: 0
-define i32 @inttoptr_dirty(i64 %arg) {
-  %ptr = inttoptr i64 %arg to i32*
-  %res = load i32, i32* %ptr
   ret i32 %res
 }
