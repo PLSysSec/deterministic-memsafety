@@ -40,32 +40,25 @@ public:
   }
   ~DLIMAnalysis() {}
 
+  typedef struct Counts {
+    unsigned clean;
+    unsigned dirty;
+  } Counts;
+
   /// This struct holds the results of the analysis
   typedef struct Results {
-    // How many loads have a clean pointer as address
-    unsigned loads_clean_addr;
-    // How many loads have a dirty pointer as address
-    unsigned loads_dirty_addr;
-    // How many stores have a clean pointer as address (we don't count the data
-    // being stored, even if it's a pointer)
-    unsigned stores_clean_addr;
-    // How many stores have a dirty pointer as address (we don't count the data
-    // being stored, even if it's a pointer)
-    unsigned stores_dirty_addr;
-    // How many times are we storing a clean pointer to memory (this doesn't
-    // care whether the address of the store is clean or dirty)
-    unsigned stores_clean_val;
-    // How many times are we storing a dirty pointer to memory (this doesn't
-    // care whether the address of the store is clean or dirty)
-    unsigned stores_dirty_val;
-    // How many times are we passing a clean pointer to a function
-    unsigned passing_clean_ptr;
-    // How many times are we passing a dirty pointer to a function
-    unsigned passing_dirty_ptr;
-    // How many times are we returning a clean pointer from a function
-    unsigned returning_clean_ptr;
-    // How many times are we returning a dirty pointer from a function
-    unsigned returning_dirty_ptr;
+    // How many loads have a clean/dirty pointer as address
+    Counts load_addrs;
+    // How many stores have a clean/dirty pointer as address (we don't count the
+    // data being stored, even if it's a pointer)
+    Counts store_addrs;
+    // How many times are we storing a clean/dirty pointer to memory (this
+    // doesn't care whether the address of the store is clean or dirty)
+    Counts store_vals;
+    // How many times are we passing a clean/dirty pointer to a function
+    Counts passed_ptrs;
+    // How many times are we returning a clean/dirty pointer from a function
+    Counts returned_ptrs;
     // How many times did we produce a pointer via a 'inttoptr' instruction
     // (Note that we consider these to be dirty pointers)
     unsigned inttoptrs;
@@ -175,17 +168,17 @@ private:
             const Value* storedVal = store.getValueOperand();
             if (storedVal->getType()->isPointerTy()) {
               if (clean_ptrs.contains(storedVal)) {
-                results.stores_clean_val++;
+                results.store_vals.clean++;
               } else {
-                results.stores_dirty_val++;
+                results.store_vals.dirty++;
               }
             }
             // next count the address for stats purposes
             const Value* addr = store.getPointerOperand();
             if (clean_ptrs.contains(addr)) {
-              results.stores_clean_addr++;
+              results.store_addrs.clean++;
             } else {
-              results.stores_dirty_addr++;
+              results.store_addrs.dirty++;
             }
             // now, the pointer used as an address becomes clean
             clean_ptrs.insert(addr);
@@ -196,9 +189,9 @@ private:
             const Value* ptr = load.getPointerOperand();
             // first count this for stats purposes
             if (clean_ptrs.contains(ptr)) {
-              results.loads_clean_addr++;
+              results.load_addrs.clean++;
             } else {
-              results.loads_dirty_addr++;
+              results.load_addrs.dirty++;
             }
             // now, the pointer becomes clean
             clean_ptrs.insert(ptr);
@@ -286,9 +279,9 @@ private:
               const Value* value = arg.get();
               if (value->getType()->isPointerTy()) {
                 if (clean_ptrs.contains(value)) {
-                  results.passing_clean_ptr++;
+                  results.passed_ptrs.clean++;
                 } else {
-                  results.passing_dirty_ptr++;
+                  results.passed_ptrs.dirty++;
                 }
               }
             }
@@ -301,9 +294,9 @@ private:
             const Value* retval = ret.getReturnValue();
             if (retval && retval->getType()->isPointerTy()) {
               if (clean_ptrs.contains(retval)) {
-                results.returning_clean_ptr++;
+                results.returned_ptrs.clean++;
               } else {
-                results.returning_dirty_ptr++;
+                results.returned_ptrs.dirty++;
               }
             }
             break;
@@ -332,16 +325,16 @@ PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   DLIMAnalysis::Results results = DLIMAnalysis(F).run();
 
   dbgs() << F.getName() << ":\n";
-  dbgs() << "Loads with clean addr: " << results.loads_clean_addr << "\n";
-  dbgs() << "Loads with dirty addr: " << results.loads_dirty_addr << "\n";
-  dbgs() << "Stores with clean addr: " << results.stores_clean_addr << "\n";
-  dbgs() << "Stores with dirty addr: " << results.stores_dirty_addr << "\n";
-  dbgs() << "Storing a clean ptr to mem: " << results.stores_clean_val << "\n";
-  dbgs() << "Storing a dirty ptr to mem: " << results.stores_dirty_val << "\n";
-  dbgs() << "Passing a clean ptr to a func: " << results.passing_clean_ptr << "\n";
-  dbgs() << "Passing a dirty ptr to a func: " << results.passing_dirty_ptr << "\n";
-  dbgs() << "Returning a clean ptr from a func: " << results.returning_clean_ptr << "\n";
-  dbgs() << "Returning a dirty ptr from a func: " << results.returning_dirty_ptr << "\n";
+  dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
+  dbgs() << "Loads with dirty addr: " << results.load_addrs.dirty << "\n";
+  dbgs() << "Stores with clean addr: " << results.store_addrs.clean << "\n";
+  dbgs() << "Stores with dirty addr: " << results.store_addrs.dirty << "\n";
+  dbgs() << "Storing a clean ptr to mem: " << results.store_vals.clean << "\n";
+  dbgs() << "Storing a dirty ptr to mem: " << results.store_vals.dirty << "\n";
+  dbgs() << "Passing a clean ptr to a func: " << results.passed_ptrs.clean << "\n";
+  dbgs() << "Passing a dirty ptr to a func: " << results.passed_ptrs.dirty << "\n";
+  dbgs() << "Returning a clean ptr from a func: " << results.returned_ptrs.clean << "\n";
+  dbgs() << "Returning a dirty ptr from a func: " << results.returned_ptrs.dirty << "\n";
   dbgs() << "Producing a ptr (assumed dirty) from inttoptr: " << results.inttoptrs << "\n";
   dbgs() << "\n";
 
