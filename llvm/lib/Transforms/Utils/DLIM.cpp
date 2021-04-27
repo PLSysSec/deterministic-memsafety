@@ -4,33 +4,171 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/Debug.h"
 
+#include <sstream>  // ostringstream
+
 using namespace llvm;
 
 #define DEBUG_TYPE "DLIM"
-
-// SmallDenseSet doesn't seem to have a set-equality operator, so for now we
-// just implement a fairly naive one
-template<typename T, unsigned N>
-static bool setsAreEqual(const SmallDenseSet<T, N> &a, const SmallDenseSet<T, N> &b);
-
-// SmallDenseSet doesn't seem to have a set-difference operator, so for now we
-// just implement a fairly naive one.
-// This removes from A, any items that appear in B.
-template<typename T, unsigned N>
-static void setDiff(SmallDenseSet<T, N> &a, const SmallDenseSet<T, N> &b);
-
-// SmallDenseSet doesn't seem to have a set-intersection operator, so for now
-// we just implement a fairly naive one
-template<typename T, unsigned N>
-static SmallDenseSet<T, N> setIntersect(const SmallDenseSet<T, N> &a, const SmallDenseSet<T, N> &b);
 
 // True if all of the indices of the GEP are constant 0. False if any index is
 // not constant 0.
 static bool areAllGEPIndicesZero(const GetElementPtrInst &gep);
 
-// Return a string describing the given set of clean ptrs (for debugging purposes)
-template<unsigned N>
-static std::string describeCleanPointers(const SmallDenseSet<const Value*, N> &clean_ptrs);
+typedef enum PointerKind {
+  // As of this writing, the operations producing UNKNOWN are: loading a pointer
+  // from memory; returning a pointer from a call; and receiving a pointer as a
+  // function parameter
+  UNKNOWN = 0,
+  CLEAN,
+  DIRTY,
+} PointerKind;
+
+/// Merge two `PointerKind`s.
+/// For the purposes of this function, CLEAN + x = x, DIRTY + x = DIRTY.
+/// (Lattice is DIRTY < UNKNOWN < CLEAN, prefer least element.)
+static PointerKind merge(const PointerKind a, const PointerKind b) {
+  if (a == DIRTY || b == DIRTY) {
+    return DIRTY;
+  } else if (a == UNKNOWN || b == UNKNOWN) {
+    return UNKNOWN;
+  } else if (a == CLEAN && b == CLEAN) {
+    return CLEAN;
+  } else {
+    assert(false && "Missing case in merge function");
+  }
+}
+
+/// Conceptually stores the PointerKind of all currently valid pointers at a
+/// particular program point.
+class PointerStatuses {
+public:
+  PointerStatuses() {}
+  ~PointerStatuses() {}
+
+  void mark_clean(const Value* ptr) {
+    mark_as(ptr, CLEAN);
+  }
+
+  void mark_dirty(const Value* ptr) {
+    mark_as(ptr, DIRTY);
+  }
+
+  void mark_unknown(const Value* ptr) {
+    mark_as(ptr, UNKNOWN);
+  }
+
+  void mark_as(const Value* ptr, PointerKind kind) {
+    // insert() does nothing if the key was already in the map.
+    // instead, it appears we have to use operator[], which seems to
+    // work whether or not `ptr` was already in the map
+    map[ptr] = kind;
+  }
+
+  PointerKind getStatus(const Value* ptr) {
+    auto it = map.find(ptr);
+    if (it == map.end()) {
+      mark_dirty(ptr);
+      return DIRTY;
+    } else {
+      return it->getSecond();
+    }
+  }
+
+  size_t numClean() const {
+    unsigned count = 0;
+    for (auto& pair : map) {
+      if (pair.getSecond() == CLEAN) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  bool isEqualTo(const PointerStatuses& other) const {
+    // fast case: first check the sizes, and if they aren't equal, we can exit early
+    if (map.size() != other.map.size()) {
+      return false;
+    }
+    // for maps of the same size, they're equal if every pair in A is also in B
+    // (no need to check the reverse)
+    for (const auto &pair : map) {
+      const auto& it = other.map.find(pair.getFirst());
+      if (it == other.map.end()) {
+        // key wasn't in other.map
+        return false;
+      }
+      if (it->getSecond() != pair.getSecond()) {
+        // maps disagree on what this key maps to
+        return false;
+      }
+    }
+    return true;
+  }
+
+  std::string describe() const {
+    SmallVector<const Value*, 8> clean_ptrs = SmallVector<const Value*, 8>();
+    for (auto& pair : map) {
+      if (pair.getSecond() == CLEAN) {
+        clean_ptrs.push_back(pair.getFirst());
+      }
+    }
+    switch (clean_ptrs.size()) {
+      case 0: return "0 clean ptrs";
+      case 1: {
+        const Value* clean_ptr = clean_ptrs[0];
+        std::ostringstream out;
+        out << "1 clean ptr (" << clean_ptr->getNameOrAsOperand() << ")";
+        return out.str();
+      }
+      default: {
+        std::ostringstream out;
+        out << clean_ptrs.size() << " clean ptrs (";
+        for (const Value* clean_ptr : clean_ptrs) {
+          out << clean_ptr->getNameOrAsOperand() << ", ";
+        }
+        out << ")";
+        return out.str();
+      }
+    }
+  }
+
+  /// Merge the two given PointerStatuses. If they disagree on any pointer,
+  /// use the `PointerKind` `merge` function to combine the two results.
+  /// Recall that any pointer not appearing in the `map` is considered DIRTY.
+  static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b) {
+    PointerStatuses merged;
+    for (const auto& pair : a.map) {
+      const Value* ptr = pair.getFirst();
+      const PointerKind kind_in_a = pair.getSecond();
+      const auto& it = b.map.find(ptr);
+      PointerKind kind_in_b;
+      if (it == b.map.end()) {
+        // implicitly DIRTY in b
+        kind_in_b = DIRTY;
+      } else {
+        kind_in_b = it->getSecond();
+      }
+      merged.mark_as(ptr, ::merge(kind_in_a, kind_in_b));
+    }
+    return merged;
+  }
+
+private:
+  /// Pointers not appearing in this map are considered DIRTY.
+  SmallDenseMap<const Value*, PointerKind, 8> map;
+};
+
+/// This holds the per-block state for the analysis
+class PerBlockState {
+public:
+  PerBlockState() {}
+  ~PerBlockState() {}
+
+  /// The status of all pointers at the _beginning_ of the block.
+  PointerStatuses ptrs_beg;
+  /// The status of all pointers at the _end_ of the block.
+  PointerStatuses ptrs_end;
+};
 
 class DLIMAnalysis {
 public:
@@ -43,6 +181,7 @@ public:
   typedef struct Counts {
     unsigned clean;
     unsigned dirty;
+    unsigned unknown;
   } Counts;
 
   /// This struct holds the results of the analysis
@@ -70,7 +209,7 @@ public:
 
     bool changed = true;
     while (changed) {
-      LLVM_DEBUG(dbgs() << "DLIM: starting an iteration\n");
+      LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
       changed = this->doIteration(results);
     }
 
@@ -80,35 +219,21 @@ public:
 private:
   Function &F;
 
-  /// This struct holds the per-block state for the analysis
-  typedef struct PerBlockState {
-    /// The _clean_ pointers at the _beginning_ of the block.
-    /// Note that all pointers are assumed dirty until proven clean.
-    SmallDenseSet<const Value*, 8> clean_ptrs_beg;
-    /// The _clean_ pointers at the _end_ of the block.
-    /// Note that all pointers are assumed dirty until proven clean.
-    SmallDenseSet<const Value*, 8> clean_ptrs_end;
-  } PerBlockState;
-
   DenseMap<const BasicBlock*, PerBlockState> block_states;
 
   void initialize_block_states() {
     for (const BasicBlock &block : F) {
-      PerBlockState pbs = PerBlockState {
-        SmallDenseSet<const Value*, 8>(),
-        SmallDenseSet<const Value*, 8>(),
-      };
       block_states.insert(
-        std::pair<const BasicBlock*, PerBlockState>(&block, std::move(pbs))
+        std::pair<const BasicBlock*, PerBlockState>(&block, PerBlockState())
       );
     }
 
-    // also, per our current assumptions, if any function parameters are
-    // pointers, mark them clean in the function's entry block
+    // For now, if any function parameters are pointers,
+    // mark them UNKNOWN in the function's entry block
     PerBlockState& entry_block_pbs = block_states.find(&F.getEntryBlock())->getSecond();
     for (const Argument& arg : F.args()) {
       if (arg.getType()->isPointerTy()) {
-        entry_block_pbs.clean_ptrs_beg.insert(&arg);
+        entry_block_pbs.ptrs_beg.mark_unknown(&arg);
       }
     }
   }
@@ -122,7 +247,11 @@ private:
 
     for (const BasicBlock &block : F) {
       PerBlockState& pbs = block_states.find(&block)->getSecond();
-      LLVM_DEBUG(dbgs() << "DLIM: analyzing block which previously had " << pbs.clean_ptrs_beg.size() << " clean ptrs at beginning and " << pbs.clean_ptrs_end.size() << " clean ptrs at end\n");
+      if (block.hasName()) {
+        LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << block.getName() << " which previously had " << pbs.ptrs_beg.numClean() << " clean ptrs at beginning and " << pbs.ptrs_end.numClean() << " clean ptrs at end\n");
+      } else {
+        LLVM_DEBUG(dbgs() << "DLIM: analyzing block which previously had " << pbs.ptrs_beg.numClean() << " clean ptrs at beginning and " << pbs.ptrs_end.numClean() << " clean ptrs at end\n");
+      }
 
       // first: if any variable is clean at the end of all of this block's
       // predecessors, then it is also clean at the beginning of this block
@@ -130,29 +259,26 @@ private:
         auto preds = pred_begin(&block);
         const BasicBlock* firstPred = *preds;
         const PerBlockState& firstPred_pbs = block_states.find(firstPred)->getSecond();
-        // we start with all of the clean_ptrs at the end of our first predecessor,
-        // then remove any of them that aren't clean at the end of other predecessors
-        SmallDenseSet<const Value*, 8> clean_ptrs =
-          SmallDenseSet<const Value*, 8>(firstPred_pbs.clean_ptrs_end.begin(), firstPred_pbs.clean_ptrs_end.end());
-        LLVM_DEBUG(dbgs() << "DLIM:   first predecessor has " << describeCleanPointers(clean_ptrs) << " at end\n");
+        // we start with all of the ptr_statuses at the end of our first predecessor,
+        // then merge with the ptr_statuses at the end of our other predecessors
+        PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs.ptrs_end);
+        LLVM_DEBUG(dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
         for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
           const BasicBlock* otherPred = *it;
           const PerBlockState& otherPred_pbs = block_states.find(otherPred)->getSecond();
-          LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << describeCleanPointers(otherPred_pbs.clean_ptrs_end) << " at end\n");
-          clean_ptrs = setIntersect(std::move(clean_ptrs), otherPred_pbs.clean_ptrs_end);
+          LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << otherPred_pbs.ptrs_end.describe() << " at end\n");
+          ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs.ptrs_end);
         }
         // whatever's left is now the set of clean ptrs at beginning of this block
-        changed |= !setsAreEqual(pbs.clean_ptrs_beg, clean_ptrs);
-        pbs.clean_ptrs_beg = std::move(clean_ptrs);
+        changed |= !ptr_statuses.isEqualTo(pbs.ptrs_beg);
+        pbs.ptrs_beg = std::move(ptr_statuses);
       }
-      LLVM_DEBUG(dbgs() << "DLIM:   at beginning of block, we now have " << describeCleanPointers(pbs.clean_ptrs_beg) << "\n");
+      LLVM_DEBUG(dbgs() << "DLIM:   at beginning of block, we now have " << pbs.ptrs_beg.describe() << "\n");
 
-      // The pointers which are currently clean. This begins as
-      // `pbs.clean_ptrs_beg`, and as we go through the block, gets
-      // updated; its state at the end of the block will become
-      // `pbs.clean_ptrs_end`.
-      SmallDenseSet<const Value*, 8> clean_ptrs =
-        SmallDenseSet<const Value*, 8>(pbs.clean_ptrs_beg.begin(), pbs.clean_ptrs_beg.end());
+      // The current pointer statuses. This begins as `pbs.ptrs_beg`, and as we
+      // go through the block, gets updated; its state at the end of the block
+      // will become `pbs.ptrs_end`.
+      PointerStatuses ptr_statuses = PointerStatuses(pbs.ptrs_beg);
 
       // now: process each instruction
       // the only way for a dirty pointer to become clean is by being dereferenced
@@ -167,46 +293,52 @@ private:
             // first count the stored value for stats purposes (if it's a pointer)
             const Value* storedVal = store.getValueOperand();
             if (storedVal->getType()->isPointerTy()) {
-              if (clean_ptrs.contains(storedVal)) {
-                results.store_vals.clean++;
-              } else {
-                results.store_vals.dirty++;
+              const PointerKind kind = ptr_statuses.getStatus(storedVal);
+              switch (kind) {
+                case CLEAN: results.store_vals.clean++; break;
+                case DIRTY: results.store_vals.dirty++; break;
+                case UNKNOWN: results.store_vals.unknown++; break;
+                default: assert(false && "PointerKind case not handled");
               }
             }
             // next count the address for stats purposes
             const Value* addr = store.getPointerOperand();
-            if (clean_ptrs.contains(addr)) {
-              results.store_addrs.clean++;
-            } else {
-              results.store_addrs.dirty++;
+            const PointerKind kind = ptr_statuses.getStatus(addr);
+            switch (kind) {
+              case CLEAN: results.store_addrs.clean++; break;
+              case DIRTY: results.store_addrs.dirty++; break;
+              case UNKNOWN: results.store_addrs.unknown++; break;
+              default: assert(false && "PointerKind case not handled");
             }
             // now, the pointer used as an address becomes clean
-            clean_ptrs.insert(addr);
+            ptr_statuses.mark_clean(addr);
             break;
           }
           case Instruction::Load: {
             const LoadInst& load = cast<LoadInst>(inst);
             const Value* ptr = load.getPointerOperand();
             // first count this for stats purposes
-            if (clean_ptrs.contains(ptr)) {
-              results.load_addrs.clean++;
-            } else {
-              results.load_addrs.dirty++;
+            const PointerKind kind = ptr_statuses.getStatus(ptr);
+            switch (kind) {
+              case CLEAN: results.load_addrs.clean++; break;
+              case DIRTY: results.load_addrs.dirty++; break;
+              case UNKNOWN: results.load_addrs.unknown++; break;
+              default: assert(false && "PointerKind case not handled");
             }
             // now, the pointer becomes clean
-            clean_ptrs.insert(ptr);
+            ptr_statuses.mark_clean(ptr);
 
             if (load.getType()->isPointerTy()) {
               // in this case, we loaded a pointer from memory, and have to
               // worry about whether it's clean or not.
-              // For now, our assumption is it's clean.
-              clean_ptrs.insert(&load);
+              // For now, we mark it UNKNOWN.
+              ptr_statuses.mark_unknown(&load);
             }
             break;
           }
           case Instruction::Alloca: {
             // result of an alloca is a clean pointer
-            clean_ptrs.insert(&inst);
+            ptr_statuses.mark_clean(&inst);
             break;
           }
           case Instruction::GetElementPtr: {
@@ -214,13 +346,10 @@ private:
             if (areAllGEPIndicesZero(gep)) {
               // result of a GEP with all zeroes as indices, is the same as the input pointer.
               const Value* input_ptr = gep.getPointerOperand();
-              if (clean_ptrs.contains(input_ptr)) {
-                clean_ptrs.insert(&gep);
-              }
+              ptr_statuses.mark_as(&gep, ptr_statuses.getStatus(input_ptr));
             } else {
               // result of a GEP with any nonzero indices is a dirty pointer.
-              // (do nothing - the result is dirty by default, by virtue of not
-              // being included in `clean_ptrs`)
+              ptr_statuses.mark_dirty(&gep);
             }
             break;
           }
@@ -228,41 +357,35 @@ private:
             const BitCastInst& bitcast = cast<BitCastInst>(inst);
             if (bitcast.getType()->isPointerTy()) {
               const Value* input_ptr = bitcast.getOperand(0);
-              if (clean_ptrs.contains(input_ptr)) {
-                clean_ptrs.insert(&bitcast);
-              }
+              ptr_statuses.mark_as(&bitcast, ptr_statuses.getStatus(input_ptr));
             }
             break;
           }
           case Instruction::Select: {
             const SelectInst& select = cast<SelectInst>(inst);
             if (select.getType()->isPointerTy()) {
-              // output is clean if both inputs are clean
+              // output is clean if both inputs are clean; etc
               const Value* true_input = select.getTrueValue();
               const Value* false_input = select.getFalseValue();
-              if (clean_ptrs.contains(true_input) && clean_ptrs.contains(false_input)) {
-                clean_ptrs.insert(&select);
-              }
+              const PointerKind true_kind = ptr_statuses.getStatus(true_input);
+              const PointerKind false_kind = ptr_statuses.getStatus(false_input);
+              ptr_statuses.mark_as(&select, merge(true_kind, false_kind));
             }
             break;
           }
           case Instruction::PHI: {
             const PHINode& phi = cast<PHINode>(inst);
             if (phi.getType()->isPointerTy()) {
-              // phi: if all inputs are clean in their corresponding blocks, result is clean
-              // else result is dirty
-              bool all_clean = true;
+              // phi: result kind is the merger of the kinds of all the inputs
+              // in their corresponding blocks
+              PointerKind merged_kind = CLEAN;
               for (const Use& use : phi.incoming_values()) {
                 const BasicBlock* bb = phi.getIncomingBlock(use);
-                auto& clean_ptrs_end_of_bb = block_states.find(bb)->getSecond().clean_ptrs_end;
+                auto& ptr_statuses_end_of_bb = block_states.find(bb)->getSecond().ptrs_end;
                 const Value* value = use.get();
-                if (!clean_ptrs_end_of_bb.contains(value)) {
-                  all_clean = false;
-                }
+                merged_kind = merge(merged_kind, ptr_statuses_end_of_bb.getStatus(value));
               }
-              if (all_clean) {
-                clean_ptrs.insert(&phi);
-              }
+              ptr_statuses.mark_as(&phi, merged_kind);
             }
             break;
           }
@@ -278,25 +401,29 @@ private:
             for (const Use& arg : call.args()) {
               const Value* value = arg.get();
               if (value->getType()->isPointerTy()) {
-                if (clean_ptrs.contains(value)) {
-                  results.passed_ptrs.clean++;
-                } else {
-                  results.passed_ptrs.dirty++;
+                const PointerKind kind = ptr_statuses.getStatus(value);
+                switch (kind) {
+                  case CLEAN: results.passed_ptrs.clean++; break;
+                  case DIRTY: results.passed_ptrs.dirty++; break;
+                  case UNKNOWN: results.passed_ptrs.unknown++; break;
+                  default: assert(false && "PointerKind case not handled");
                 }
               }
             }
-            // For now, our assumption is that pointers returned from calls are clean
-            clean_ptrs.insert(&call);
+            // For now, mark pointers returned from calls as UNKNOWN
+            ptr_statuses.mark_unknown(&call);
             break;
           }
           case Instruction::Ret: {
             const ReturnInst& ret = cast<ReturnInst>(inst);
             const Value* retval = ret.getReturnValue();
             if (retval && retval->getType()->isPointerTy()) {
-              if (clean_ptrs.contains(retval)) {
-                results.returned_ptrs.clean++;
-              } else {
-                results.returned_ptrs.dirty++;
+              const PointerKind kind = ptr_statuses.getStatus(retval);
+              switch (kind) {
+                case CLEAN: results.returned_ptrs.clean++; break;
+                case DIRTY: results.returned_ptrs.dirty++; break;
+                case UNKNOWN: results.returned_ptrs.unknown++; break;
+                default: assert(false && "PointerKind case not handled");
               }
             }
             break;
@@ -310,11 +437,11 @@ private:
         }
       }
 
-      // Now that we've processed all the instructions, we have the final list
-      // of clean pointers as of the end of the block
-      LLVM_DEBUG(dbgs() << "DLIM:   at end of block, we now have " << describeCleanPointers(clean_ptrs) << "\n");
-      changed |= !setsAreEqual(pbs.clean_ptrs_end, clean_ptrs);
-      pbs.clean_ptrs_end = std::move(clean_ptrs);
+      // Now that we've processed all the instructions, we have the final
+      // statuses of pointers as of the end of the block
+      LLVM_DEBUG(dbgs() << "DLIM:   at end of block, we now have " << ptr_statuses.describe() << "\n");
+      changed |= !ptr_statuses.isEqualTo(pbs.ptrs_end);
+      pbs.ptrs_end = std::move(ptr_statuses);
     }
 
     return changed;
@@ -327,62 +454,25 @@ PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   dbgs() << F.getName() << ":\n";
   dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
   dbgs() << "Loads with dirty addr: " << results.load_addrs.dirty << "\n";
+  dbgs() << "Loads with unknown addr: " << results.load_addrs.unknown << "\n";
   dbgs() << "Stores with clean addr: " << results.store_addrs.clean << "\n";
   dbgs() << "Stores with dirty addr: " << results.store_addrs.dirty << "\n";
+  dbgs() << "Stores with unknown addr: " << results.store_addrs.unknown << "\n";
   dbgs() << "Storing a clean ptr to mem: " << results.store_vals.clean << "\n";
   dbgs() << "Storing a dirty ptr to mem: " << results.store_vals.dirty << "\n";
+  dbgs() << "Storing an unknown ptr to mem: " << results.store_vals.unknown << "\n";
   dbgs() << "Passing a clean ptr to a func: " << results.passed_ptrs.clean << "\n";
   dbgs() << "Passing a dirty ptr to a func: " << results.passed_ptrs.dirty << "\n";
+  dbgs() << "Passing an unknown ptr to a func: " << results.passed_ptrs.unknown << "\n";
   dbgs() << "Returning a clean ptr from a func: " << results.returned_ptrs.clean << "\n";
   dbgs() << "Returning a dirty ptr from a func: " << results.returned_ptrs.dirty << "\n";
+  dbgs() << "Returning an unknown ptr from a func: " << results.returned_ptrs.unknown << "\n";
   dbgs() << "Producing a ptr (assumed dirty) from inttoptr: " << results.inttoptrs << "\n";
   dbgs() << "\n";
 
   // Right now, the pass only analyzes the IR and doesn't make any changes, so
   // all analyses are preserved
   return PreservedAnalyses::all();
-}
-
-// SmallDenseSet doesn't seem to have a set-equality operator, so for now we
-// just implement a fairly naive one
-template<typename T, unsigned N>
-static bool setsAreEqual(const SmallDenseSet<T, N> &a, const SmallDenseSet<T, N> &b) {
-  // fast case: first check the sizes, and if they aren't equal, we can exit early
-  if (a.size() != b.size()) {
-    return false;
-  }
-  // for sets of the same size, they're equal if A is a subset of B (no need to
-  // check the reverse)
-  for (const auto &item : a) {
-    if (!b.contains(item)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// SmallDenseSet doesn't seem to have a set-difference operator, so for now we
-// just implement a fairly naive one.
-// This removes from A, any items that appear in B.
-template<typename T, unsigned N>
-static void setDiff(SmallDenseSet<T, N> &a, const SmallDenseSet<T, N> &b) {
-  // TODO: SmallDenseSet has a `.erase()` that takes a `ConstIterator`.  Use that instead
-  for (const auto &item : b) {
-    a.erase(item);
-  }
-}
-
-// SmallDenseSet doesn't seem to have a set-intersection operator, so for now
-// we just implement a fairly naive one
-template<typename T, unsigned N>
-static SmallDenseSet<T, N> setIntersect(const SmallDenseSet<T, N> &a, const SmallDenseSet<T, N> &b) {
-  SmallDenseSet<T, N> intersection;
-  for (const auto &item : a) {
-    if (b.contains(item)) {
-      intersection.insert(item);
-    }
-  }
-  return intersection;
 }
 
 // True if all of the indices of the GEP are constant 0. False if any index is
@@ -400,29 +490,4 @@ static bool areAllGEPIndicesZero(const GetElementPtrInst &gep) {
     }
   }
   return true;
-}
-
-#include <sstream>  // ostringstream
-
-// Return a string describing the given set of clean ptrs (for debugging purposes)
-template<unsigned N>
-static std::string describeCleanPointers(const SmallDenseSet<const Value*, N> &clean_ptrs) {
-  switch (clean_ptrs.size()) {
-    case 0: return "0 clean ptrs";
-    case 1: {
-      const Value* clean_ptr = *clean_ptrs.begin();
-      std::ostringstream out;
-      out << "1 clean ptr (" << clean_ptr->getNameOrAsOperand() << ")";
-      return out.str();
-    }
-    default: {
-      std::ostringstream out;
-      out << clean_ptrs.size() << " clean ptrs (";
-      for (const Value* clean_ptr : clean_ptrs) {
-        out << clean_ptr->getNameOrAsOperand() << ", ";
-      }
-      out << ")";
-      return out.str();
-    }
-  }
 }

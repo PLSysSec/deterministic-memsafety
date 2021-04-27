@@ -4,8 +4,10 @@
 ; CHECK-LABEL: clean_load
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @clean_load() {
   %ptr = alloca i32, align 4
   %res = load i32, i32* %ptr, align 4
@@ -16,8 +18,10 @@ define i32 @clean_load() {
 ; CHECK-LABEL: clean_store
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 1
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define void @clean_store(i32 %arg) {
   %ptr = alloca i32, align 4
   store i32 %arg, i32* %ptr, align 4
@@ -28,8 +32,10 @@ define void @clean_store(i32 %arg) {
 ; CHECK-LABEL: bitcast_clean
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i8 @bitcast_clean(i32 %arg) {
   %ptr = alloca i32, align 4
   %newptr = bitcast i32* %ptr to i8*
@@ -41,8 +47,10 @@ define i8 @bitcast_clean(i32 %arg) {
 ; CHECK-LABEL: dirty_load
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @dirty_load() {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -56,8 +64,10 @@ define i32 @dirty_load() {
 ; CHECK-LABEL: dirty_load_more_complicated
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @dirty_load_more_complicated() {
   %ptr = alloca [4 x { i32, i32 }]
   %castedptr = bitcast [4 x { i32, i32 }]* %ptr to { i32, i32 }*
@@ -70,8 +80,10 @@ define i32 @dirty_load_more_complicated() {
 ; CHECK-LABEL: gep_still_clean
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @gep_still_clean() {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -84,8 +96,10 @@ define i32 @gep_still_clean() {
 ; CHECK-LABEL: bitcast_dirty
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i8 @bitcast_dirty(i32 %arg) {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -99,8 +113,10 @@ define i8 @bitcast_dirty(i32 %arg) {
 ; CHECK-LABEL: load_makes_clean
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @load_makes_clean() {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -114,8 +130,10 @@ define i32 @load_makes_clean() {
 ; CHECK-LABEL: store_makes_clean
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 1
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @store_makes_clean(i32 %arg) {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -129,10 +147,13 @@ define i32 @store_makes_clean(i32 %arg) {
 ; CHECK-LABEL: store_clean_dirty
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 4
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 ; CHECK-NEXT: Storing a clean ptr to mem: 2
 ; CHECK-NEXT: Storing a dirty ptr to mem: 2
+; CHECK-NEXT: Storing an unknown ptr to mem: 0
 define void @store_clean_dirty() {
   %ptr = alloca [4 x i32]
   %cleanptr = bitcast [4 x i32]* %ptr to i32*
@@ -149,12 +170,16 @@ define void @store_clean_dirty() {
 ; CHECK-LABEL: passing_args
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 ; CHECK-NEXT: Storing a clean ptr to mem: 0
 ; CHECK-NEXT: Storing a dirty ptr to mem: 0
+; CHECK-NEXT: Storing an unknown ptr to mem: 0
 ; CHECK-NEXT: Passing a clean ptr to a func: 6
 ; CHECK-NEXT: Passing a dirty ptr to a func: 4
+; CHECK-NEXT: Passing an unknown ptr to a func: 0
 declare i32* @takes_ptr(i32*)
 declare i32* @takes_two_ptrs(i32*, i32*)
 declare void @takes_lots_of_things(i32, i64, i32*, i64*, i1)
@@ -206,8 +231,10 @@ define void @return_void() {
 ; CHECK-LABEL: clean_load_different_block
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @clean_load_different_block(i32 %arg) {
   %ptr = alloca i32, align 4
   %cond = icmp sgt i32 %arg, 4
@@ -231,8 +258,10 @@ end:
 ; CHECK-LABEL: dirty_load_different_block
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @dirty_load_different_block(i32 %arg) {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -258,8 +287,10 @@ end:
 ; CHECK-LABEL: clean_gep_far_alloca
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @clean_gep_far_alloca(i32 %arg) {
   %ptr = alloca i32, align 4
   %cond = icmp sgt i32 %arg, 4
@@ -284,8 +315,10 @@ end:
 ; CHECK-LABEL: clean_load_two_preds_no_phi
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @clean_load_two_preds_no_phi(i32 %arg) {
   %ptr = alloca i32, align 4
   %cond = icmp sgt i32 %arg, 4
@@ -307,8 +340,10 @@ end:
 ; CHECK-LABEL: clean_load_two_dirty_preds_no_phi
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 2
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @clean_load_two_dirty_preds_no_phi(i32 %arg) {
   %ptr = alloca [4 x i32]
   %castedptr = bitcast [4 x i32]* %ptr to i32*
@@ -336,8 +371,10 @@ end:
 ; CHECK-LABEL: many_blocks
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @many_blocks(i32 %arg) {
   %ptr = alloca i32, align 4
   %cond = icmp sgt i32 %arg, 4
@@ -370,8 +407,10 @@ end:
 ; CHECK-LABEL: phi_both_clean
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 1
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @phi_both_clean(i32 %arg) {
 start:
   %ptr = alloca [4 x i32]  ; clean
@@ -402,8 +441,10 @@ end:
 ; CHECK-LABEL: phi_one_dirty
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @phi_one_dirty(i32 %arg) {
 start:
   %ptr = alloca [4 x i32]  ; clean
@@ -433,8 +474,10 @@ end:
 ; CHECK-LABEL: half_dirty
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 2
+; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @half_dirty(i32 %arg) {
 start:
   %initialptr = alloca [4 x i32]  ; clean
@@ -462,8 +505,10 @@ end:
 ; CHECK-LABEL: select_ptrs
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 1
 ; CHECK-NEXT: Stores with dirty addr: 1
+; CHECK-NEXT: Stores with unknown addr: 0
 define void @select_ptrs(i1 %arg1, i1 %arg2) {
   %initialptr1 = alloca [4 x i32]
   %cleanptr1 = bitcast [4 x i32]* %initialptr1 to i32*
@@ -481,8 +526,10 @@ define void @select_ptrs(i1 %arg1, i1 %arg2) {
 ; CHECK-LABEL: inttoptr_dirty
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
 ; CHECK: Producing a ptr (assumed dirty) from inttoptr: 1
 define void @inttoptr_dirty(i64 %arg) {
   %ptr = inttoptr i64 %arg to i32*
@@ -490,28 +537,32 @@ define void @inttoptr_dirty(i64 %arg) {
   ret void
 }
 
-; This checks that function parameters are considered clean pointers
+; This checks that function parameters are considered UNKNOWN pointers
 ; (which is our current assumption).
-; CHECK-LABEL: func_param_clean
+; CHECK-LABEL: func_param
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
-; CHECK-NEXT: Stores with clean addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
-define void @func_param_clean(i32* %ptr) {
+; CHECK-NEXT: Stores with unknown addr: 1
+define void @func_param(i32* %ptr) {
   store i32 3, i32* %ptr
   ret void
 }
 
-; This checks that pointers returned from calls are considered clean
+; This checks that pointers returned from calls are considered UNKNOWN
 ; (which is our current assumption).
-; CHECK-LABEL: func_ret_clean
+; CHECK-LABEL: func_ret
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
-; CHECK-NEXT: Stores with clean addr: 2
+; CHECK-NEXT: Loads with unknown addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 2
 declare i32* @asdfjkl()
 declare i32* @fdsajkl()
-define void @func_ret_clean() {
+define void @func_ret() {
   %ptr1 = call i32* @asdfjkl()
   %ptr2 = call nonnull align 8 dereferenceable(64) i32* @fdsajkl()
   store i32 3, i32* %ptr1
@@ -519,14 +570,16 @@ define void @func_ret_clean() {
   ret void
 }
 
-; This checks that pointers loaded from memory are considered clean
+; This checks that pointers loaded from memory are considered UNKNOWN
 ; (which is our current assumption).
-; CHECK-LABEL: clean_from_mem
-; CHECK-NEXT: Loads with clean addr: 2
+; CHECK-LABEL: from_mem
+; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 1
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
-define i32 @clean_from_mem(i32 %arg) {
+; CHECK-NEXT: Stores with unknown addr: 0
+define i32 @from_mem(i32 %arg) {
   %ptrptr = alloca [4 x i32*]
   %castedptrptr = bitcast [4 x i32*]* %ptrptr to i32**
   %loadedptr = load i32*, i32** %castedptrptr
