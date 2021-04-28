@@ -85,51 +85,77 @@ public:
   }
 
   bool isEqualTo(const PointerStatuses& other) const {
-    // fast case: first check the sizes, and if they aren't equal, we can exit early
-    if (map.size() != other.map.size()) {
-      return false;
-    }
-    // for maps of the same size, they're equal if every pair in A is also in B
-    // (no need to check the reverse)
+    // first we check if every pair in A is also in B
     for (const auto &pair : map) {
       const auto& it = other.map.find(pair.getFirst());
       if (it == other.map.end()) {
         // key wasn't in other.map
-        return false;
+        if (pair.getSecond() == DIRTY) {
+          // missing from other.map, but marked DIRTY in this map: the maps are
+          // still equivalent (missing is implicitly DIRTY)
+          continue;
+        } else {
+          // missing from other.map, but non-DIRTY in this map
+          return false;
+        }
       }
       if (it->getSecond() != pair.getSecond()) {
         // maps disagree on what this key maps to
         return false;
       }
     }
+    // now we check if every pair in B is also in A
+    for (const auto &pair : other.map) {
+      const auto &it = map.find(pair.getFirst());
+      if (it == map.end()) {
+        // key wasn't in this map
+        if (pair.getSecond() == DIRTY) {
+          // missing from this map, but marked DIRTY in other.map: the maps are
+          // still equivalent (missing is implicitly DIRTY)
+          continue;
+        } else {
+          // missing from this map, but non-DIRTY in other.map
+          return false;
+        }
+      }
+      // if the key is in both maps, we already checked above that the maps
+      // agree on what this key maps to
+    }
     return true;
   }
 
   std::string describe() const {
     SmallVector<const Value*, 8> clean_ptrs = SmallVector<const Value*, 8>();
+    SmallVector<const Value*, 8> unk_ptrs = SmallVector<const Value*, 8>();
     for (auto& pair : map) {
       if (pair.getSecond() == CLEAN) {
         clean_ptrs.push_back(pair.getFirst());
+      } else if (pair.getSecond() == UNKNOWN) {
+        unk_ptrs.push_back(pair.getFirst());
       }
     }
+    std::ostringstream out;
     switch (clean_ptrs.size()) {
-      case 0: return "0 clean ptrs";
+      case 0: {
+        out << "0 clean ptrs";
+        break;
+      }
       case 1: {
         const Value* clean_ptr = clean_ptrs[0];
-        std::ostringstream out;
         out << "1 clean ptr (" << clean_ptr->getNameOrAsOperand() << ")";
-        return out.str();
+        break;
       }
       default: {
-        std::ostringstream out;
         out << clean_ptrs.size() << " clean ptrs (";
         for (const Value* clean_ptr : clean_ptrs) {
           out << clean_ptr->getNameOrAsOperand() << ", ";
         }
         out << ")";
-        return out.str();
+        break;
       }
     }
+    out << " and " << unk_ptrs.size() << " unknown ptrs";
+    return out.str();
   }
 
   /// Merge the two given PointerStatuses. If they disagree on any pointer,
@@ -248,9 +274,9 @@ private:
     for (const BasicBlock &block : F) {
       PerBlockState& pbs = block_states.find(&block)->getSecond();
       if (block.hasName()) {
-        LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << block.getName() << " which previously had " << pbs.ptrs_beg.numClean() << " clean ptrs at beginning and " << pbs.ptrs_end.numClean() << " clean ptrs at end\n");
+        LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << block.getName() << " which previously had " << pbs.ptrs_beg.describe() << " at beginning and " << pbs.ptrs_end.describe() << " at end\n");
       } else {
-        LLVM_DEBUG(dbgs() << "DLIM: analyzing block which previously had " << pbs.ptrs_beg.numClean() << " clean ptrs at beginning and " << pbs.ptrs_end.numClean() << " clean ptrs at end\n");
+        LLVM_DEBUG(dbgs() << "DLIM: analyzing block which previously had " << pbs.ptrs_beg.describe() << " at beginning and " << pbs.ptrs_end.describe() << " at end\n");
       }
 
       // first: if any variable is clean at the end of all of this block's
@@ -440,7 +466,11 @@ private:
       // Now that we've processed all the instructions, we have the final
       // statuses of pointers as of the end of the block
       LLVM_DEBUG(dbgs() << "DLIM:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-      changed |= !ptr_statuses.isEqualTo(pbs.ptrs_end);
+      const bool block_changed = !ptr_statuses.isEqualTo(pbs.ptrs_end);
+      if (block_changed) {
+        LLVM_DEBUG(dbgs() << "DLIM:   this was a change\n");
+      }
+      changed |= block_changed;
       pbs.ptrs_end = std::move(ptr_statuses);
     }
 
