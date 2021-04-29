@@ -470,6 +470,18 @@ private:
             ptr_statuses.mark_unknown(&call);
             break;
           }
+          case Instruction::ExtractValue: {
+            // this gets a pointer out of a field of a first-class struct.
+            // the question is where did the struct come from.
+            // As I see it, probably either (a) we created the struct with
+            // insertvalue - in which case, ideally we'd give this result
+            // the same PointerKind as the original pointer which was inserted;
+            // or (b) we loaded the struct from memory (?), in which case we
+            // should just mark the result UNKNOWN per our current assumptions.
+            // So for now, we'll just mark UNKNOWN and move on
+            ptr_statuses.mark_unknown(&inst);
+            break;
+          }
           case Instruction::Ret: {
             const ReturnInst& ret = cast<ReturnInst>(inst);
             const Value* retval = ret.getReturnValue();
