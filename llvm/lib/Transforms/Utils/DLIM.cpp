@@ -1,5 +1,6 @@
 #include "llvm/Transforms/Utils/DLIM.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/Debug.h"
@@ -20,17 +21,21 @@ typedef enum PointerKind {
   // function parameter
   UNKNOWN = 0,
   CLEAN,
+  // For now, "blemished" means "incremented by 8 bytes or less from a clean pointer"
+  BLEMISHED,
   DIRTY,
 } PointerKind;
 
 /// Merge two `PointerKind`s.
-/// For the purposes of this function, CLEAN + x = x, DIRTY + x = DIRTY.
-/// (Lattice is DIRTY < UNKNOWN < CLEAN, prefer least element.)
+/// For the purposes of this function, the ordering is
+/// DIRTY < UNKNOWN < BLEMISHED < CLEAN, and the merge returns the least element.
 static PointerKind merge(const PointerKind a, const PointerKind b) {
   if (a == DIRTY || b == DIRTY) {
     return DIRTY;
   } else if (a == UNKNOWN || b == UNKNOWN) {
     return UNKNOWN;
+  } else if (a == BLEMISHED || b == BLEMISHED) {
+    return BLEMISHED;
   } else if (a == CLEAN && b == CLEAN) {
     return CLEAN;
   } else {
@@ -51,6 +56,10 @@ public:
 
   void mark_dirty(const Value* ptr) {
     mark_as(ptr, DIRTY);
+  }
+
+  void mark_blemished(const Value* ptr) {
+    mark_as(ptr, BLEMISHED);
   }
 
   void mark_unknown(const Value* ptr) {
@@ -206,6 +215,7 @@ public:
 
   typedef struct Counts {
     unsigned clean;
+    unsigned blemished;
     unsigned dirty;
     unsigned unknown;
   } Counts;
@@ -310,7 +320,7 @@ private:
       // the only way for a dirty pointer to become clean is by being dereferenced
       // there is no way for a clean pointer to become dirty
       // so we only need to worry about pointer dereferences, and instructions
-      // which produce clean pointers
+      // which produce pointers
       // (and of course we want to count clean/dirty loads/stores)
       for (const Instruction &inst : block) {
         switch (inst.getOpcode()) {
@@ -322,6 +332,7 @@ private:
               const PointerKind kind = ptr_statuses.getStatus(storedVal);
               switch (kind) {
                 case CLEAN: results.store_vals.clean++; break;
+                case BLEMISHED: results.store_vals.blemished++; break;
                 case DIRTY: results.store_vals.dirty++; break;
                 case UNKNOWN: results.store_vals.unknown++; break;
                 default: assert(false && "PointerKind case not handled");
@@ -332,6 +343,7 @@ private:
             const PointerKind kind = ptr_statuses.getStatus(addr);
             switch (kind) {
               case CLEAN: results.store_addrs.clean++; break;
+              case BLEMISHED: results.store_addrs.blemished++; break;
               case DIRTY: results.store_addrs.dirty++; break;
               case UNKNOWN: results.store_addrs.unknown++; break;
               default: assert(false && "PointerKind case not handled");
@@ -347,6 +359,7 @@ private:
             const PointerKind kind = ptr_statuses.getStatus(ptr);
             switch (kind) {
               case CLEAN: results.load_addrs.clean++; break;
+              case BLEMISHED: results.load_addrs.blemished++; break;
               case DIRTY: results.load_addrs.dirty++; break;
               case UNKNOWN: results.load_addrs.unknown++; break;
               default: assert(false && "PointerKind case not handled");
@@ -369,12 +382,28 @@ private:
           }
           case Instruction::GetElementPtr: {
             const GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
+            const Value* input_ptr = gep.getPointerOperand();
+            PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
+            APInt offset = APInt(/* bits = */ 64, /* val = */ 0);
+            const DataLayout& DL = F.getParent()->getDataLayout();
+            const bool offsetIsConstant = gep.accumulateConstantOffset(DL, offset);  // `offset` is only valid if `offsetIsConstant`
             if (areAllGEPIndicesZero(gep)) {
               // result of a GEP with all zeroes as indices, is the same as the input pointer.
-              const Value* input_ptr = gep.getPointerOperand();
-              ptr_statuses.mark_as(&gep, ptr_statuses.getStatus(input_ptr));
+              assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
+              ptr_statuses.mark_as(&gep, input_kind);
+            } else if (input_kind == CLEAN) {
+              // result of a GEP with any nonzero indices, on a CLEAN pointer,
+              // is either DIRTY or BLEMISHED depending on how far the pointer
+              // arithmetic goes.
+              if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ 8))) {
+                ptr_statuses.mark_blemished(&gep);
+              } else {
+                // offset is too large or is not constant; so, result is dirty
+                ptr_statuses.mark_dirty(&gep);
+              }
             } else {
-              // result of a GEP with any nonzero indices is a dirty pointer.
+              // result of a GEP with any nonzero indices, on a DIRTY,
+              // BLEMISHED, or UNKNOWN pointer, is always DIRTY.
               ptr_statuses.mark_dirty(&gep);
             }
             break;
@@ -418,7 +447,7 @@ private:
           case Instruction::IntToPtr: {
             // inttoptr always produces a dirty result
             results.inttoptrs++;
-            // so do nothing
+            ptr_statuses.mark_dirty(&inst);
             break;
           }
           case Instruction::Call: {
@@ -430,6 +459,7 @@ private:
                 const PointerKind kind = ptr_statuses.getStatus(value);
                 switch (kind) {
                   case CLEAN: results.passed_ptrs.clean++; break;
+                  case BLEMISHED: results.passed_ptrs.blemished++; break;
                   case DIRTY: results.passed_ptrs.dirty++; break;
                   case UNKNOWN: results.passed_ptrs.unknown++; break;
                   default: assert(false && "PointerKind case not handled");
@@ -447,6 +477,7 @@ private:
               const PointerKind kind = ptr_statuses.getStatus(retval);
               switch (kind) {
                 case CLEAN: results.returned_ptrs.clean++; break;
+                case BLEMISHED: results.returned_ptrs.blemished++; break;
                 case DIRTY: results.returned_ptrs.dirty++; break;
                 case UNKNOWN: results.returned_ptrs.unknown++; break;
                 default: assert(false && "PointerKind case not handled");
@@ -483,18 +514,23 @@ PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
 
   dbgs() << F.getName() << ":\n";
   dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
+  dbgs() << "Loads with blemished addr: " << results.load_addrs.blemished << "\n";
   dbgs() << "Loads with dirty addr: " << results.load_addrs.dirty << "\n";
   dbgs() << "Loads with unknown addr: " << results.load_addrs.unknown << "\n";
   dbgs() << "Stores with clean addr: " << results.store_addrs.clean << "\n";
+  dbgs() << "Stores with blemished addr: " << results.store_addrs.blemished << "\n";
   dbgs() << "Stores with dirty addr: " << results.store_addrs.dirty << "\n";
   dbgs() << "Stores with unknown addr: " << results.store_addrs.unknown << "\n";
   dbgs() << "Storing a clean ptr to mem: " << results.store_vals.clean << "\n";
+  dbgs() << "Storing a blemished ptr to mem: " << results.store_vals.blemished << "\n";
   dbgs() << "Storing a dirty ptr to mem: " << results.store_vals.dirty << "\n";
   dbgs() << "Storing an unknown ptr to mem: " << results.store_vals.unknown << "\n";
   dbgs() << "Passing a clean ptr to a func: " << results.passed_ptrs.clean << "\n";
+  dbgs() << "Passing a blemished ptr to a func: " << results.passed_ptrs.blemished << "\n";
   dbgs() << "Passing a dirty ptr to a func: " << results.passed_ptrs.dirty << "\n";
   dbgs() << "Passing an unknown ptr to a func: " << results.passed_ptrs.unknown << "\n";
   dbgs() << "Returning a clean ptr from a func: " << results.returned_ptrs.clean << "\n";
+  dbgs() << "Returning a blemished ptr from a func: " << results.returned_ptrs.blemished << "\n";
   dbgs() << "Returning a dirty ptr from a func: " << results.returned_ptrs.dirty << "\n";
   dbgs() << "Returning an unknown ptr from a func: " << results.returned_ptrs.unknown << "\n";
   dbgs() << "Producing a ptr (assumed dirty) from inttoptr: " << results.inttoptrs << "\n";
