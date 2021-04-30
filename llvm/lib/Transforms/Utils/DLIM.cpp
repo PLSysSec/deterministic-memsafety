@@ -11,10 +11,6 @@ using namespace llvm;
 
 #define DEBUG_TYPE "DLIM"
 
-// True if all of the indices of the GEP are constant 0. False if any index is
-// not constant 0.
-static bool areAllGEPIndicesZero(const GetElementPtrInst &gep);
-
 typedef enum PointerKind {
   // As of this writing, the operations producing UNKNOWN are: loading a pointer
   // from memory; returning a pointer from a call; and receiving a pointer as a
@@ -387,7 +383,7 @@ private:
             APInt offset = APInt(/* bits = */ 64, /* val = */ 0);
             const DataLayout& DL = F.getParent()->getDataLayout();
             const bool offsetIsConstant = gep.accumulateConstantOffset(DL, offset);  // `offset` is only valid if `offsetIsConstant`
-            if (areAllGEPIndicesZero(gep)) {
+            if (gep.hasAllZeroIndices()) {
               // result of a GEP with all zeroes as indices, is the same as the input pointer.
               assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
               ptr_statuses.mark_as(&gep, input_kind);
@@ -551,21 +547,4 @@ PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   // Right now, the pass only analyzes the IR and doesn't make any changes, so
   // all analyses are preserved
   return PreservedAnalyses::all();
-}
-
-// True if all of the indices of the GEP are constant 0. False if any index is
-// not constant 0.
-static bool areAllGEPIndicesZero(const GetElementPtrInst &gep) {
-  for (const Use& idx : gep.indices()) {
-    if (const ConstantInt* c = dyn_cast<ConstantInt>(idx.get())) {
-      if (c->isZero()) {
-        continue;
-      } else {
-        return false;
-      }
-    } else {
-      return false;
-    }
-  }
-  return true;
 }
