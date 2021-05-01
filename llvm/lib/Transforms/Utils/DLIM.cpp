@@ -1,6 +1,7 @@
 #include "llvm/Transforms/Utils/DLIM.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/Debug.h"
@@ -10,6 +11,8 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "DLIM"
+
+static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 
 typedef enum PointerKind {
   // As of this writing, the operations producing UNKNOWN are: loading a pointer
@@ -203,8 +206,15 @@ public:
 
 class DLIMAnalysis {
 public:
-  /// Creates and initializes the Analysis but doesn't actually run the analysis
-  DLIMAnalysis(Function &F) : F(F) {
+  /// Creates and initializes the Analysis but doesn't actually run the analysis.
+  ///
+  /// `trustLLVMStructTypes`: if `true`, then we will assume that, e.g., if we have
+  /// a CLEAN pointer to a struct, and derive a pointer to the nth element of that
+  /// struct, the resulting pointer is also CLEAN.
+  /// This assumption could get us in trouble if the original "pointer to a struct"
+  /// was actually a pointer to some smaller object, and was casted to this pointer type.
+  /// E.g., this could happen if we incorrectly cast a `void*` to a struct pointer in C.
+  DLIMAnalysis(Function &F, bool trustLLVMStructTypes) : F(F), trustLLVMStructTypes(trustLLVMStructTypes) {
     initialize_block_states();
   }
   ~DLIMAnalysis() {}
@@ -250,6 +260,8 @@ public:
 
 private:
   Function &F;
+
+  bool trustLLVMStructTypes;
 
   DenseMap<const BasicBlock*, PerBlockState> block_states;
 
@@ -387,6 +399,16 @@ private:
               // result of a GEP with all zeroes as indices, is the same as the input pointer.
               assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
               ptr_statuses.mark_as(&gep, input_kind);
+            } else if (trustLLVMStructTypes && areAllIndicesTrustworthy(gep)) {
+              // nonzero offset, but "trustworthy" offset.
+              // here output pointer is the same kind as input pointer.
+              // but as an exception, if input pointer was blemished, this is
+              // still an increment, so output pointer is dirty.
+              if (input_kind == BLEMISHED) {
+                ptr_statuses.mark_dirty(&gep);
+              } else {
+                ptr_statuses.mark_as(&gep, input_kind);
+              }
             } else if (input_kind == CLEAN) {
               // result of a GEP with any nonzero indices, on a CLEAN pointer,
               // is either DIRTY or BLEMISHED depending on how far the pointer
@@ -518,7 +540,7 @@ private:
 };
 
 PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
-  DLIMAnalysis::Results results = DLIMAnalysis(F).run();
+  DLIMAnalysis::Results results = DLIMAnalysis(F, true).run();
 
   dbgs() << F.getName() << ":\n";
   dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
@@ -547,4 +569,60 @@ PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   // Right now, the pass only analyzes the IR and doesn't make any changes, so
   // all analyses are preserved
   return PreservedAnalyses::all();
+}
+
+static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
+  //LLVM_DEBUG(dbgs() << "Analyzing the following gep:\n");
+  //LLVM_DEBUG(gep.dump());
+  Type* current_ty = gep.getPointerOperandType();
+  SmallVector<Constant*, 8> seen_indices;
+  for (const Use& idx : gep.indices()) {
+    if (!current_ty) {
+      LLVM_DEBUG(dbgs() << "current_ty is null - probably getIndexedType() returned null\n");
+      return false;
+    }
+    if (ConstantInt* c = dyn_cast<ConstantInt>(idx.get())) {
+      //LLVM_DEBUG(dbgs() << "Encountered constant index " << c->getSExtValue() << "\n");
+      //LLVM_DEBUG(dbgs() << "Current ty is " << *current_ty << "\n");
+      seen_indices.push_back(cast<Constant>(c));
+      if (c->isZero()) {
+        // zero is always trustworthy
+        //LLVM_DEBUG(dbgs() << "zero is always trustworthy\n");
+      } else {
+        // constant, nonzero index
+        if (seen_indices.size() == 1) {
+          // the first time is just selecting the element of the implied array.
+          //LLVM_DEBUG(dbgs() << "indexing into an implicit array is not trustworthy\n");
+          return false;
+        }
+        const PointerType* current_ty_as_ptrtype = cast<const PointerType>(current_ty);
+        const Type* current_pointee_ty = current_ty_as_ptrtype->getElementType();
+        //LLVM_DEBUG(dbgs() << "Current pointee ty is " << *current_pointee_ty << "\n");
+        if (current_pointee_ty->isStructTy()) {
+          // trustworthy
+          //LLVM_DEBUG(dbgs() << "indexing into a struct ty is trustworthy\n");
+        } else if (current_pointee_ty->isArrayTy()) {
+          // not trustworthy
+          //LLVM_DEBUG(dbgs() << "indexing into an array ty is not trustworthy\n");
+          return false;
+        } else {
+          // implicit array type. e.g., indexing into an i32*.
+          //LLVM_DEBUG(dbgs() << "indexing into an implicit array is not trustworthy\n");
+          return false;
+        }
+      }
+    } else {
+      // any nonconstant index? then return false
+      return false;
+    }
+    if (seen_indices.size() == 1) {
+      // the first time, we don't update `current_ty`, because the first GEP index
+      // is just selecting the element of the implied array
+    } else {
+      ArrayRef<Constant*> seen_indices_arrayref = ArrayRef<Constant*>(seen_indices);
+      current_ty = GetElementPtrInst::getIndexedType(gep.getPointerOperandType(), seen_indices_arrayref);
+    }
+  }
+  // if we get here without finding a non-trustworthy index, then we're all good
+  return true;
 }
