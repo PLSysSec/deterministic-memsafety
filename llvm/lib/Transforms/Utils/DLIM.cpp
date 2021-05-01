@@ -489,7 +489,9 @@ private:
             break;
           }
           case Instruction::ExtractValue: {
-            // this gets a pointer out of a field of a first-class struct.
+            // this gets a pointer out of a field of a first-class struct (not a
+            // pointer-to-a-struct, so ptr_statuses doesn't have any information
+            // about this struct).
             // the question is where did the struct come from.
             // As I see it, probably either (a) we created the struct with
             // insertvalue - in which case, ideally we'd give this result
