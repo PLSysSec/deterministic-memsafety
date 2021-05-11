@@ -31,7 +31,7 @@ typedef enum PointerKind {
 
 /// How many bytes can a clean pointer be incremented by and still be considered
 /// "blemished" rather than "dirty"
-static const int BLEMISHED_BYTES = 8;
+static const int BLEMISHED_BYTES = 16;
 
 /// Merge two `PointerKind`s.
 /// For the purposes of this function, the ordering is
