@@ -19,11 +19,19 @@ typedef enum PointerKind {
   // from memory; returning a pointer from a call; and receiving a pointer as a
   // function parameter
   UNKNOWN = 0,
+  // CLEAN means "not modified since last allocated or dereferenced"
   CLEAN,
-  // For now, "blemished" means "incremented by 8 bytes or less from a clean pointer"
+  // BLEMISHED means "incremented by BLEMISHED_BYTES or less from a clean
+  // pointer"
   BLEMISHED,
+  // DIRTY means "may have been incremented by more than BLEMISHED_BYTES (or
+  // decremented by any amount) since last allocated or dereferenced"
   DIRTY,
 } PointerKind;
+
+/// How many bytes can a clean pointer be incremented by and still be considered
+/// "blemished" rather than "dirty"
+static const int BLEMISHED_BYTES = 8;
 
 /// Merge two `PointerKind`s.
 /// For the purposes of this function, the ordering is
@@ -439,7 +447,7 @@ private:
               // result of a GEP with any nonzero indices, on a CLEAN pointer,
               // is either DIRTY or BLEMISHED depending on how far the pointer
               // arithmetic goes.
-              if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ 8))) {
+              if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ BLEMISHED_BYTES))) {
                 ptr_statuses.mark_blemished(&gep);
               } else {
                 // offset is too large or is not constant; so, result is dirty
