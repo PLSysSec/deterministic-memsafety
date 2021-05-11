@@ -258,6 +258,32 @@ public:
     return results;
   }
 
+  void reportResults(Results& results) {
+    dbgs() << F.getName() << ":\n";
+    dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
+    dbgs() << "Loads with blemished addr: " << results.load_addrs.blemished << "\n";
+    dbgs() << "Loads with dirty addr: " << results.load_addrs.dirty << "\n";
+    dbgs() << "Loads with unknown addr: " << results.load_addrs.unknown << "\n";
+    dbgs() << "Stores with clean addr: " << results.store_addrs.clean << "\n";
+    dbgs() << "Stores with blemished addr: " << results.store_addrs.blemished << "\n";
+    dbgs() << "Stores with dirty addr: " << results.store_addrs.dirty << "\n";
+    dbgs() << "Stores with unknown addr: " << results.store_addrs.unknown << "\n";
+    dbgs() << "Storing a clean ptr to mem: " << results.store_vals.clean << "\n";
+    dbgs() << "Storing a blemished ptr to mem: " << results.store_vals.blemished << "\n";
+    dbgs() << "Storing a dirty ptr to mem: " << results.store_vals.dirty << "\n";
+    dbgs() << "Storing an unknown ptr to mem: " << results.store_vals.unknown << "\n";
+    dbgs() << "Passing a clean ptr to a func: " << results.passed_ptrs.clean << "\n";
+    dbgs() << "Passing a blemished ptr to a func: " << results.passed_ptrs.blemished << "\n";
+    dbgs() << "Passing a dirty ptr to a func: " << results.passed_ptrs.dirty << "\n";
+    dbgs() << "Passing an unknown ptr to a func: " << results.passed_ptrs.unknown << "\n";
+    dbgs() << "Returning a clean ptr from a func: " << results.returned_ptrs.clean << "\n";
+    dbgs() << "Returning a blemished ptr from a func: " << results.returned_ptrs.blemished << "\n";
+    dbgs() << "Returning a dirty ptr from a func: " << results.returned_ptrs.dirty << "\n";
+    dbgs() << "Returning an unknown ptr from a func: " << results.returned_ptrs.unknown << "\n";
+    dbgs() << "Producing a ptr (assumed dirty) from inttoptr: " << results.inttoptrs << "\n";
+    dbgs() << "\n";
+  }
+
 private:
   Function &F;
 
@@ -542,31 +568,19 @@ private:
 };
 
 PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
-  DLIMAnalysis::Results results = DLIMAnalysis(F, true).run();
+  DLIMAnalysis analysis = DLIMAnalysis(F, true);
+  DLIMAnalysis::Results results = analysis.run();
+  analysis.reportResults(results);
 
-  dbgs() << F.getName() << ":\n";
-  dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
-  dbgs() << "Loads with blemished addr: " << results.load_addrs.blemished << "\n";
-  dbgs() << "Loads with dirty addr: " << results.load_addrs.dirty << "\n";
-  dbgs() << "Loads with unknown addr: " << results.load_addrs.unknown << "\n";
-  dbgs() << "Stores with clean addr: " << results.store_addrs.clean << "\n";
-  dbgs() << "Stores with blemished addr: " << results.store_addrs.blemished << "\n";
-  dbgs() << "Stores with dirty addr: " << results.store_addrs.dirty << "\n";
-  dbgs() << "Stores with unknown addr: " << results.store_addrs.unknown << "\n";
-  dbgs() << "Storing a clean ptr to mem: " << results.store_vals.clean << "\n";
-  dbgs() << "Storing a blemished ptr to mem: " << results.store_vals.blemished << "\n";
-  dbgs() << "Storing a dirty ptr to mem: " << results.store_vals.dirty << "\n";
-  dbgs() << "Storing an unknown ptr to mem: " << results.store_vals.unknown << "\n";
-  dbgs() << "Passing a clean ptr to a func: " << results.passed_ptrs.clean << "\n";
-  dbgs() << "Passing a blemished ptr to a func: " << results.passed_ptrs.blemished << "\n";
-  dbgs() << "Passing a dirty ptr to a func: " << results.passed_ptrs.dirty << "\n";
-  dbgs() << "Passing an unknown ptr to a func: " << results.passed_ptrs.unknown << "\n";
-  dbgs() << "Returning a clean ptr from a func: " << results.returned_ptrs.clean << "\n";
-  dbgs() << "Returning a blemished ptr from a func: " << results.returned_ptrs.blemished << "\n";
-  dbgs() << "Returning a dirty ptr from a func: " << results.returned_ptrs.dirty << "\n";
-  dbgs() << "Returning an unknown ptr from a func: " << results.returned_ptrs.unknown << "\n";
-  dbgs() << "Producing a ptr (assumed dirty) from inttoptr: " << results.inttoptrs << "\n";
-  dbgs() << "\n";
+  // Right now, the pass only analyzes the IR and doesn't make any changes, so
+  // all analyses are preserved
+  return PreservedAnalyses::all();
+}
+
+PreservedAnalyses ParanoidDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
+  DLIMAnalysis analysis = DLIMAnalysis(F, false);
+  DLIMAnalysis::Results results = analysis.run();
+  analysis.reportResults(results);
 
   // Right now, the pass only analyzes the IR and doesn't make any changes, so
   // all analyses are preserved
