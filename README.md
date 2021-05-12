@@ -15,14 +15,16 @@ To run all LLVM regression tests, run `ninja check-llvm` from the `llvm/build` d
 
 To run only the DLIM regression tests, run `./build/bin/llvm-lit -v ./test/Transforms/DLIM` from the `llvm` directory.
 
-To run the DLIM pass on an arbitrary bitcode file, run
-`./build/bin/opt -passes=dlim file.ll`
-from the `llvm` directory.
+We have several variations of the DLIM pass: for now, `static-dlim` and
+`paranoid-static-dlim`.
+To run either of these passes on an arbitrary bitcode file, run
+`./build/bin/opt -passes=static-dlim file.ll`
+from the `llvm` directory. (Likewise for `paranoid-static-dlim`.)
 To get detailed debugging information, add the `-debug` flag.
-If you're only interested in the output (stats), you can add the
-`-disable-output` flag, which will avoid writing the "transformed" bitcode. (As
-of this writing, the DLIM pass is read-only and doesn't do any
-transformations.)
+If you're only interested in the static stats, you can add the
+`-disable-output` flag, which will avoid writing the "transformed" bitcode.
+(The `static-dlim` and `paranoid-static-dlim` passes are read-only and don't do
+any transformations.)
 
 Original README follows.
 

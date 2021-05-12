@@ -234,7 +234,7 @@ public:
     unsigned unknown;
   } Counts;
 
-  /// This struct holds the results of the analysis
+  /// This struct holds the STATIC results of the analysis
   typedef struct Results {
     // How many loads have a clean/dirty pointer as address
     Counts load_addrs;
@@ -253,7 +253,7 @@ public:
     unsigned inttoptrs;
   } Results;
 
-  /// Runs the analysis and returns the `Results`
+  /// Runs the analysis and returns the `Results` (static counts)
   Results run() {
     Results results;
 
@@ -267,7 +267,7 @@ public:
   }
 
   void reportResults(Results& results) {
-    dbgs() << F.getName() << ":\n";
+    dbgs() << "Static counts for " << F.getName() << ":\n";
     dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
     dbgs() << "Loads with blemished addr: " << results.load_addrs.blemished << "\n";
     dbgs() << "Loads with dirty addr: " << results.load_addrs.dirty << "\n";
@@ -363,12 +363,12 @@ private:
       // there is no way for a clean pointer to become dirty
       // so we only need to worry about pointer dereferences, and instructions
       // which produce pointers
-      // (and of course we want to count clean/dirty loads/stores)
+      // (and of course we want to statically count clean/dirty loads/stores)
       for (const Instruction &inst : block) {
         switch (inst.getOpcode()) {
           case Instruction::Store: {
             const StoreInst& store = cast<StoreInst>(inst);
-            // first count the stored value for stats purposes (if it's a pointer)
+            // first count the stored value for static stats (if it's a pointer)
             const Value* storedVal = store.getValueOperand();
             if (storedVal->getType()->isPointerTy()) {
               const PointerKind kind = ptr_statuses.getStatus(storedVal);
@@ -380,7 +380,7 @@ private:
                 default: assert(false && "PointerKind case not handled");
               }
             }
-            // next count the address for stats purposes
+            // next count the address for static stats
             const Value* addr = store.getPointerOperand();
             const PointerKind kind = ptr_statuses.getStatus(addr);
             switch (kind) {
@@ -397,7 +397,7 @@ private:
           case Instruction::Load: {
             const LoadInst& load = cast<LoadInst>(inst);
             const Value* ptr = load.getPointerOperand();
-            // first count this for stats purposes
+            // first count this for static stats
             const PointerKind kind = ptr_statuses.getStatus(ptr);
             switch (kind) {
               case CLEAN: results.load_addrs.clean++; break;
@@ -504,7 +504,7 @@ private:
           }
           case Instruction::Call: {
             const CallInst& call = cast<CallInst>(inst);
-            // count call arguments for stats purposes
+            // count call arguments for static stats
             for (const Use& arg : call.args()) {
               const Value* value = arg.get();
               if (value->getType()->isPointerTy()) {
@@ -575,23 +575,23 @@ private:
   }
 };
 
-PreservedAnalyses DLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
+PreservedAnalyses StaticDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   DLIMAnalysis analysis = DLIMAnalysis(F, true);
   DLIMAnalysis::Results results = analysis.run();
   analysis.reportResults(results);
 
-  // Right now, the pass only analyzes the IR and doesn't make any changes, so
-  // all analyses are preserved
+  // StaticDLIMPass only analyzes the IR and doesn't make any changes, so all
+  // analyses are preserved
   return PreservedAnalyses::all();
 }
 
-PreservedAnalyses ParanoidDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
+PreservedAnalyses ParanoidStaticDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   DLIMAnalysis analysis = DLIMAnalysis(F, false);
   DLIMAnalysis::Results results = analysis.run();
   analysis.reportResults(results);
 
-  // Right now, the pass only analyzes the IR and doesn't make any changes, so
-  // all analyses are preserved
+  // ParanoidStaticDLIMPass only analyzes the IR and doesn't make any changes,
+  // so all analyses are preserved
   return PreservedAnalyses::all();
 }
 

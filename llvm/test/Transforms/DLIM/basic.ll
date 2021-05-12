@@ -1,4 +1,4 @@
-; RUN: opt -passes=dlim -disable-output < %s 2>&1 | FileCheck %s
+; RUN: opt -passes=static-dlim -disable-output < %s 2>&1 | FileCheck %s
 
 ; This checks that a pointer fresh from an alloca is considered clean.
 ; CHECK-LABEL: clean_load

@@ -5,7 +5,7 @@
 
 namespace llvm {
 
-class DLIMPass : public PassInfoMixin<DLIMPass> {
+class StaticDLIMPass : public PassInfoMixin<StaticDLIMPass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 
@@ -13,11 +13,11 @@ public:
   static bool isRequired() { return true; }
 };
 
-/// As of this writing, the only difference between `ParanoidDLIMPass`
-/// and `DLIMPass` is that `ParanoidDLIMPass` doesn't trust LLVM struct
+/// As of this writing, the only difference between `ParanoidStaticDLIMPass` and
+/// `StaticDLIMPass` is that `ParanoidStaticDLIMPass` doesn't trust LLVM struct
 /// types (i.e., doesn't trust that the target code's pointer-type casts were
 /// done correctly)
-class ParanoidDLIMPass : public PassInfoMixin<DLIMPass> {
+class ParanoidStaticDLIMPass : public PassInfoMixin<ParanoidStaticDLIMPass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 
