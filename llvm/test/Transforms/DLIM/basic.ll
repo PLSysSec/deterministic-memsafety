@@ -62,7 +62,7 @@ define i8 @bitcast_clean(i32 %arg) {
 define i32 @blemished_load() {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 2
+  %newptr = getelementptr i32, i32* %castedptr, i32 4
   %res = load i32, i32* %newptr
   ret i32 %res
 }
@@ -80,7 +80,7 @@ define i32 @blemished_load() {
 define i32 @dirty_load() {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 3
+  %newptr = getelementptr i32, i32* %castedptr, i32 5
   %res = load i32, i32* %newptr
   ret i32 %res
 }
@@ -155,7 +155,7 @@ define i8 @double_blemished() {
 define i8 @bitcast_dirty(i32 %arg) {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %dirtyptr = getelementptr i32, i32* %castedptr, i32 3
+  %dirtyptr = getelementptr i32, i32* %castedptr, i32 5
   %newptr = bitcast i32* %dirtyptr to i8*
   %res = load i8, i8* %newptr
   ret i8 %res
@@ -174,7 +174,7 @@ define i8 @bitcast_dirty(i32 %arg) {
 define i32 @load_makes_clean() {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 3
+  %newptr = getelementptr i32, i32* %castedptr, i32 5
   %res = load i32, i32* %newptr
   %res2 = load i32, i32* %newptr
   ret i32 %res2
@@ -193,7 +193,7 @@ define i32 @load_makes_clean() {
 define i32 @store_makes_clean(i32 %arg) {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 3
+  %newptr = getelementptr i32, i32* %castedptr, i32 5
   store i32 %arg, i32* %newptr
   %res = load i32, i32* %newptr
   ret i32 %res
@@ -216,7 +216,7 @@ define i32 @store_makes_clean(i32 %arg) {
 define void @store_clean_dirty() {
   %ptr = alloca [16 x i32]
   %cleanptr = bitcast [16 x i32]* %ptr to i32*
-  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 3
+  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 5
   %addr = alloca i32*
   store i32* %cleanptr, i32** %addr
   store i32* %dirtyptr, i32** %addr
@@ -250,7 +250,7 @@ define void @passing_args() {
   %ptr = alloca [16 x i32]
   %cleanptr = bitcast [16 x i32]* %ptr to i32*
   %blemptr = getelementptr i32, i32* %cleanptr, i32 2
-  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 3
+  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 5
   %res1 = call i32* @takes_ptr(i32* %cleanptr)
   %res2 = call i32* @takes_ptr(i32* %blemptr)
   %res3 = call i32* @takes_ptr(i32* %cleanptr)
@@ -289,7 +289,7 @@ define i32* @return_blemished() {
 define i32* @return_dirty() {
   %ptr = alloca [16 x i32]
   %cleanptr = bitcast [16 x i32]* %ptr to i32*
-  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 3
+  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 5
   ret i32* %dirtyptr
 }
 ; CHECK-LABEL: return_void
@@ -299,7 +299,7 @@ define i32* @return_dirty() {
 define void @return_void() {
   %ptr = alloca [16 x i32]
   %cleanptr = bitcast [16 x i32]* %ptr to i32*
-  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 3
+  %dirtyptr = getelementptr i32, i32* %cleanptr, i32 5
   ret void
 }
 

@@ -35,7 +35,7 @@ end:
 define i32 @dirty_load_different_block(i32 %arg) {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 3
+  %newptr = getelementptr i32, i32* %castedptr, i32 5
   %cond = icmp sgt i32 %arg, 4
   br i1 %cond, label %a, label %b
 
@@ -115,7 +115,7 @@ end:
 define i32 @clean_load_two_dirty_preds_no_phi(i32 %arg) {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 3
+  %newptr = getelementptr i32, i32* %castedptr, i32 5
   %cond = icmp sgt i32 %arg, 4
   br i1 %cond, label %a, label %b
 
@@ -226,7 +226,7 @@ loop:
   br i1 %cond, label %end, label %body
 
 body:
-  %newptr = getelementptr i32, i32* %loop_ptr, i32 3  ; dirty
+  %newptr = getelementptr i32, i32* %loop_ptr, i32 5  ; dirty
   %new_res = add i32 %loop_res, %loaded
   br label %loop
 
@@ -250,7 +250,7 @@ define i32 @half_dirty(i32 %arg) {
 start:
   %initialptr = alloca [16 x i32]  ; clean
   %castedptr = bitcast [16 x i32]* %initialptr to i32*  ; clean
-  %ptr = getelementptr i32, i32* %castedptr, i32 3  ; dirty
+  %ptr = getelementptr i32, i32* %castedptr, i32 5  ; dirty
   %cond = icmp ugt i32 %arg, 4
   br i1 %cond, label %branch1, label %branch2
 
@@ -259,7 +259,7 @@ branch1:
   br label %end
 
 branch2:
-  %anotherptr = getelementptr i32, i32* %ptr, i32 3  ; both ptr and anotherptr are still dirty
+  %anotherptr = getelementptr i32, i32* %ptr, i32 5  ; both ptr and anotherptr are still dirty
   store i32 7, i32* %anotherptr  ; now anotherptr is clean, but ptr is still dirty
   br label %end
 

@@ -104,7 +104,7 @@ define i8 @load_from_nested_array() {
   ret i8 %res
 }
 
-; here it's actually dirty because the offset is more than 8 bytes
+; here it's actually dirty because the offset is more than 16 bytes
 ; CHECK-LABEL: load_from_nested_array_larger_offset
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with blemished addr: 0
