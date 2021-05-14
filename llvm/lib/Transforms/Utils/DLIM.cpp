@@ -357,6 +357,13 @@ private:
         entry_block_pbs.ptrs_beg.mark_unknown(&arg);
       }
     }
+
+    // Mark pointers to global variables as CLEAN in the function's entry block
+    // (if the global variable itself is a pointer, it's still implicitly dirty)
+    for (const GlobalVariable& gv : F.getParent()->globals()) {
+      assert(gv.getType()->isPointerTy());
+      entry_block_pbs.ptrs_beg.mark_clean(&gv);
+    }
   }
 
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.

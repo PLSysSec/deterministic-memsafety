@@ -409,6 +409,23 @@ define i32 @from_mem(i32 %arg) {
   ret i32 %res
 }
 
+; This checks that pointers to global variables are considered CLEAN.
+; CHECK-LABEL: globals_clean
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with blemished addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
+@global_const_str = private unnamed_addr constant [12 x i8] c"Hello world\00", align 1
+define i8 @globals_clean() {
+  %charptr = getelementptr [12 x i8], [12 x i8]* @global_const_str, i64 0, i64 0
+  %loaded = load i8, i8* %charptr, align 1
+  ret i8 %loaded
+}
+
 ; This checks that a nonzero GEP on an UNKNOWN pointer produces a dirty
 ; pointer.
 ; CHECK-LABEL: gep_on_unk
