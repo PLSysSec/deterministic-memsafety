@@ -3,6 +3,8 @@
 DLIM implementation is at `llvm/lib/Transforms/Utils/DLIM.cpp`, and DLIM tests
 are at `llvm/test/Transforms/DLIM`.
 
+## Building
+
 To build, use the following:
 ```
 cd llvm
@@ -11,20 +13,66 @@ cd build
 ninja
 ```
 
+## Running tests
+
 To run all LLVM regression tests, run `ninja check-llvm` from the `llvm/build` directory.
 
 To run only the DLIM regression tests, run `./build/bin/llvm-lit -v ./test/Transforms/DLIM` from the `llvm` directory.
 
-We have several variations of the DLIM pass: for now, `static-dlim` and
-`paranoid-static-dlim`.
+## Running the static DLIM pass on arbitrary bitcode
+
+We have two static DLIM passes, which don't modify the bitcode but
+just report static statistics about clean/dirty pointers etc.
+These passes are `static-dlim` and `paranoid-static-dlim`.
+
 To run either of these passes on an arbitrary bitcode file, run
-`./build/bin/opt -passes=static-dlim file.ll`
-from the `llvm` directory. (Likewise for `paranoid-static-dlim`.)
+`./build/bin/opt -passes=static-dlim -disable-output file.ll`
+from the `llvm` directory, or likewise for `paranoid-static-dlim`.
+(The `-disable-output` flag avoids writing the "transformed" bitcode, which is
+uninteresting for these static passes which don't do any transformations.)
+
 To get detailed debugging information, add the `-debug` flag.
-If you're only interested in the static stats, you can add the
-`-disable-output` flag, which will avoid writing the "transformed" bitcode.
-(The `static-dlim` and `paranoid-static-dlim` passes are read-only and don't do
-any transformations.)
+
+## Running the dynamic DLIM pass on arbitrary bitcode
+
+Our dynamic DLIM pass instruments a bitcode file so that at runtime it will
+count dynamic statistics about clean/dirty pointers etc, and print those counts
+when the program finishes. For now, we have just `dynamic-dlim`; soon we will
+also have `paranoid-dynamic-dlim`.
+
+To run this pass on an arbitrary bitcode file, run
+`./build/bin/opt -passes=dynamic-dlim file.ll -o=file_instrumented.bc`
+from the `llvm` directory.
+To get LLVM text-format IR instead of bitcode, add the `-S` flag (and, to avoid
+confusion, change the extension of the output filename to `.ll` instead of
+`.bc`).
+To get detailed debugging information, add the `-debug` flag.
+
+## Compiling arbitrary bitcode or C/C++ code with DLIM instrumentation
+
+These instructions use the `dynamic-dlim` pass to instrument the code so that
+it will print dynamic statistics about clean/dirty pointers etc.
+In the future, we may add a command-line flag to Clang (e.g., following
+something like [these instructions](https://medium.com/@mshockwave/writing-llvm-pass-in-2018-part-iv-d69dac57171d)),
+but for now we just use this multi-step process.
+
+1. If you don't already have bitcode, compile your C or C++ file to bitcode
+   using any `clang` you want (doesn't have to be the one built here) and any
+   compiler options you want, and adding the flags `-c -emit-llvm`.
+   To get `.ll` text format instead of `.bc` bitcode format (for debugging),
+   use `-S` instead of `-c`.
+
+2. Instrument the bitcode with
+   ```
+   ./build/bin/opt -passes=dynamic-dlim file.bc -o=file_instrumented.bc
+   ```
+   To get `.ll` text format instead of `.bc` bitcode format (for debugging),
+   add `-S`.
+
+3. Compile the instrumented bitcode with
+   ```
+   clang file_instrumented.bc -o file
+   ```
 
 Original README follows.
 

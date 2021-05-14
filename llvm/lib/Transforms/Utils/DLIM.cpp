@@ -2,9 +2,13 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <sstream>  // ostringstream
 
@@ -227,46 +231,85 @@ public:
   }
   ~DLIMAnalysis() {}
 
-  typedef struct Counts {
+  typedef struct StaticCounts {
     unsigned clean;
     unsigned blemished;
     unsigned dirty;
     unsigned unknown;
-  } Counts;
+  } StaticCounts;
 
   /// This struct holds the STATIC results of the analysis
-  typedef struct Results {
+  typedef struct StaticResults {
     // How many loads have a clean/dirty pointer as address
-    Counts load_addrs;
+    StaticCounts load_addrs;
     // How many stores have a clean/dirty pointer as address (we don't count the
     // data being stored, even if it's a pointer)
-    Counts store_addrs;
+    StaticCounts store_addrs;
     // How many times are we storing a clean/dirty pointer to memory (this
     // doesn't care whether the address of the store is clean or dirty)
-    Counts store_vals;
+    StaticCounts store_vals;
     // How many times are we passing a clean/dirty pointer to a function
-    Counts passed_ptrs;
+    StaticCounts passed_ptrs;
     // How many times are we returning a clean/dirty pointer from a function
-    Counts returned_ptrs;
+    StaticCounts returned_ptrs;
     // How many times did we produce a pointer via a 'inttoptr' instruction
     // (Note that we consider these to be dirty pointers)
     unsigned inttoptrs;
-  } Results;
+  } StaticResults;
 
-  /// Runs the analysis and returns the `Results` (static counts)
-  Results run() {
-    Results results;
+  /// Holds the IR global variables containing dynamic counts
+  typedef struct DynamicCounts {
+    Constant* clean;
+    Constant* blemished;
+    Constant* dirty;
+    Constant* unknown;
+  } DynamicCounts;
+
+  /// This struct holds the IR global variables representing the DYNAMIC results
+  /// of the analysis
+  typedef struct DynamicResults {
+    // How many loads have a clean/dirty pointer as address
+    DynamicCounts load_addrs;
+    // How many stores have a clean/dirty pointer as address (we don't count the
+    // data being stored, even if it's a pointer)
+    DynamicCounts store_addrs;
+    // How many times are we storing a clean/dirty pointer to memory (this
+    // doesn't care whether the address of the store is clean or dirty)
+    DynamicCounts store_vals;
+    // How many times are we passing a clean/dirty pointer to a function
+    DynamicCounts passed_ptrs;
+    // How many times are we returning a clean/dirty pointer from a function
+    DynamicCounts returned_ptrs;
+    // How many times did we produce a pointer via a 'inttoptr' instruction
+    // (Note that we consider these to be dirty pointers)
+    Constant* inttoptrs;
+  } DynamicResults;
+
+  /// Runs the analysis and returns the `StaticResults`
+  StaticResults run() {
+    StaticResults static_results;
 
     bool changed = true;
     while (changed) {
       LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
-      changed = this->doIteration(results);
+      changed = doIteration(static_results, NULL, false);
     }
 
-    return results;
+    return static_results;
   }
 
-  void reportResults(Results& results) {
+  /// Instruments the code for dynamic counts.
+  /// You _must_ run() the analysis first -- instrument() assumes that the
+  /// analysis is complete.
+  void instrument() {
+    DynamicResults results = initializeDynamicResults();
+    StaticResults _ignore;
+    bool changed = doIteration(_ignore, &results, true);
+    assert(!changed && "Don't run instrument() until analysis has reached fixpoint");
+    addDynamicResultsPrint(results);
+  }
+
+  void reportStaticResults(StaticResults& results) {
     dbgs() << "Static counts for " << F.getName() << ":\n";
     dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
     dbgs() << "Loads with blemished addr: " << results.load_addrs.blemished << "\n";
@@ -308,7 +351,7 @@ private:
 
     // For now, if any function parameters are pointers,
     // mark them UNKNOWN in the function's entry block
-    PerBlockState& entry_block_pbs = block_states.find(&F.getEntryBlock())->getSecond();
+    PerBlockState& entry_block_pbs = block_states[&F.getEntryBlock()];
     for (const Argument& arg : F.args()) {
       if (arg.getType()->isPointerTy()) {
         entry_block_pbs.ptrs_beg.mark_unknown(&arg);
@@ -316,15 +359,19 @@ private:
     }
   }
 
-  /// Returns `true` if any change was made to internal state
-  bool doIteration(Results &results) {
-    // Reset the results - we'll collect them new
-    results = { 0 };
+  /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
+  /// Do this only after the analysis has reached a fixpoint.
+  ///
+  /// Returns `true` if any change was made to internal state (not counting the
+  /// results objects of course)
+  bool doIteration(StaticResults &static_results, DynamicResults* dynamic_results, bool instrument) {
+    // Reset the static results - we'll collect them new
+    static_results = { 0 };
 
     bool changed = false;
 
-    for (const BasicBlock &block : F) {
-      PerBlockState& pbs = block_states.find(&block)->getSecond();
+    for (BasicBlock &block : F) {
+      PerBlockState& pbs = block_states[&block];
       if (block.hasName()) {
         LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << block.getName() << " which previously had " << pbs.ptrs_beg.describe() << " at beginning and " << pbs.ptrs_end.describe() << " at end\n");
       } else {
@@ -336,14 +383,14 @@ private:
       if (!block.hasNPredecessors(0)) {
         auto preds = pred_begin(&block);
         const BasicBlock* firstPred = *preds;
-        const PerBlockState& firstPred_pbs = block_states.find(firstPred)->getSecond();
+        const PerBlockState& firstPred_pbs = block_states[firstPred];
         // we start with all of the ptr_statuses at the end of our first predecessor,
         // then merge with the ptr_statuses at the end of our other predecessors
         PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs.ptrs_end);
         LLVM_DEBUG(dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
         for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
           const BasicBlock* otherPred = *it;
-          const PerBlockState& otherPred_pbs = block_states.find(otherPred)->getSecond();
+          const PerBlockState& otherPred_pbs = block_states[otherPred];
           LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << otherPred_pbs.ptrs_end.describe() << " at end\n");
           ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs.ptrs_end);
         }
@@ -364,30 +411,78 @@ private:
       // so we only need to worry about pointer dereferences, and instructions
       // which produce pointers
       // (and of course we want to statically count clean/dirty loads/stores)
-      for (const Instruction &inst : block) {
+      for (Instruction &inst : block) {
         switch (inst.getOpcode()) {
           case Instruction::Store: {
             const StoreInst& store = cast<StoreInst>(inst);
-            // first count the stored value for static stats (if it's a pointer)
+            // first count the stored value (if it's a pointer)
             const Value* storedVal = store.getValueOperand();
             if (storedVal->getType()->isPointerTy()) {
               const PointerKind kind = ptr_statuses.getStatus(storedVal);
               switch (kind) {
-                case CLEAN: results.store_vals.clean++; break;
-                case BLEMISHED: results.store_vals.blemished++; break;
-                case DIRTY: results.store_vals.dirty++; break;
-                case UNKNOWN: results.store_vals.unknown++; break;
+                case CLEAN: {
+                  static_results.store_vals.clean++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->store_vals.clean, &inst);
+                  }
+                  break;
+                }
+                case BLEMISHED: {
+                  static_results.store_vals.blemished++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->store_vals.blemished, &inst);
+                  }
+                  break;
+                }
+                case DIRTY: {
+                  static_results.store_vals.dirty++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->store_vals.dirty, &inst);
+                  }
+                  break;
+                }
+                case UNKNOWN: {
+                  static_results.store_vals.unknown++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->store_vals.unknown, &inst);
+                  }
+                  break;
+                }
                 default: assert(false && "PointerKind case not handled");
               }
             }
-            // next count the address for static stats
+            // next count the address
             const Value* addr = store.getPointerOperand();
             const PointerKind kind = ptr_statuses.getStatus(addr);
             switch (kind) {
-              case CLEAN: results.store_addrs.clean++; break;
-              case BLEMISHED: results.store_addrs.blemished++; break;
-              case DIRTY: results.store_addrs.dirty++; break;
-              case UNKNOWN: results.store_addrs.unknown++; break;
+              case CLEAN: {
+                  static_results.store_addrs.clean++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->store_addrs.clean, &inst);
+                  }
+                  break;
+                }
+              case BLEMISHED: {
+                  static_results.store_addrs.blemished++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->store_addrs.blemished, &inst);
+                  }
+                  break;
+                }
+              case DIRTY: {
+                  static_results.store_addrs.dirty++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->store_addrs.dirty, &inst);
+                  }
+                  break;
+                }
+              case UNKNOWN: {
+                  static_results.store_addrs.unknown++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->store_addrs.unknown, &inst);
+                  }
+                  break;
+                }
               default: assert(false && "PointerKind case not handled");
             }
             // now, the pointer used as an address becomes clean
@@ -400,10 +495,34 @@ private:
             // first count this for static stats
             const PointerKind kind = ptr_statuses.getStatus(ptr);
             switch (kind) {
-              case CLEAN: results.load_addrs.clean++; break;
-              case BLEMISHED: results.load_addrs.blemished++; break;
-              case DIRTY: results.load_addrs.dirty++; break;
-              case UNKNOWN: results.load_addrs.unknown++; break;
+              case CLEAN: {
+                  static_results.load_addrs.clean++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->load_addrs.clean, &inst);
+                  }
+                  break;
+                }
+              case BLEMISHED: {
+                  static_results.load_addrs.blemished++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->load_addrs.blemished, &inst);
+                  }
+                  break;
+                }
+              case DIRTY: {
+                  static_results.load_addrs.dirty++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->load_addrs.dirty, &inst);
+                  }
+                  break;
+                }
+              case UNKNOWN: {
+                  static_results.load_addrs.unknown++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->load_addrs.unknown, &inst);
+                  }
+                  break;
+                }
               default: assert(false && "PointerKind case not handled");
             }
             // now, the pointer becomes clean
@@ -488,7 +607,7 @@ private:
               PointerKind merged_kind = CLEAN;
               for (const Use& use : phi.incoming_values()) {
                 const BasicBlock* bb = phi.getIncomingBlock(use);
-                auto& ptr_statuses_end_of_bb = block_states.find(bb)->getSecond().ptrs_end;
+                auto& ptr_statuses_end_of_bb = block_states[bb].ptrs_end;
                 const Value* value = use.get();
                 merged_kind = merge(merged_kind, ptr_statuses_end_of_bb.getStatus(value));
               }
@@ -498,7 +617,10 @@ private:
           }
           case Instruction::IntToPtr: {
             // inttoptr always produces a dirty result
-            results.inttoptrs++;
+            static_results.inttoptrs++;
+            if (instrument) {
+              incrementGlobalCounter(dynamic_results->inttoptrs, &inst);
+            }
             ptr_statuses.mark_dirty(&inst);
             break;
           }
@@ -510,10 +632,34 @@ private:
               if (value->getType()->isPointerTy()) {
                 const PointerKind kind = ptr_statuses.getStatus(value);
                 switch (kind) {
-                  case CLEAN: results.passed_ptrs.clean++; break;
-                  case BLEMISHED: results.passed_ptrs.blemished++; break;
-                  case DIRTY: results.passed_ptrs.dirty++; break;
-                  case UNKNOWN: results.passed_ptrs.unknown++; break;
+                  case CLEAN: {
+                    static_results.passed_ptrs.clean++;
+                    if (instrument) {
+                      incrementGlobalCounter(dynamic_results->passed_ptrs.clean, &inst);
+                    }
+                    break;
+                  }
+                  case BLEMISHED: {
+                    static_results.passed_ptrs.blemished++;
+                    if (instrument) {
+                      incrementGlobalCounter(dynamic_results->passed_ptrs.blemished, &inst);
+                    }
+                    break;
+                  }
+                  case DIRTY: {
+                    static_results.passed_ptrs.dirty++;
+                    if (instrument) {
+                      incrementGlobalCounter(dynamic_results->passed_ptrs.dirty, &inst);
+                    }
+                    break;
+                  }
+                  case UNKNOWN: {
+                    static_results.passed_ptrs.unknown++;
+                    if (instrument) {
+                      incrementGlobalCounter(dynamic_results->passed_ptrs.unknown, &inst);
+                    }
+                    break;
+                  }
                   default: assert(false && "PointerKind case not handled");
                 }
               }
@@ -542,10 +688,34 @@ private:
             if (retval && retval->getType()->isPointerTy()) {
               const PointerKind kind = ptr_statuses.getStatus(retval);
               switch (kind) {
-                case CLEAN: results.returned_ptrs.clean++; break;
-                case BLEMISHED: results.returned_ptrs.blemished++; break;
-                case DIRTY: results.returned_ptrs.dirty++; break;
-                case UNKNOWN: results.returned_ptrs.unknown++; break;
+                case CLEAN: {
+                  static_results.returned_ptrs.clean++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->returned_ptrs.clean, &inst);
+                  }
+                  break;
+                }
+                case BLEMISHED: {
+                  static_results.returned_ptrs.blemished++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->returned_ptrs.blemished, &inst);
+                  }
+                  break;
+                }
+                case DIRTY: {
+                  static_results.returned_ptrs.dirty++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->returned_ptrs.dirty, &inst);
+                  }
+                  break;
+                }
+                case UNKNOWN: {
+                  static_results.returned_ptrs.unknown++;
+                  if (instrument) {
+                    incrementGlobalCounter(dynamic_results->returned_ptrs.unknown, &inst);
+                  }
+                  break;
+                }
                 default: assert(false && "PointerKind case not handled");
               }
             }
@@ -573,12 +743,145 @@ private:
 
     return changed;
   }
+
+  DynamicResults initializeDynamicResults() {
+    DynamicCounts load_addrs = initializeDynamicCounts("__DLIM_load_addrs");
+    DynamicCounts store_addrs = initializeDynamicCounts("__DLIM_store_addrs");
+    DynamicCounts store_vals = initializeDynamicCounts("__DLIM_store_vals");
+    DynamicCounts passed_ptrs = initializeDynamicCounts("__DLIM_passed_ptrs");
+    DynamicCounts returned_ptrs = initializeDynamicCounts("__DLIM_returned_ptrs");
+    Constant* inttoptrs = findOrCreateGlobalCounter("__DLIM_inttoptrs");
+    return DynamicResults { load_addrs, store_addrs, store_vals, passed_ptrs, returned_ptrs, inttoptrs };
+  }
+
+  DynamicCounts initializeDynamicCounts(StringRef thingToCount) {
+    Constant* clean = findOrCreateGlobalCounter(thingToCount + "_clean");
+    Constant* blemished = findOrCreateGlobalCounter(thingToCount + "_blemished");
+    Constant* dirty = findOrCreateGlobalCounter(thingToCount + "_dirty");
+    Constant* unknown = findOrCreateGlobalCounter(thingToCount + "_unknown");
+    return DynamicCounts { clean, blemished, dirty, unknown };
+  }
+
+  Constant* findOrCreateGlobalCounter(Twine Name) {
+    // https://github.com/banach-space/llvm-tutor/blob/0d2864d19b90fbcc31cea530ec00215405271e40/lib/DynamicCallCounter.cpp
+    Module* mod = F.getParent();
+    LLVMContext& ctx = mod->getContext();
+    Type* i64ty = IntegerType::getInt64Ty(ctx);
+
+    Constant* global = mod->getOrInsertGlobal(Name.str(), i64ty);
+    GlobalVariable* gv = cast<GlobalVariable>(global);
+    if (!gv->hasInitializer()) {
+      gv->setLinkage(GlobalValue::PrivateLinkage);
+      gv->setAlignment(MaybeAlign(8));
+      gv->setInitializer(ConstantInt::get(ctx, APInt(/* bits = */ 64, /* val = */ 0)));
+    }
+
+    return global;
+  }
+
+  // Inject an instruction sequence to increment the given global counter, right
+  // before the given instruction
+  void incrementGlobalCounter(Constant* GlobalCounter, Instruction* BeforeInst) {
+    IRBuilder<> Builder(BeforeInst);
+    Type* i64ty = Builder.getInt64Ty();
+    LoadInst* loaded = Builder.CreateLoad(i64ty, GlobalCounter);
+    Value* incremented = Builder.CreateAdd(Builder.getInt64(1), loaded);
+    Builder.CreateStore(incremented, GlobalCounter);
+  }
+
+  void addDynamicResultsPrint(DynamicResults& dynamic_results) {
+    // https://github.com/banach-space/llvm-tutor/blob/0d2864d19b90fbcc31cea530ec00215405271e40/lib/DynamicCallCounter.cpp
+    Module* mod = F.getParent();
+    LLVMContext& ctx = mod->getContext();
+
+    // if this global already exists in the module, assume we've already added
+    // the print
+    if (mod->getGlobalVariable("__DLIM_output_str")) {
+      return;
+    }
+
+    std::string output = "";
+    output += "================\n";
+    output += "DLIM dynamic counts for " + mod->getName().str() + ":\n";
+    output += "================\n";
+    output += "Loads with clean addr: %llu\n";
+    output += "Loads with blemished addr: %llu\n";
+    output += "Loads with dirty addr: %llu\n";
+    output += "Loads with unknown addr: %llu\n";
+    output += "Stores with clean addr: %llu\n";
+    output += "Stores with blemished addr: %llu\n";
+    output += "Stores with dirty addr: %llu\n";
+    output += "Stores with unknown addr: %llu\n";
+    output += "Storing a clean ptr to mem: %llu\n";
+    output += "Storing a blemished ptr to mem: %llu\n";
+    output += "Storing a dirty ptr to mem: %llu\n";
+    output += "Storing an unknown ptr to mem: %llu\n";
+    output += "Passing a clean ptr to a func: %llu\n";
+    output += "Passing a blemished ptr to a func: %llu\n";
+    output += "Passing a dirty ptr to a func: %llu\n";
+    output += "Passing an unknown ptr to a func: %llu\n";
+    output += "Returning a clean ptr from a func: %llu\n";
+    output += "Returning a blemished ptr from a func: %llu\n";
+    output += "Returning a dirty ptr from a func: %llu\n";
+    output += "Returning an unknown ptr from a func: %llu\n";
+    output += "Producing a ptr (assumed dirty) from inttoptr: %llu\n";
+    output += "\n";
+
+    // Inject a global variable to hold the output string
+    Constant* OutputStr = ConstantDataArray::getString(ctx, output.c_str());
+    Constant* OutputStrGlobal = mod->getOrInsertGlobal("__DLIM_output_str", OutputStr->getType());
+    cast<GlobalVariable>(OutputStrGlobal)->setInitializer(OutputStr);
+
+    // Create a void function which calls printf() to print the output
+    Type* i8ty = IntegerType::getInt8Ty(ctx);
+    Type* i8StarTy = PointerType::getUnqual(i8ty);
+    Type* i32ty = IntegerType::getInt32Ty(ctx);
+    Type* i64ty = IntegerType::getInt64Ty(ctx);
+    FunctionType* PrintfTy = FunctionType::get(i32ty, i8StarTy, /* IsVarArgs = */ true);
+    FunctionCallee Printf = mod->getOrInsertFunction("printf", PrintfTy);
+    Function* Printf_func = cast<Function>(Printf.getCallee());
+    Printf_func->setDoesNotThrow();
+    Printf_func->addParamAttr(0, Attribute::NoCapture);
+    Printf_func->addParamAttr(0, Attribute::ReadOnly);
+    FunctionType* WrapperTy = FunctionType::get(Type::getVoidTy(ctx), {}, false);
+    Function* Wrapper_func = cast<Function>(mod->getOrInsertFunction("__DLIM_output_wrapper", WrapperTy).getCallee());
+    BasicBlock* RetBlock = BasicBlock::Create(ctx, "entry", Wrapper_func);
+    IRBuilder<> Builder(RetBlock);
+    Builder.CreateCall(Printf, {
+      Builder.CreatePointerCast(OutputStrGlobal, i8StarTy),
+      Builder.CreateLoad(i64ty, dynamic_results.load_addrs.clean),
+      Builder.CreateLoad(i64ty, dynamic_results.load_addrs.blemished),
+      Builder.CreateLoad(i64ty, dynamic_results.load_addrs.dirty),
+      Builder.CreateLoad(i64ty, dynamic_results.load_addrs.unknown),
+      Builder.CreateLoad(i64ty, dynamic_results.store_addrs.clean),
+      Builder.CreateLoad(i64ty, dynamic_results.store_addrs.blemished),
+      Builder.CreateLoad(i64ty, dynamic_results.store_addrs.dirty),
+      Builder.CreateLoad(i64ty, dynamic_results.store_addrs.unknown),
+      Builder.CreateLoad(i64ty, dynamic_results.store_vals.clean),
+      Builder.CreateLoad(i64ty, dynamic_results.store_vals.blemished),
+      Builder.CreateLoad(i64ty, dynamic_results.store_vals.dirty),
+      Builder.CreateLoad(i64ty, dynamic_results.store_vals.unknown),
+      Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.clean),
+      Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.blemished),
+      Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.dirty),
+      Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.unknown),
+      Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.clean),
+      Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.blemished),
+      Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.dirty),
+      Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.unknown),
+      Builder.CreateLoad(i64ty, dynamic_results.inttoptrs),
+    });
+    Builder.CreateRetVoid();
+
+    // Inject this wrapper function into the GlobalDtors for the module
+    appendToGlobalDtors(*mod, Wrapper_func, /* Priority = */ 0);
+  }
 };
 
 PreservedAnalyses StaticDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   DLIMAnalysis analysis = DLIMAnalysis(F, true);
-  DLIMAnalysis::Results results = analysis.run();
-  analysis.reportResults(results);
+  DLIMAnalysis::StaticResults static_results = analysis.run();
+  analysis.reportStaticResults(static_results);
 
   // StaticDLIMPass only analyzes the IR and doesn't make any changes, so all
   // analyses are preserved
@@ -587,12 +890,31 @@ PreservedAnalyses StaticDLIMPass::run(Function &F, FunctionAnalysisManager &FAM)
 
 PreservedAnalyses ParanoidStaticDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
   DLIMAnalysis analysis = DLIMAnalysis(F, false);
-  DLIMAnalysis::Results results = analysis.run();
-  analysis.reportResults(results);
+  DLIMAnalysis::StaticResults static_results = analysis.run();
+  analysis.reportStaticResults(static_results);
 
   // ParanoidStaticDLIMPass only analyzes the IR and doesn't make any changes,
   // so all analyses are preserved
   return PreservedAnalyses::all();
+}
+
+PreservedAnalyses DynamicDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
+  // Don't do any analysis or instrumentation on the special function __DLIM_output_wrapper
+  if (F.getName() == "__DLIM_output_wrapper") {
+    return PreservedAnalyses::all();
+  }
+
+  DLIMAnalysis analysis = DLIMAnalysis(F, true);
+  DLIMAnalysis::StaticResults static_results = analysis.run();
+  analysis.reportStaticResults(static_results);
+
+  analysis.instrument();
+
+  // For now we conservatively just tell LLVM that no analyses are preserved.
+  // It seems that many existing LLVM passes also just use
+  // PreservedAnalyses::none() when they make any change, so we assume this is
+  // reasonable.
+  return PreservedAnalyses::none();
 }
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
