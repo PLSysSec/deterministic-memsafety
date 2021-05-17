@@ -1113,6 +1113,11 @@ def static_libsan : Flag<["-"], "static-libsan">,
 def : Flag<["-"], "shared-libasan">, Alias<shared_libsan>;
 def fasm : Flag<["-"], "fasm">, Group<f_Group>;
 
+defm dlim_instrumentation : BoolFOption<"dlim-instrumentation",
+  CodeGenOpts<"DLIMInstrumentation">, DefaultFalse,
+  PosFlag<SetTrue, [CC1Option], "Enable DLIM instrumentation">,
+  NegFlag<SetFalse>>;
+
 def fassume_sane_operator_new : Flag<["-"], "fassume-sane-operator-new">, Group<f_Group>;
 def fastcp : Flag<["-"], "fastcp">, Group<f_Group>;
 def fastf : Flag<["-"], "fastf">, Group<f_Group>;

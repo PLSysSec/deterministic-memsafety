@@ -83,6 +83,7 @@
 #include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/CanonicalizeAliases.h"
 #include "llvm/Transforms/Utils/Debugify.h"
+#include "llvm/Transforms/Utils/DLIM.h"
 #include "llvm/Transforms/Utils/EntryExitInstrumenter.h"
 #include "llvm/Transforms/Utils/NameAnonGlobals.h"
 #include "llvm/Transforms/Utils/SymbolRewriter.h"
@@ -386,6 +387,15 @@ addPostInlineEntryExitInstrumentationPass(const PassManagerBuilder &Builder,
                                           legacy::PassManagerBase &PM) {
   PM.add(createPostInlineEntryExitInstrumenterPass());
 }
+
+// we would need something like this, if our dynamic DLIM pass used the legacy
+// pass manager
+/*
+static void addDynamicDLIMPass(const PassManagerBuilder &Builder,
+                               legacy::PassManagerBase &PM) {
+  PM.add(createDynamicDLIMInstrumentationPass());
+}
+*/
 
 static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
                                          const CodeGenOptions &CodeGenOpts) {
@@ -827,6 +837,17 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addPostInlineEntryExitInstrumentationPass);
   }
+
+// this would be something like the code we'd want, if our dynamic
+// DLIM pass used the legacy pass manager
+/*
+  if (CodeGenOpts.DLIMInstrumentation) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addDynamicDLIMPass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addDynamicDLIMPass);
+  }
+*/
 
   // Set up the per-function pass manager.
   FPM.add(new TargetLibraryInfoWrapperPass(*TLII));
@@ -1395,6 +1416,14 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
             MPM.addPass(createModuleToFunctionPassAdaptor(
                 EntryExitInstrumenterPass(/*PostInlining=*/true)));
           });
+    }
+
+    if (CodeGenOpts.DLIMInstrumentation) {
+      PB.registerOptimizerLastEPCallback(
+        [](ModulePassManager &MPM, PassBuilder::OptimizationLevel Level) {
+          MPM.addPass(createModuleToFunctionPassAdaptor(
+            DynamicDLIMPass()));
+        });
     }
 
     // Register callbacks to schedule sanitizer passes at the appropriate part
