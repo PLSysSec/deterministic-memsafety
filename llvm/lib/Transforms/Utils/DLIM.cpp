@@ -843,6 +843,7 @@ private:
     Constant* OutputStr = ConstantDataArray::getString(ctx, output.c_str());
     Constant* OutputStrGlobal = mod->getOrInsertGlobal("__DLIM_output_str", OutputStr->getType());
     cast<GlobalVariable>(OutputStrGlobal)->setInitializer(OutputStr);
+    cast<GlobalVariable>(OutputStrGlobal)->setLinkage(GlobalValue::PrivateLinkage);
 
     // Create a void function which calls printf() to print the output
     Type* i8ty = IntegerType::getInt8Ty(ctx);
@@ -857,6 +858,7 @@ private:
     Printf_func->addParamAttr(0, Attribute::ReadOnly);
     FunctionType* WrapperTy = FunctionType::get(Type::getVoidTy(ctx), {}, false);
     Function* Wrapper_func = cast<Function>(mod->getOrInsertFunction("__DLIM_output_wrapper", WrapperTy).getCallee());
+    Wrapper_func->setLinkage(GlobalValue::PrivateLinkage);
     BasicBlock* RetBlock = BasicBlock::Create(ctx, "entry", Wrapper_func);
     IRBuilder<> Builder(RetBlock);
     Builder.CreateCall(Printf, {
