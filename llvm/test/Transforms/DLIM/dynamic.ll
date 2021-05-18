@@ -1,4 +1,4 @@
-; RUN: clang %s -O1 -c -emit-llvm -o %t.bc && opt -passes=dynamic-dlim %t.bc -o=%t.instrumented.bc && clang %t.instrumented.bc -o %t && %t | FileCheck %s
+; RUN: opt %s -passes=dynamic-dlim -o=%t.instrumented.bc && clang %t.instrumented.bc -o %t && %t | FileCheck %s
 
 ; Since we currently print dynamic counts on a per-module basis, the following
 ; totals are for this entire file.
