@@ -631,8 +631,13 @@ private:
             ptr_statuses.mark_dirty(&inst);
             break;
           }
-          case Instruction::Call: {
-            const CallInst& call = cast<CallInst>(inst);
+          case Instruction::Call:
+          case Instruction::CallBr:
+          case Instruction::Invoke:
+          // all three of these are instructions which call functions, and we
+          // handle them the same
+          {
+            const CallBase& call = cast<CallBase>(inst);
             // count call arguments for static stats
             for (const Use& arg : call.args()) {
               const Value* value = arg.get();
