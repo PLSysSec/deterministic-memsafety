@@ -912,9 +912,7 @@ PreservedAnalyses DynamicDLIMPass::run(Function &F, FunctionAnalysisManager &FAM
   }
 
   DLIMAnalysis analysis = DLIMAnalysis(F, true);
-  DLIMAnalysis::StaticResults static_results = analysis.run();
-  analysis.reportStaticResults(static_results);
-
+  analysis.run();
   analysis.instrument();
 
   // For now we conservatively just tell LLVM that no analyses are preserved.
