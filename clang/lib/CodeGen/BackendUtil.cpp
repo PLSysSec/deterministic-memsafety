@@ -1418,12 +1418,31 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
           });
     }
 
-    if (CodeGenOpts.DLIMInstrumentation) {
-      PB.registerOptimizerLastEPCallback(
-        [](ModulePassManager &MPM, PassBuilder::OptimizationLevel Level) {
-          MPM.addPass(createModuleToFunctionPassAdaptor(
-            DynamicDLIMPass()));
-        });
+    bool have_dynamic = false;
+    for (const std::string& opt : CodeGenOpts.DLIM) {
+      if (opt == "static") {
+        PB.registerOptimizerLastEPCallback(
+          [](ModulePassManager &MPM, PassBuilder::OptimizationLevel Level) {
+            MPM.addPass(createModuleToFunctionPassAdaptor(
+              StaticDLIMPass()));
+          });
+      } else if (opt == "paranoid-static") {
+        PB.registerOptimizerLastEPCallback(
+          [](ModulePassManager &MPM, PassBuilder::OptimizationLevel Level) {
+            MPM.addPass(createModuleToFunctionPassAdaptor(
+              ParanoidStaticDLIMPass()));
+          });
+      } else if (opt == "dynamic") {
+        assert(!have_dynamic && "DLIM: can't specify more than one dynamic option");
+        have_dynamic = true;
+        PB.registerOptimizerLastEPCallback(
+          [](ModulePassManager &MPM, PassBuilder::OptimizationLevel Level) {
+            MPM.addPass(createModuleToFunctionPassAdaptor(
+              DynamicDLIMPass()));
+          });
+      } else {
+        assert(false && "DLIM: unrecognized option");
+      }
     }
 
     // Register callbacks to schedule sanitizer passes at the appropriate part

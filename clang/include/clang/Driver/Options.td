@@ -1113,10 +1113,12 @@ def static_libsan : Flag<["-"], "static-libsan">,
 def : Flag<["-"], "shared-libasan">, Alias<shared_libsan>;
 def fasm : Flag<["-"], "fasm">, Group<f_Group>;
 
-defm dlim_instrumentation : BoolFOption<"dlim-instrumentation",
-  CodeGenOpts<"DLIMInstrumentation">, DefaultFalse,
-  PosFlag<SetTrue, [CC1Option], "Enable DLIM instrumentation">,
-  NegFlag<SetFalse>>;
+def fdlim : CommaJoined<["-"], "fdlim=">, Group<f_Group>,
+  Flags<[CC1Option]>, // CodeGenOpts<"DLIM">,
+  MetaVarName<"<option>">,
+  HelpText<"DLIM analysis to use: choose from static, dynamic, and/or paranoid-static. You may choose multiple values for <option> by separating them with commas, e.g. -fdlim=static,dynamic">,
+  Values<"static,dynamic,paranoid-static">,
+  MarshallingInfoStringVector<CodeGenOpts<"DLIM">>;
 
 def fassume_sane_operator_new : Flag<["-"], "fassume-sane-operator-new">, Group<f_Group>;
 def fastcp : Flag<["-"], "fastcp">, Group<f_Group>;

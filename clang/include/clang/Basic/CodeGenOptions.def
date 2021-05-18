@@ -445,9 +445,6 @@ CODEGENOPT(EmitIEEENaNCompliantInsts, 1, 1)
 ENUM_CODEGENOPT(SwiftAsyncFramePointer, SwiftAsyncFramePointerKind, 2,
                 SwiftAsyncFramePointerKind::Always)
 
-/// Whether to add the dynamic DLIM instrumentation pass
-CODEGENOPT(DLIMInstrumentation, 1, 0)
-
 #undef CODEGENOPT
 #undef ENUM_CODEGENOPT
 #undef VALUE_CODEGENOPT

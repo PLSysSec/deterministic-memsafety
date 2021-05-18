@@ -4502,9 +4502,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.getLastArg(options::OPT_save_temps_EQ))
     Args.AddLastArg(CmdArgs, options::OPT_save_temps_EQ);
 
-  if (Args.getLastArg(options::OPT_fdlim_instrumentation)) {
-    Args.AddLastArg(CmdArgs, options::OPT_fdlim_instrumentation);
-  }
+  Args.AddAllArgs(CmdArgs, options::OPT_fdlim);
 
   auto *MemProfArg = Args.getLastArg(options::OPT_fmemory_profile,
                                      options::OPT_fmemory_profile_EQ,

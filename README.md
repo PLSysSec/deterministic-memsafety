@@ -19,42 +19,47 @@ To run all LLVM regression tests, run `ninja check-llvm` from the `llvm/build` d
 
 To run only the DLIM regression tests, run `./build/bin/llvm-lit -v ./test/Transforms/DLIM` from the `llvm` directory.
 
-## Running the static DLIM pass on arbitrary bitcode
+## Compiling with DLIM passes
 
-We have two static DLIM passes, which don't modify the bitcode but
-just report static statistics about clean/dirty pointers etc.
-These passes are `static-dlim` and `paranoid-static-dlim`.
+We've integrated our passes into Clang, so this is now really easy.
+Just use the Clang in `./build/bin`, and add the flag `-fdlim=<option>` to your
+command, where `<option>` is one of:
+* `static`: this runs the static DLIM pass, which doesn't modify the code
+  but just reports static statistics about clean/dirty pointers etc.
+* `paranoid-static`: same as `static`, but doesn't trust LLVM struct types --
+  see comments in `DLIM.h`.
+* `dynamic`: this runs the dynamic DLIM pass, which instruments the code so
+  that at runtime it will count dynamic statistics about clean/dirty pointers
+  etc, and print those counts when the program finishes.
 
-To run either of these passes on an arbitrary bitcode file, run
-`./build/bin/opt -passes=static-dlim -disable-output file.ll`
-from the `llvm` directory, or likewise for `paranoid-static-dlim`.
+You can also specify more than one of these options, comma-separated: e.g.,
+`-fdlim=static,dynamic`.
+
+## Running the DLIM passes on individual bitcode files
+
+### Static DLIM passes:
+
+From the `llvm` directory: `./build/bin/opt -passes=<pass> -disable-output file.ll`
+where `<pass>` is either `static-dlim` or `paranoid-static-dlim`.
 (The `-disable-output` flag avoids writing the "transformed" bitcode, which is
 uninteresting for these static passes which don't do any transformations.)
-
+You can use either a `.ll` (text-format) or `.bc` (binary-format bitcode) file
+as input.
 To get detailed debugging information, add the `-debug` flag.
 
-## Running the dynamic DLIM pass on arbitrary bitcode
+### Dynamic DLIM pass:
 
-Our dynamic DLIM pass instruments a bitcode file so that at runtime it will
-count dynamic statistics about clean/dirty pointers etc, and print those counts
-when the program finishes. For now, we have just `dynamic-dlim`; soon we will
-also have `paranoid-dynamic-dlim`.
-
-To run this pass on an arbitrary bitcode file, run
-`./build/bin/opt -passes=dynamic-dlim file.ll -o=file_instrumented.bc`
-from the `llvm` directory.
-To get LLVM text-format IR instead of bitcode, add the `-S` flag (and, to avoid
-confusion, change the extension of the output filename to `.ll` instead of
-`.bc`).
+From the `llvm` directory: `./build/bin/opt -passes=dynamic-dlim file.ll -o=file_instrumented.bc`
+(again, you can use either a `.ll` or `.bc` file as input).
+To get `.ll` _output_ instead of `.bc`, add the `-S` flag (and, to avoid
+confusion, change the extension of the output filename).
 To get detailed debugging information, add the `-debug` flag.
 
-## Compiling arbitrary bitcode or C/C++ code with DLIM instrumentation
+## Compiling with DLIM passes -- the old way
 
-These instructions use the `dynamic-dlim` pass to instrument the code so that
-it will print dynamic statistics about clean/dirty pointers etc.
-In the future, we may add a command-line flag to Clang (e.g., following
-something like [these instructions](https://medium.com/@mshockwave/writing-llvm-pass-in-2018-part-iv-d69dac57171d)),
-but for now we just use this multi-step process.
+These instructions are probably not useful or needed anymore, because you can
+just use the Clang flags described above (much easier), but just in case,
+here's the instructions.
 
 1. If you don't already have bitcode, compile your C or C++ file to bitcode
    using any `clang` you want (doesn't have to be the one built here) and any
@@ -62,17 +67,13 @@ but for now we just use this multi-step process.
    To get `.ll` text format instead of `.bc` bitcode format (for debugging),
    use `-S` instead of `-c`.
 
-2. Instrument the bitcode with
-   ```
-   ./build/bin/opt -passes=dynamic-dlim file.bc -o=file_instrumented.bc
-   ```
-   To get `.ll` text format instead of `.bc` bitcode format (for debugging),
-   add `-S`.
+2. Run whichever DLIM pass(es) you want using the instructions above for
+   individual bitcode files.
 
-3. Compile the instrumented bitcode with
-   ```
-   clang file_instrumented.bc -o file
-   ```
+3. For static DLIM passes, you're already done. For dynamic DLIM passes, to
+   actually finish compiling the code so you can run it, just use `clang`,
+   e.g. `clang file_instrumented.bc -o file`. This can again be done with any
+  `clang` you want.
 
 Original README follows.
 
