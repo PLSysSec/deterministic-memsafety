@@ -694,6 +694,11 @@ private:
             ptr_statuses.mark_unknown(&inst);
             break;
           }
+          case Instruction::ExtractElement: {
+            // same comments apply as for ExtractValue, basically
+            ptr_statuses.mark_unknown(&inst);
+            break;
+          }
           case Instruction::Ret: {
             const ReturnInst& ret = cast<ReturnInst>(inst);
             const Value* retval = ret.getReturnValue();
