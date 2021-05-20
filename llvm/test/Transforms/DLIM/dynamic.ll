@@ -1,4 +1,4 @@
-; RUN: opt %s -passes=dynamic-dlim -o=%t.instrumented.bc && clang %t.instrumented.bc -o %t && %t | FileCheck %s
+; RUN: opt %s -passes=dynamic-stdout-dlim -o=%t.instrumented.bc && clang %t.instrumented.bc -o %t && %t | FileCheck %s
 
 ; Since we currently print dynamic counts on a per-module basis, the following
 ; totals are for this entire file.

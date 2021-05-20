@@ -17,6 +17,7 @@ using namespace llvm;
 #define DEBUG_TYPE "DLIM"
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
+static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str);
 
 typedef enum PointerKind {
   // As of this writing, the operations producing UNKNOWN are: loading a pointer
@@ -298,15 +299,23 @@ public:
     return static_results;
   }
 
+  /// Where to print results dynamically (at runtime)
+  typedef enum DynamicPrintType {
+    /// Print to stdout
+    STDOUT,
+    /// Print to a file in ./dlim_dynamic_counts
+    TOFILE,
+  } DynamicPrintType;
+
   /// Instruments the code for dynamic counts.
   /// You _must_ run() the analysis first -- instrument() assumes that the
   /// analysis is complete.
-  void instrument() {
+  void instrument(DynamicPrintType print_type) {
     DynamicResults results = initializeDynamicResults();
     StaticResults _ignore;
     bool changed = doIteration(_ignore, &results, true);
     assert(!changed && "Don't run instrument() until analysis has reached fixpoint");
-    addDynamicResultsPrint(results);
+    addDynamicResultsPrint(results, print_type);
   }
 
   void reportStaticResults(StaticResults& results) {
@@ -806,14 +815,14 @@ private:
     Builder.CreateStore(incremented, GlobalCounter);
   }
 
-  void addDynamicResultsPrint(DynamicResults& dynamic_results) {
+  void addDynamicResultsPrint(DynamicResults& dynamic_results, DynamicPrintType print_type) {
     // https://github.com/banach-space/llvm-tutor/blob/0d2864d19b90fbcc31cea530ec00215405271e40/lib/DynamicCallCounter.cpp
     Module* mod = F.getParent();
     LLVMContext& ctx = mod->getContext();
 
-    // if this global already exists in the module, assume we've already added
+    // if this function already exists in the module, assume we've already added
     // the print
-    if (mod->getGlobalVariable("__DLIM_output_str")) {
+    if (mod->getFunction("__DLIM_output_wrapper")) {
       return;
     }
 
@@ -845,52 +854,155 @@ private:
     output += "\n";
 
     // Inject a global variable to hold the output string
-    Constant* OutputStr = ConstantDataArray::getString(ctx, output.c_str());
-    Constant* OutputStrGlobal = mod->getOrInsertGlobal("__DLIM_output_str", OutputStr->getType());
-    cast<GlobalVariable>(OutputStrGlobal)->setInitializer(OutputStr);
-    cast<GlobalVariable>(OutputStrGlobal)->setLinkage(GlobalValue::PrivateLinkage);
+    Constant* OutputStr = createGlobalConstStr(mod, "__DLIM_output_str", output.c_str());
 
-    // Create a void function which calls printf() to print the output
+    // Create a void function which calls printf() or fprintf() to print the
+    // output
     Type* i8ty = IntegerType::getInt8Ty(ctx);
     Type* i8StarTy = PointerType::getUnqual(i8ty);
     Type* i32ty = IntegerType::getInt32Ty(ctx);
+    Type* i32StarTy = PointerType::getUnqual(i32ty);
     Type* i64ty = IntegerType::getInt64Ty(ctx);
-    FunctionType* PrintfTy = FunctionType::get(i32ty, i8StarTy, /* IsVarArgs = */ true);
-    FunctionCallee Printf = mod->getOrInsertFunction("printf", PrintfTy);
-    Function* Printf_func = cast<Function>(Printf.getCallee());
-    Printf_func->setDoesNotThrow();
-    Printf_func->addParamAttr(0, Attribute::NoCapture);
-    Printf_func->addParamAttr(0, Attribute::ReadOnly);
     FunctionType* WrapperTy = FunctionType::get(Type::getVoidTy(ctx), {}, false);
     Function* Wrapper_func = cast<Function>(mod->getOrInsertFunction("__DLIM_output_wrapper", WrapperTy).getCallee());
     Wrapper_func->setLinkage(GlobalValue::PrivateLinkage);
-    BasicBlock* RetBlock = BasicBlock::Create(ctx, "entry", Wrapper_func);
-    IRBuilder<> Builder(RetBlock);
-    Builder.CreateCall(Printf, {
-      Builder.CreatePointerCast(OutputStrGlobal, i8StarTy),
-      Builder.CreateLoad(i64ty, dynamic_results.load_addrs.clean),
-      Builder.CreateLoad(i64ty, dynamic_results.load_addrs.blemished),
-      Builder.CreateLoad(i64ty, dynamic_results.load_addrs.dirty),
-      Builder.CreateLoad(i64ty, dynamic_results.load_addrs.unknown),
-      Builder.CreateLoad(i64ty, dynamic_results.store_addrs.clean),
-      Builder.CreateLoad(i64ty, dynamic_results.store_addrs.blemished),
-      Builder.CreateLoad(i64ty, dynamic_results.store_addrs.dirty),
-      Builder.CreateLoad(i64ty, dynamic_results.store_addrs.unknown),
-      Builder.CreateLoad(i64ty, dynamic_results.store_vals.clean),
-      Builder.CreateLoad(i64ty, dynamic_results.store_vals.blemished),
-      Builder.CreateLoad(i64ty, dynamic_results.store_vals.dirty),
-      Builder.CreateLoad(i64ty, dynamic_results.store_vals.unknown),
-      Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.clean),
-      Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.blemished),
-      Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.dirty),
-      Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.unknown),
-      Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.clean),
-      Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.blemished),
-      Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.dirty),
-      Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.unknown),
-      Builder.CreateLoad(i64ty, dynamic_results.inttoptrs),
-    });
-    Builder.CreateRetVoid();
+    BasicBlock* EntryBlock = BasicBlock::Create(ctx, "entry", Wrapper_func);
+    IRBuilder<> Builder(EntryBlock);
+
+    if (print_type == STDOUT) {
+      // call printf()
+      FunctionType* PrintfTy = FunctionType::get(i32ty, i8StarTy, /* IsVarArgs = */ true);
+      FunctionCallee Printf = mod->getOrInsertFunction("printf", PrintfTy);
+      //Function* Printf_func = cast<Function>(Printf.getCallee());
+      //Printf_func->setDoesNotThrow();
+      //Printf_func->addParamAttr(0, Attribute::NoCapture);
+      //Printf_func->addParamAttr(0, Attribute::ReadOnly);
+      Builder.CreateCall(Printf, {
+        Builder.CreatePointerCast(OutputStr, i8StarTy),
+        Builder.CreateLoad(i64ty, dynamic_results.load_addrs.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.load_addrs.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.load_addrs.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.load_addrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.store_addrs.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.store_addrs.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.store_addrs.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.store_addrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.store_vals.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.store_vals.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.store_vals.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.store_vals.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.inttoptrs),
+      });
+      Builder.CreateRetVoid();
+    } else if (print_type == TOFILE) {
+      // create strings for arguments to mkdir, fopen, and perror
+      Constant* DirStr = createGlobalConstStr(mod, "__DLIM_dir_str", "./dlim_dynamic_counts");
+      Constant* FileStr = createGlobalConstStr(mod, "__DLIM_file_str", ("./dlim_dynamic_counts/" + mod->getName()).str().c_str());
+      Constant* ModeStr = createGlobalConstStr(mod, "__DLIM_mode_str", "a");
+      Constant* PerrorStr = createGlobalConstStr(mod, "__DLIM_perror_str", "Failed to open dynamic counts output file");
+      // call mkdir
+      FunctionType* MkdirTy = FunctionType::get(i32ty, {i8StarTy, i32ty}, /* IsVarArgs = */ false);
+      FunctionCallee Mkdir = mod->getOrInsertFunction("mkdir", MkdirTy);
+      //Function* Mkdir_func = cast<Function>(Mkdir.getCallee());
+      //Mkdir_func->addParamAttr(0, Attribute::NoCapture);
+      //Mkdir_func->addParamAttr(0, Attribute::ReadOnly);
+      Value* Mkdir_ret = Builder.CreateCall(Mkdir, {
+        Builder.CreatePointerCast(DirStr, i8StarTy),
+        Builder.getInt32(/* octal */ 0777),
+      });
+      // check for error from mkdir
+      Value* cond = Builder.CreateICmpEQ(Mkdir_ret, Builder.getInt32(0));
+      BasicBlock* ErrorBB = BasicBlock::Create(ctx, "error", Wrapper_func);
+      BasicBlock* NoErrorBB = BasicBlock::Create(ctx, "noerror", Wrapper_func);
+      Builder.CreateCondBr(cond, NoErrorBB, ErrorBB);
+      // the case where mkdir returns error
+      // see if errno is EEXIST (17), and if so, ignore the error.
+      // otherwise return early and don't print anything.
+      Builder.SetInsertPoint(ErrorBB);
+      FunctionType* ErrnoTy = FunctionType::get(i32StarTy, {}, false);
+      FunctionCallee Errno_callee = mod->getOrInsertFunction("__errno_location", ErrnoTy);
+      //Function* Errno_func = cast<Function>(Errno_callee.getCallee());
+      //Errno_func->setDoesNotAccessMemory();
+      //Errno_func->setDoesNotThrow();
+      //Errno_func->setWillReturn();
+      Value* errno_addr = Builder.CreateCall(Errno_callee, {});
+      Value* errno_val = Builder.CreateLoad(i32ty, errno_addr);
+      cond = Builder.CreateICmpEQ(errno_val, Builder.getInt32(17));
+      BasicBlock* JustReturnBB = BasicBlock::Create(ctx, "justreturn", Wrapper_func);
+      Builder.CreateCondBr(cond, NoErrorBB, JustReturnBB);
+      Builder.SetInsertPoint(JustReturnBB);
+      Builder.CreateRetVoid();
+      // the case where mkdir succeeds (or where we got EEXIST and ignored it -
+      // in either case the directory now exists).
+      // Call fopen
+      Builder.SetInsertPoint(NoErrorBB);
+      StructType* FileTy = StructType::create(ctx, "struct._IO_FILE");
+      PointerType* FileStarTy = PointerType::getUnqual(FileTy);
+      FunctionType* FopenTy = FunctionType::get(FileStarTy, {i8StarTy, i8StarTy}, false);
+      FunctionCallee Fopen = mod->getOrInsertFunction("fopen", FopenTy);
+      //Function* Fopen_func = cast<Function>(Fopen.getCallee());
+      //Fopen_func->addParamAttr(0, Attribute::NoCapture);
+      //Fopen_func->addParamAttr(0, Attribute::ReadOnly);
+      //Fopen_func->addParamAttr(1, Attribute::NoCapture);
+      //Fopen_func->addParamAttr(1, Attribute::ReadOnly);
+      Value* file_handle = Builder.CreateCall(Fopen, {
+        Builder.CreatePointerCast(FileStr, i8StarTy),
+        Builder.CreatePointerCast(ModeStr, i8StarTy),
+      });
+      // check for error from fopen
+      cond = Builder.CreateIsNull(file_handle);
+      BasicBlock* WriteBB = BasicBlock::Create(ctx, "write", Wrapper_func);
+      BasicBlock* FopenFailed = BasicBlock::Create(ctx, "fopenfailed", Wrapper_func);
+      Builder.CreateCondBr(cond, FopenFailed, WriteBB);
+      Builder.SetInsertPoint(FopenFailed);
+      FunctionType* PerrorTy = FunctionType::get(Type::getVoidTy(ctx), {i8StarTy}, false);
+      FunctionCallee Perror = mod->getOrInsertFunction("perror", PerrorTy);
+      Builder.CreateCall(Perror, {Builder.CreatePointerCast(PerrorStr, i8StarTy)});
+      Builder.CreateRetVoid();
+      // and, actually write to file
+      Builder.SetInsertPoint(WriteBB);
+      FunctionType* FprintfTy = FunctionType::get(i32ty, {FileStarTy, i8StarTy}, /* IsVarArgs = */ true);
+      FunctionCallee Fprintf = mod->getOrInsertFunction("fprintf", FprintfTy);
+      Builder.CreateCall(Fprintf, {
+        file_handle,
+        Builder.CreatePointerCast(OutputStr, i8StarTy),
+        Builder.CreateLoad(i64ty, dynamic_results.load_addrs.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.load_addrs.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.load_addrs.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.load_addrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.store_addrs.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.store_addrs.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.store_addrs.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.store_addrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.store_vals.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.store_vals.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.store_vals.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.store_vals.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.passed_ptrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.blemished),
+        Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.inttoptrs),
+      });
+      FunctionType* FcloseTy = FunctionType::get(i32ty, {FileStarTy}, false);
+      FunctionCallee Fclose = mod->getOrInsertFunction("fclose", FcloseTy);
+      Builder.CreateCall(Fclose, {file_handle});
+      Builder.CreateBr(JustReturnBB);
+    } else {
+      assert(false && "unexpected print_type\n");
+    }
 
     // Inject this wrapper function into the GlobalDtors for the module
     appendToGlobalDtors(*mod, Wrapper_func, /* Priority = */ 0);
@@ -925,7 +1037,24 @@ PreservedAnalyses DynamicDLIMPass::run(Function &F, FunctionAnalysisManager &FAM
 
   DLIMAnalysis analysis = DLIMAnalysis(F, true);
   analysis.run();
-  analysis.instrument();
+  analysis.instrument(DLIMAnalysis::DynamicPrintType::TOFILE);
+
+  // For now we conservatively just tell LLVM that no analyses are preserved.
+  // It seems that many existing LLVM passes also just use
+  // PreservedAnalyses::none() when they make any change, so we assume this is
+  // reasonable.
+  return PreservedAnalyses::none();
+}
+
+PreservedAnalyses DynamicStdoutDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
+  // Don't do any analysis or instrumentation on the special function __DLIM_output_wrapper
+  if (F.getName() == "__DLIM_output_wrapper") {
+    return PreservedAnalyses::all();
+  }
+
+  DLIMAnalysis analysis = DLIMAnalysis(F, true);
+  analysis.run();
+  analysis.instrument(DLIMAnalysis::DynamicPrintType::STDOUT);
 
   // For now we conservatively just tell LLVM that no analyses are preserved.
   // It seems that many existing LLVM passes also just use
@@ -988,4 +1117,13 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
   }
   // if we get here without finding a non-trustworthy index, then we're all good
   return true;
+}
+
+static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str) {
+  LLVMContext& ctx = mod->getContext();
+  Constant* strConst = ConstantDataArray::getString(ctx, str);
+  Constant* strGlobal = mod->getOrInsertGlobal(global_name, strConst->getType());
+  cast<GlobalVariable>(strGlobal)->setInitializer(strConst);
+  cast<GlobalVariable>(strGlobal)->setLinkage(GlobalValue::PrivateLinkage);
+  return strGlobal;
 }

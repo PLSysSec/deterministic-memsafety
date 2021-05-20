@@ -27,10 +27,20 @@ public:
   static bool isRequired() { return true; }
 };
 
-/// Pass which instruments code so that it prints dynamic counts of clean/dirty
-/// pointers and some other statistics.
-/// (It also prints the static counts at compile-time, like StaticDLIMPass.)
+/// Pass which instruments code so that it tracks dynamic counts of clean/dirty
+/// pointers and some other statistics; then logs them to a file in
+/// `./dlim_dynamic_counts` in the runtime current directory.
 class DynamicDLIMPass : public PassInfoMixin<DynamicDLIMPass> {
+public:
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
+
+  // This pass must run even on -O0
+  static bool isRequired() { return true; }
+};
+
+/// Like `DynamicDLIMPass`, but the dynamic statistics are printed to stdout
+/// when the program is run, rather than being logged to a file.
+class DynamicStdoutDLIMPass : public PassInfoMixin<DynamicStdoutDLIMPass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 
