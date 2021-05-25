@@ -904,10 +904,11 @@ private:
       Builder.CreateRetVoid();
     } else if (print_type == TOFILE) {
       // create strings for arguments to mkdir, fopen, and perror
+      auto file_str = ("./dlim_dynamic_counts/" + mod->getName()).str();
       Constant* DirStr = createGlobalConstStr(mod, "__DLIM_dir_str", "./dlim_dynamic_counts");
-      Constant* FileStr = createGlobalConstStr(mod, "__DLIM_file_str", ("./dlim_dynamic_counts/" + mod->getName()).str().c_str());
+      Constant* FileStr = createGlobalConstStr(mod, "__DLIM_file_str", file_str.c_str());
       Constant* ModeStr = createGlobalConstStr(mod, "__DLIM_mode_str", "a");
-      Constant* PerrorStr = createGlobalConstStr(mod, "__DLIM_perror_str", "Failed to open dynamic counts output file");
+      Constant* PerrorStr = createGlobalConstStr(mod, "__DLIM_perror_str", ("Failed to open " + file_str).c_str());
       // call mkdir
       FunctionType* MkdirTy = FunctionType::get(i32ty, {i8StarTy, i32ty}, /* IsVarArgs = */ false);
       FunctionCallee Mkdir = mod->getOrInsertFunction("mkdir", MkdirTy);
