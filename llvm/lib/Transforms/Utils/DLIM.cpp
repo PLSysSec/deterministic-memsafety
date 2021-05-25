@@ -8,6 +8,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Regex.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <sstream>  // ostringstream
@@ -18,6 +19,7 @@ using namespace llvm;
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str);
+static std::string regexSubAll(const Regex &R, const StringRef Repl, const StringRef String);
 
 typedef enum PointerKind {
   // As of this writing, the operations producing UNKNOWN are: loading a pointer
@@ -904,7 +906,9 @@ private:
       Builder.CreateRetVoid();
     } else if (print_type == TOFILE) {
       // create strings for arguments to mkdir, fopen, and perror
-      auto file_str = ("./dlim_dynamic_counts/" + mod->getName()).str();
+      auto modNameNoDotDot = regexSubAll(Regex("\\.\\./"), "", mod->getName());
+      auto modNameWithDots = regexSubAll(Regex("/"), ".", modNameNoDotDot);
+      auto file_str = "./dlim_dynamic_counts/" + modNameWithDots;
       Constant* DirStr = createGlobalConstStr(mod, "__DLIM_dir_str", "./dlim_dynamic_counts");
       Constant* FileStr = createGlobalConstStr(mod, "__DLIM_file_str", file_str.c_str());
       Constant* ModeStr = createGlobalConstStr(mod, "__DLIM_mode_str", "a");
@@ -1127,4 +1131,12 @@ static Constant* createGlobalConstStr(Module* mod, const char* global_name, cons
   cast<GlobalVariable>(strGlobal)->setInitializer(strConst);
   cast<GlobalVariable>(strGlobal)->setLinkage(GlobalValue::PrivateLinkage);
   return strGlobal;
+}
+
+static std::string regexSubAll(const Regex &R, const StringRef Repl, const StringRef String) {
+  std::string curString = String.str();
+  while (R.match(curString)) {
+    curString = R.sub(Repl, curString);
+  }
+  return curString;
 }
