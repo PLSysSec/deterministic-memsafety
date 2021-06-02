@@ -5,7 +5,10 @@
 ; clean load
 ; CHECK-LABEL: load_from_struct
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i32 @load_from_struct() {
@@ -19,7 +22,10 @@ define i32 @load_from_struct() {
 ; same result even with a larger struct
 ; CHECK-LABEL: load_from_larger_struct
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i32 @load_from_larger_struct() {
@@ -34,7 +40,10 @@ define i32 @load_from_larger_struct() {
 ; blemished load
 ; CHECK-LABEL: load_first_from_blemished_struct
 ; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with blemished addr: 1
+; CHECK-NEXT: Loads with blemished16 addr: 1
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i8 @load_first_from_blemished_struct() {
@@ -50,7 +59,10 @@ define i8 @load_first_from_blemished_struct() {
 ; a dirty load
 ; CHECK-LABEL: load_second_from_blemished_struct
 ; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i8 @load_second_from_blemished_struct() {
@@ -67,7 +79,10 @@ define i8 @load_second_from_blemished_struct() {
 ; (in this case CLEAN)
 ; CHECK-LABEL: load_first_from_first_class_array
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i8 @load_first_from_first_class_array() {
@@ -78,10 +93,13 @@ define i8 @load_first_from_first_class_array() {
 }
 
 ; loading the second element of a first-class array is currently not trusted
-; (in this case it results in BLEMISHED)
+; (in this case it results in BLEMISHED16)
 ; CHECK-LABEL: load_second_from_first_class_array
 ; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with blemished addr: 1
+; CHECK-NEXT: Loads with blemished16 addr: 1
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i8 @load_second_from_first_class_array() {
@@ -94,7 +112,10 @@ define i8 @load_second_from_first_class_array() {
 ; still blemished when the array is nested inside a struct
 ; CHECK-LABEL: load_from_nested_array
 ; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with blemished addr: 1
+; CHECK-NEXT: Loads with blemished16 addr: 1
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i8 @load_from_nested_array() {
@@ -104,11 +125,14 @@ define i8 @load_from_nested_array() {
   ret i8 %res
 }
 
-; here it's actually dirty because the offset is more than 16 bytes
+; here it's actually blem32 because the offset is more than 16 bytes
 ; CHECK-LABEL: load_from_nested_array_larger_offset
 ; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with blemished addr: 0
-; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 1
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i8 @load_from_nested_array_larger_offset() {
   %ptr = alloca [4 x { i8, [4 x i8], i64 }]

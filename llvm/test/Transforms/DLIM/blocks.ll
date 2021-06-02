@@ -4,7 +4,10 @@
 ; different block.
 ; CHECK-LABEL: clean_load_different_block
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i32 @clean_load_different_block(i32 %arg) {
@@ -29,13 +32,16 @@ end:
 ; different block.
 ; CHECK-LABEL: dirty_load_different_block
 ; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i32 @dirty_load_different_block(i32 %arg) {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 5
+  %newptr = getelementptr i32, i32* %castedptr, i32 %arg
   %cond = icmp sgt i32 %arg, 4
   br i1 %cond, label %a, label %b
 
@@ -56,7 +62,10 @@ end:
 ; alloca was in a different block.
 ; CHECK-LABEL: clean_gep_far_alloca
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i32 @clean_gep_far_alloca(i32 %arg) {
@@ -82,7 +91,10 @@ end:
 ; comes from either of two predecessors of the block. (No PHI.)
 ; CHECK-LABEL: clean_load_two_preds_no_phi
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i32 @clean_load_two_preds_no_phi(i32 %arg) {
@@ -105,17 +117,23 @@ end:
 ; both predecessors.
 ; CHECK-LABEL: clean_load_two_dirty_preds_no_phi
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
-; CHECK-NEXT: Stores with blemished addr: 0
+; CHECK-NEXT: Stores with blemished16 addr: 0
+; CHECK-NEXT: Stores with blemished32 addr: 0
+; CHECK-NEXT: Stores with blemished64 addr: 0
+; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 2
 ; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @clean_load_two_dirty_preds_no_phi(i32 %arg) {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 5
+  %newptr = getelementptr i32, i32* %castedptr, i32 %arg
   %cond = icmp sgt i32 %arg, 4
   br i1 %cond, label %a, label %b
 
@@ -138,7 +156,10 @@ end:
 ; stays clean.
 ; CHECK-LABEL: many_blocks
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i32 @many_blocks(i32 %arg) {
@@ -172,11 +193,17 @@ end:
 ; are clean, is a clean load.
 ; CHECK-LABEL: phi_both_clean
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
-; CHECK-NEXT: Stores with blemished addr: 1
+; CHECK-NEXT: Stores with blemished16 addr: 1
+; CHECK-NEXT: Stores with blemished32 addr: 0
+; CHECK-NEXT: Stores with blemished64 addr: 0
+; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @phi_both_clean(i32 %arg) {
@@ -208,7 +235,10 @@ end:
 ; clean and one is dirty, is a dirty load.
 ; CHECK-LABEL: phi_one_dirty
 ; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i32 @phi_one_dirty(i32 %arg) {
@@ -226,7 +256,7 @@ loop:
   br i1 %cond, label %end, label %body
 
 body:
-  %newptr = getelementptr i32, i32* %loop_ptr, i32 5  ; dirty
+  %newptr = getelementptr i32, i32* %loop_ptr, i32 %arg  ; dirty
   %new_res = add i32 %loop_res, %loaded
   br label %loop
 
@@ -239,18 +269,24 @@ end:
 ; other. At the bottom, we must pessimistically assume dirty.
 ; CHECK-LABEL: half_dirty
 ; CHECK-NEXT: Loads with clean addr: 0
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 1
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
-; CHECK-NEXT: Stores with blemished addr: 0
+; CHECK-NEXT: Stores with blemished16 addr: 0
+; CHECK-NEXT: Stores with blemished32 addr: 0
+; CHECK-NEXT: Stores with blemished64 addr: 0
+; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 2
 ; CHECK-NEXT: Stores with unknown addr: 0
 define i32 @half_dirty(i32 %arg) {
 start:
   %initialptr = alloca [16 x i32]  ; clean
   %castedptr = bitcast [16 x i32]* %initialptr to i32*  ; clean
-  %ptr = getelementptr i32, i32* %castedptr, i32 5  ; dirty
+  %ptr = getelementptr i32, i32* %castedptr, i32 %arg  ; dirty
   %cond = icmp ugt i32 %arg, 4
   br i1 %cond, label %branch1, label %branch2
 

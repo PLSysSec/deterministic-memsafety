@@ -5,26 +5,41 @@
 ; CHECK-LABEL: DLIM dynamic counts
 ; CHECK-NEXT: =====
 ; CHECK-NEXT: Loads with clean addr: 1
-; CHECK-NEXT: Loads with blemished addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 1
-; CHECK-NEXT: Stores with blemished addr: 0
+; CHECK-NEXT: Stores with blemished16 addr: 0
+; CHECK-NEXT: Stores with blemished32 addr: 0
+; CHECK-NEXT: Stores with blemished64 addr: 0
+; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 143
 ; CHECK-NEXT: Storing a clean ptr to mem: 0
-; CHECK-NEXT: Storing a blemished ptr to mem: 0
+; CHECK-NEXT: Storing a blemished16 ptr to mem: 0
+; CHECK-NEXT: Storing a blemished32 ptr to mem: 0
+; CHECK-NEXT: Storing a blemished64 ptr to mem: 0
+; CHECK-NEXT: Storing a blemishedconst ptr to mem: 0
 ; CHECK-NEXT: Storing a dirty ptr to mem: 0
 ; CHECK-NEXT: Storing an unknown ptr to mem: 0
 ; CHECK-NEXT: Passing a clean ptr to a func: 1
-; CHECK-NEXT: Passing a blemished ptr to a func: 0
+; CHECK-NEXT: Passing a blemished16 ptr to a func: 0
+; CHECK-NEXT: Passing a blemished32 ptr to a func: 0
+; CHECK-NEXT: Passing a blemished64 ptr to a func: 0
+; CHECK-NEXT: Passing a blemishedconst ptr to a func: 0
 ; CHECK-NEXT: Passing a dirty ptr to a func: 0
 ; CHECK-NEXT: Passing an unknown ptr to a func: 0
 ; CHECK-NEXT: Returning a clean ptr from a func: 0
-; CHECK-NEXT: Returning a blemished ptr from a func: 0
+; CHECK-NEXT: Returning a blemished16 ptr from a func: 0
+; CHECK-NEXT: Returning a blemished32 ptr from a func: 0
+; CHECK-NEXT: Returning a blemished64 ptr from a func: 0
+; CHECK-NEXT: Returning a blemishedconst ptr from a func: 0
 ; CHECK-NEXT: Returning a dirty ptr from a func: 0
 ; CHECK-NEXT: Returning an unknown ptr from a func: 0
-; CHECK-NEXT: Producing a ptr (assumed dirty) from inttoptr: 0
+; CHECK-NEXT: Producing a ptr from inttoptr: 0
 
 define i32 @main() {
   %ptr = alloca i32, align 4
