@@ -13,6 +13,12 @@ cd build
 ninja
 ```
 
+For a release (optimized) build, you can add `-DCMAKE_BUILD_TYPE=Release` or
+`-DCMAKE_BUILD_TYPE=RelWithDebInfo` to the `cmake` command.
+
+Once you've built the first time, if you've made changes and want to rebuild,
+you don't have to run `cmake` again---just use `ninja`.
+
 ## Running tests
 
 To run all LLVM regression tests, run `ninja check-llvm` from the `llvm/build` directory.
