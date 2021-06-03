@@ -39,6 +39,13 @@
 ; CHECK-NEXT: Returning a blemishedconst ptr from a func: 0
 ; CHECK-NEXT: Returning a dirty ptr from a func: 0
 ; CHECK-NEXT: Returning an unknown ptr from a func: 0
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a clean ptr: 0
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished16 ptr: 0
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished32 ptr: 0
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished64 ptr: 0
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemishedconst ptr: 0
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a dirty ptr: 0
+; CHECK-NEXT: Nonzero constant pointer arithmetic on an unknown ptr: 0
 ; CHECK-NEXT: Producing a ptr from inttoptr: 0
 
 define i32 @main() {

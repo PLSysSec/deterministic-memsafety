@@ -293,6 +293,9 @@ public:
     StaticCounts passed_ptrs;
     // How many times are we returning a clean/dirty pointer from a function
     StaticCounts returned_ptrs;
+    // What kinds of pointers are we doing (non-zero, but constant) pointer
+    // arithmetic on? This doesn't count accessing struct fields
+    StaticCounts pointer_arith_const;
     // How many times did we produce a pointer via a 'inttoptr' instruction
     unsigned inttoptrs;
   } StaticResults;
@@ -323,6 +326,9 @@ public:
     DynamicCounts passed_ptrs;
     // How many times are we returning a clean/dirty pointer from a function
     DynamicCounts returned_ptrs;
+    // What kinds of pointers are we doing (non-zero, but constant) pointer
+    // arithmetic on? This doesn't count accessing struct fields
+    DynamicCounts pointer_arith_const;
     // How many times did we produce a pointer via a 'inttoptr' instruction
     Constant* inttoptrs;
   } DynamicResults;
@@ -396,6 +402,13 @@ public:
     dbgs() << "Returning a blemishedconst ptr from a func: " << results.returned_ptrs.blemishedconst << "\n";
     dbgs() << "Returning a dirty ptr from a func: " << results.returned_ptrs.dirty << "\n";
     dbgs() << "Returning an unknown ptr from a func: " << results.returned_ptrs.unknown << "\n";
+    dbgs() << "Nonzero constant pointer arithmetic on a clean ptr: " << results.pointer_arith_const.clean << "\n";
+    dbgs() << "Nonzero constant pointer arithmetic on a blemished16 ptr: " << results.pointer_arith_const.blemished16 << "\n";
+    dbgs() << "Nonzero constant pointer arithmetic on a blemished32 ptr: " << results.pointer_arith_const.blemished32 << "\n";
+    dbgs() << "Nonzero constant pointer arithmetic on a blemished64 ptr: " << results.pointer_arith_const.blemished64 << "\n";
+    dbgs() << "Nonzero constant pointer arithmetic on a blemishedconst ptr: " << results.pointer_arith_const.blemishedconst << "\n";
+    dbgs() << "Nonzero constant pointer arithmetic on a dirty ptr: " << results.pointer_arith_const.dirty << "\n";
+    dbgs() << "Nonzero constant pointer arithmetic on an unknown ptr: " << results.pointer_arith_const.unknown << "\n";
     dbgs() << "Producing a ptr from inttoptr: " << results.inttoptrs << "\n";
     dbgs() << "\n";
   }
@@ -557,7 +570,7 @@ private:
             break;
           }
           case Instruction::GetElementPtr: {
-            const GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
+            GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
             const Value* input_ptr = gep.getPointerOperand();
             PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
             APInt offset = APInt(/* bits = */ 64, /* val = */ 0);
@@ -580,68 +593,93 @@ private:
               } else {
                 ptr_statuses.mark_as(&gep, input_kind);
               }
-            } else if (input_kind == CLEAN) {
-              // result of a GEP with any nonzero indices, on a CLEAN pointer,
-              // is either DIRTY or BLEMISHED depending on how far the pointer
-              // arithmetic goes.
-              if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
-                ptr_statuses.mark_blemished16(&gep);
-              } else if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
-                ptr_statuses.mark_blemished32(&gep);
-              } else if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ 64))) {
-                ptr_statuses.mark_blemished64(&gep);
-              } else if (offsetIsConstant) {
-                // offset is constant, but larger than 64 bytes
-                ptr_statuses.mark_blemishedconst(&gep);
-              } else {
-                // offset is not constant; so, result is dirty
-                ptr_statuses.mark_dirty(&gep);
-              }
-            } else if (input_kind == BLEMISHED16) {
-              // result of a GEP with any nonzero indices, on a BLEMISHED16 pointer,
-              // is either more-BLEMISHED or DIRTY depending on how far the
-              // pointer arithmetic goes.
-              if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
-                // Conservatively, the total offset can't exceed 32
-                ptr_statuses.mark_blemished32(&gep);
-              } else if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ 48))) {
-                // Conservatively, the total offset can't exceed 64
-                ptr_statuses.mark_blemished64(&gep);
-              } else if (offsetIsConstant) {
-                // offset is constant, but may be larger than 64 bytes
-                ptr_statuses.mark_blemishedconst(&gep);
-              } else {
-                // offset is not constant
-                ptr_statuses.mark_dirty(&gep);
-              }
-            } else if (input_kind == BLEMISHED32) {
-              // result of a GEP with any nonzero indices, on a BLEMISHED32 pointer,
-              // is either more-BLEMISHED or DIRTY depending on how far the
-              // pointer arithmetic goes.
-              if (offsetIsConstant && offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
-                // Conservatively, the total offset can't exceed 64
-                ptr_statuses.mark_blemished64(&gep);
-              } else if (offsetIsConstant) {
-                // offset is constant, but may be larger than 64 bytes
-                ptr_statuses.mark_blemishedconst(&gep);
-              } else {
-                // offset is not constant
-                ptr_statuses.mark_dirty(&gep);
-              }
-            } else if (input_kind == BLEMISHED64 || input_kind == BLEMISHEDCONST) {
-              // result of a GEP with any nonzero indices, on a BLEMISHED64 or
-              // BLEMISHEDCONST pointer, is either BLEMISHEDCONST or DIRTY
-              // depending on if the total offset is still a compile-time
-              // constant or not.
-              if (offsetIsConstant) {
-                ptr_statuses.mark_blemishedconst(&gep);
-              } else {
-                ptr_statuses.mark_dirty(&gep);
+            } else if (offsetIsConstant) {
+              switch (input_kind) {
+                case CLEAN: {
+                  COUNT_PTR(&gep, pointer_arith_const, clean)
+                  // This GEP adds a constant but nonzero amount to a CLEAN
+                  // pointer. The result is some flavor of BLEMISHED depending
+                  // on how far the pointer arithmetic goes.
+                  if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
+                    ptr_statuses.mark_blemished16(&gep);
+                  } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
+                    ptr_statuses.mark_blemished32(&gep);
+                  } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 64))) {
+                    ptr_statuses.mark_blemished64(&gep);
+                  } else {
+                    // offset is constant, but larger than 64 bytes
+                    ptr_statuses.mark_blemishedconst(&gep);
+                  }
+                  break;
+                }
+                case BLEMISHED16: {
+                  COUNT_PTR(&gep, pointer_arith_const, blemished16)
+                  // This GEP adds a constant but nonzero amount to a
+                  // BLEMISHED16 pointer. The result is some flavor of BLEMISHED
+                  // depending on how far the pointer arithmetic goes.
+                  if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
+                    // Conservatively, the total offset can't exceed 32
+                    ptr_statuses.mark_blemished32(&gep);
+                  } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 48))) {
+                    // Conservatively, the total offset can't exceed 64
+                    ptr_statuses.mark_blemished64(&gep);
+                  } else {
+                    // offset is constant, but may be larger than 64 bytes
+                    ptr_statuses.mark_blemishedconst(&gep);
+                  }
+                  break;
+                }
+                case BLEMISHED32: {
+                  COUNT_PTR(&gep, pointer_arith_const, blemished32)
+                  // This GEP adds a constant but nonzero amount to a
+                  // BLEMISHED32 pointer. The result is some flavor of BLEMISHED
+                  // depending on how far the pointer arithmetic goes.
+                  if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
+                    // Conservatively, the total offset can't exceed 64
+                    ptr_statuses.mark_blemished64(&gep);
+                  } else {
+                    // offset is constant, but may be larger than 64 bytes
+                    ptr_statuses.mark_blemishedconst(&gep);
+                  }
+                  break;
+                }
+                case BLEMISHED64: {
+                  COUNT_PTR(&gep, pointer_arith_const, blemished64)
+                  // This GEP adds a constant but nonzero amount to a
+                  // BLEMISHED64 pointer. The result is BLEMISHEDCONST, as we
+                  // can't prove the total constant offset remains 64 or less.
+                  ptr_statuses.mark_blemishedconst(&gep);
+                  break;
+                }
+                case BLEMISHEDCONST: {
+                  COUNT_PTR(&gep, pointer_arith_const, blemishedconst)
+                  // This GEP adds a constant but nonzero amount to a
+                  // BLEMISHEDCONST pointer. The result is still BLEMISHEDCONST,
+                  // as the total offset is still a constant.
+                  ptr_statuses.mark_blemishedconst(&gep);
+                  break;
+                }
+                case DIRTY: {
+                  COUNT_PTR(&gep, pointer_arith_const, dirty)
+                  // result of a GEP with any nonzero indices, on a DIRTY or
+                  // UNKNOWN pointer, is always DIRTY.
+                  ptr_statuses.mark_dirty(&gep);
+                  break;
+                }
+                case UNKNOWN: {
+                  COUNT_PTR(&gep, pointer_arith_const, unknown)
+                  // result of a GEP with any nonzero indices, on a DIRTY or
+                  // UNKNOWN pointer, is always DIRTY.
+                  ptr_statuses.mark_dirty(&gep);
+                  break;
+                }
+                default: {
+                  assert(false && "Missing PointerKind case");
+                  break;
+                }
               }
             } else {
-              assert(input_kind == DIRTY || input_kind == UNKNOWN);
-              // result of a GEP with any nonzero indices, on a DIRTY or UNKNOWN
-              // pointer, is always DIRTY.
+              // offset is not constant; so, result is dirty
               ptr_statuses.mark_dirty(&gep);
             }
             break;
@@ -797,8 +835,9 @@ private:
     DynamicCounts store_vals = initializeDynamicCounts("__DLIM_store_vals");
     DynamicCounts passed_ptrs = initializeDynamicCounts("__DLIM_passed_ptrs");
     DynamicCounts returned_ptrs = initializeDynamicCounts("__DLIM_returned_ptrs");
+    DynamicCounts pointer_arith_const = initializeDynamicCounts("__DLIM_pointer_arith_const");
     Constant* inttoptrs = findOrCreateGlobalCounter("__DLIM_inttoptrs");
-    return DynamicResults { load_addrs, store_addrs, store_vals, passed_ptrs, returned_ptrs, inttoptrs };
+    return DynamicResults { load_addrs, store_addrs, store_vals, passed_ptrs, returned_ptrs, pointer_arith_const, inttoptrs };
   }
 
   DynamicCounts initializeDynamicCounts(StringRef thingToCount) {
@@ -889,6 +928,13 @@ private:
     output += "Returning a blemishedconst ptr from a func: %llu\n";
     output += "Returning a dirty ptr from a func: %llu\n";
     output += "Returning an unknown ptr from a func: %llu\n";
+    output += "Nonzero constant pointer arithmetic on a clean ptr: %llu\n";
+    output += "Nonzero constant pointer arithmetic on a blemished16 ptr: %llu\n";
+    output += "Nonzero constant pointer arithmetic on a blemished32 ptr: %llu\n";
+    output += "Nonzero constant pointer arithmetic on a blemished64 ptr: %llu\n";
+    output += "Nonzero constant pointer arithmetic on a blemishedconst ptr: %llu\n";
+    output += "Nonzero constant pointer arithmetic on a dirty ptr: %llu\n";
+    output += "Nonzero constant pointer arithmetic on an unknown ptr: %llu\n";
     output += "Producing a ptr from inttoptr: %llu\n";
     output += "\n";
 
@@ -953,6 +999,13 @@ private:
         Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.blemishedconst),
         Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.dirty),
         Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.blemished16),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.blemished32),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.blemished64),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.blemishedconst),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.unknown),
         Builder.CreateLoad(i64ty, dynamic_results.inttoptrs),
       });
       Builder.CreateRetVoid();
@@ -1066,6 +1119,13 @@ private:
         Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.blemishedconst),
         Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.dirty),
         Builder.CreateLoad(i64ty, dynamic_results.returned_ptrs.unknown),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.clean),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.blemished16),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.blemished32),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.blemished64),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.blemishedconst),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.dirty),
+        Builder.CreateLoad(i64ty, dynamic_results.pointer_arith_const.unknown),
         Builder.CreateLoad(i64ty, dynamic_results.inttoptrs),
       });
       FunctionType* FcloseTy = FunctionType::get(i32ty, {FileStarTy}, false);

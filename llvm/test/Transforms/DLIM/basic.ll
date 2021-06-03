@@ -83,6 +83,7 @@ define i8 @bitcast_clean(i32 %arg) {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
 define i32 @blemished16_load() {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
@@ -107,6 +108,7 @@ define i32 @blemished16_load() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
 define i32 @blemished32_load() {
   %ptr = alloca [64 x i32]
   %castedptr = bitcast [64 x i32]* %ptr to i32*
@@ -131,6 +133,7 @@ define i32 @blemished32_load() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
 define i32 @blemished64_load() {
   %ptr = alloca [64 x i32]
   %castedptr = bitcast [64 x i32]* %ptr to i32*
@@ -155,6 +158,7 @@ define i32 @blemished64_load() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
 define i32 @blemishedconst_load() {
   %ptr = alloca [64 x i32]
   %castedptr = bitcast [64 x i32]* %ptr to i32*
@@ -179,6 +183,7 @@ define i32 @blemishedconst_load() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 0
 define i32 @dirty_load(i32 %arg) {
   %ptr = alloca [64 x i32]
   %castedptr = bitcast [64 x i32]* %ptr to i32*
@@ -203,6 +208,7 @@ define i32 @dirty_load(i32 %arg) {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 0
 define i32 @gep_still_clean() {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
@@ -227,6 +233,8 @@ define i32 @gep_still_clean() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a blemished16 ptr: 0
 define i32 @gep_still_blemished() {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
@@ -253,6 +261,8 @@ define i32 @gep_still_blemished() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a blemished16 ptr: 1
 define i8 @double_blemished() {
   %ptr = alloca [64 x i8]
   %castedptr = bitcast [64 x i8]* %ptr to i8*
@@ -279,6 +289,11 @@ define i8 @double_blemished() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a blemished16 ptr: 0
+; CHECK: Nonzero constant pointer arithmetic on a blemished32 ptr: 0
+; CHECK: Nonzero constant pointer arithmetic on a blemished64 ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a blemishedconst ptr: 0
 define i8 @double_blemishedconst() {
   %ptr = alloca [64 x i8]
   %castedptr = bitcast [64 x i8]* %ptr to i8*
@@ -304,6 +319,8 @@ define i8 @double_blemishedconst() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a blemished16 ptr: 0
 define i8 @blemished_to_dirty(i32 %arg) {
   %ptr = alloca [64 x i8]
   %castedptr = bitcast [64 x i8]* %ptr to i8*
@@ -664,6 +681,7 @@ define i8 @globals_clean() {
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 1
 ; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on an unknown ptr: 1
 define void @gep_on_unk(i32* %arg) {
   %gepptr = getelementptr i32, i32* %arg, i32 1
   store i32 3, i32* %gepptr
