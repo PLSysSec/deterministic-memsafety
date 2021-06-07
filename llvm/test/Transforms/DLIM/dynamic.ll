@@ -7,12 +7,12 @@
 ; CHECK-NEXT: Loads with clean addr: 1
 ; CHECK-NEXT: Loads with blemished16 addr: 0
 ; CHECK-NEXT: Loads with blemished32 addr: 0
-; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 1
 ; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 1
-; CHECK-NEXT: Stores with blemished16 addr: 0
+; CHECK-NEXT: Stores with blemished16 addr: 1
 ; CHECK-NEXT: Stores with blemished32 addr: 0
 ; CHECK-NEXT: Stores with blemished64 addr: 0
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
@@ -39,7 +39,7 @@
 ; CHECK-NEXT: Returning a blemishedconst ptr from a func: 0
 ; CHECK-NEXT: Returning a dirty ptr from a func: 0
 ; CHECK-NEXT: Returning an unknown ptr from a func: 0
-; CHECK-NEXT: Nonzero constant pointer arithmetic on a clean ptr: 0
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a clean ptr: 2
 ; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished16 ptr: 0
 ; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished32 ptr: 0
 ; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished64 ptr: 0
@@ -49,10 +49,15 @@
 ; CHECK-NEXT: Producing a ptr from inttoptr: 0
 
 define i32 @main() {
-  %ptr = alloca i32, align 4
-  store volatile i32 7, i32* %ptr, align 4 ; clean store
-  %call = call i32 @foo(i32* nonnull %ptr)
-  %loaded = load volatile i32, i32* %ptr, align 4 ; clean load
+  %ptr = alloca [64 x i32], align 4
+  %castedptr = bitcast [64 x i32]* %ptr to i32*
+  store volatile i32 7, i32* %castedptr, align 4 ; clean store
+  %blemptr = getelementptr i32, i32* %castedptr, i32 1 ; blemished16 pointer
+  store volatile i32 9, i32* %blemptr, align 4 ; blemished16 store
+  %call = call i32 @foo(i32* nonnull %castedptr)
+  %loaded = load volatile i32, i32* %castedptr, align 4 ; clean load
+  %blem64ptr = getelementptr i32, i32* %castedptr, i32 10 ; blemished64 pointer
+  %loaded2 = load volatile i32, i32* %blem64ptr, align 4 ; blemished64 load
   ret i32 0
 }
 
