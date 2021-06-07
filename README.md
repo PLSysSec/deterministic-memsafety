@@ -3,6 +3,11 @@
 DLIM implementation is at `llvm/lib/Transforms/Utils/DLIM.cpp`, and DLIM tests
 are at `llvm/test/Transforms/DLIM`.
 
+There is also a script `summarize_dynamic_counts.sh` in the root of this repo
+which is useful for collecting results from running dynamically instrumented
+programs -- i.e., the data in the dynamically generated `dlim_dynamic_counts`
+directories.
+
 ## Building
 
 To build, use the following:
