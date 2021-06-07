@@ -77,18 +77,20 @@ define i8 @bitcast_clean(i32 %arg) {
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
-; CHECK-NEXT: Stores with blemished16 addr: 0
+; CHECK-NEXT: Stores with blemished16 addr: 1
 ; CHECK-NEXT: Stores with blemished32 addr: 0
 ; CHECK-NEXT: Stores with blemished64 addr: 0
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
-; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 2
 define i32 @blemished16_load() {
   %ptr = alloca [16 x i32]
   %castedptr = bitcast [16 x i32]* %ptr to i32*
   %newptr = getelementptr i32, i32* %castedptr, i32 4
   %res = load i32, i32* %newptr
+  %newptr2 = getelementptr i32, i32* %castedptr, i32 4
+  store i32 2, i32* %newptr2
   ret i32 %res
 }
 
@@ -103,17 +105,19 @@ define i32 @blemished16_load() {
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with blemished16 addr: 0
-; CHECK-NEXT: Stores with blemished32 addr: 0
+; CHECK-NEXT: Stores with blemished32 addr: 1
 ; CHECK-NEXT: Stores with blemished64 addr: 0
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
-; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 2
 define i32 @blemished32_load() {
   %ptr = alloca [64 x i32]
   %castedptr = bitcast [64 x i32]* %ptr to i32*
   %newptr = getelementptr i32, i32* %castedptr, i32 5
   %res = load i32, i32* %newptr
+  %newptr2 = getelementptr i32, i32* %castedptr, i32 5
+  store i32 2, i32* %newptr2
   ret i32 %res
 }
 
@@ -129,16 +133,18 @@ define i32 @blemished32_load() {
 ; CHECK-NEXT: Stores with clean addr: 0
 ; CHECK-NEXT: Stores with blemished16 addr: 0
 ; CHECK-NEXT: Stores with blemished32 addr: 0
-; CHECK-NEXT: Stores with blemished64 addr: 0
+; CHECK-NEXT: Stores with blemished64 addr: 1
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
-; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 2
 define i32 @blemished64_load() {
   %ptr = alloca [64 x i32]
   %castedptr = bitcast [64 x i32]* %ptr to i32*
   %newptr = getelementptr i32, i32* %castedptr, i32 16
   %res = load i32, i32* %newptr
+  %newptr2 = getelementptr i32, i32* %castedptr, i32 16
+  store i32 2, i32* %newptr2
   ret i32 %res
 }
 
@@ -155,15 +161,17 @@ define i32 @blemished64_load() {
 ; CHECK-NEXT: Stores with blemished16 addr: 0
 ; CHECK-NEXT: Stores with blemished32 addr: 0
 ; CHECK-NEXT: Stores with blemished64 addr: 0
-; CHECK-NEXT: Stores with blemishedconst addr: 0
+; CHECK-NEXT: Stores with blemishedconst addr: 1
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 0
-; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 2
 define i32 @blemishedconst_load() {
   %ptr = alloca [64 x i32]
   %castedptr = bitcast [64 x i32]* %ptr to i32*
   %newptr = getelementptr i32, i32* %castedptr, i32 50
   %res = load i32, i32* %newptr
+  %newptr2 = getelementptr i32, i32* %castedptr, i32 50
+  store i32 2, i32* %newptr2
   ret i32 %res
 }
 
@@ -181,7 +189,7 @@ define i32 @blemishedconst_load() {
 ; CHECK-NEXT: Stores with blemished32 addr: 0
 ; CHECK-NEXT: Stores with blemished64 addr: 0
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
-; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with dirty addr: 1
 ; CHECK-NEXT: Stores with unknown addr: 0
 ; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 0
 define i32 @dirty_load(i32 %arg) {
@@ -189,6 +197,8 @@ define i32 @dirty_load(i32 %arg) {
   %castedptr = bitcast [64 x i32]* %ptr to i32*
   %newptr = getelementptr i32, i32* %castedptr, i32 %arg
   %res = load i32, i32* %newptr
+  %newptr2 = getelementptr i32, i32* %castedptr, i32 %arg
+  store i32 2, i32* %newptr2
   ret i32 %res
 }
 
@@ -201,7 +211,7 @@ define i32 @dirty_load(i32 %arg) {
 ; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
-; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with clean addr: 1
 ; CHECK-NEXT: Stores with blemished16 addr: 0
 ; CHECK-NEXT: Stores with blemished32 addr: 0
 ; CHECK-NEXT: Stores with blemished64 addr: 0
@@ -214,6 +224,8 @@ define i32 @gep_still_clean() {
   %castedptr = bitcast [16 x i32]* %ptr to i32*
   %newptr = getelementptr i32, i32* %castedptr, i32 0
   %res = load i32, i32* %newptr
+  %newptr2 = getelementptr i32, i32* %castedptr, i32 0
+  store i32 2, i32* %newptr2
   ret i32 %res
 }
 
