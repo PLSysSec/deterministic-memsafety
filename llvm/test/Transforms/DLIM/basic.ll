@@ -649,6 +649,18 @@ define void @func_ret() {
   ret void
 }
 
+; This checks that pointers returned from calls to functions named "malloc" are
+; considered CLEAN.
+; CHECK-LABEL: malloc_ret
+; CHECK: Stores with clean addr: 1
+; CHECK: Stores with unknown addr: 0
+declare noalias noundef i8* @malloc(i64 noundef)
+define void @malloc_ret() {
+  %ptr1 = call noalias dereferenceable_or_null(4) i8* @malloc(i64 4)
+  store volatile i8 3, i8* %ptr1
+  ret void
+}
+
 ; This checks that pointers loaded from memory are considered UNKNOWN
 ; (which is our current assumption).
 ; CHECK-LABEL: from_mem

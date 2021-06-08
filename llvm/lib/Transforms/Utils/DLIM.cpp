@@ -18,6 +18,7 @@ using namespace llvm;
 #define DEBUG_TYPE "DLIM"
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
+static bool isAllocatingCall(const CallBase &call);
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str);
 static std::string regexSubAll(const Regex &R, const StringRef Repl, const StringRef String);
 
@@ -744,8 +745,14 @@ private:
                 }
               }
             }
-            // For now, mark pointers returned from calls as UNKNOWN
-            ptr_statuses.mark_unknown(&call);
+            // If this is an allocating call (eg, a call to `malloc`), then the
+            // returned pointer is CLEAN
+            if (isAllocatingCall(call)) {
+              ptr_statuses.mark_clean(&call);
+            } else {
+              // For now, mark pointers returned from other calls as UNKNOWN
+              ptr_statuses.mark_unknown(&call);
+            }
             break;
           }
           case Instruction::ExtractValue: {
@@ -1240,6 +1247,26 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
   }
   // if we get here without finding a non-trustworthy index, then we're all good
   return true;
+}
+
+static bool isAllocatingCall(const CallBase &call) {
+  Function* callee = call.getCalledFunction();
+  if (!callee) {
+    // we assume indirect calls aren't allocating
+    return false;
+  }
+  if (!callee->hasName()) {
+    // we assume anonymous functions aren't allocating
+    return false;
+  }
+  StringRef name = callee->getName();
+  if (name == "malloc"
+    || name == "realloc"
+    || name == "calloc"
+    || name == "zalloc") {
+    return true;
+  }
+  return false;
 }
 
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str) {
