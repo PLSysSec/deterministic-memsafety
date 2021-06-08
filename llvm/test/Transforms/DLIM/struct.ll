@@ -55,15 +55,15 @@ define i8 @load_first_from_blemished_struct() {
   ret i8 %res
 }
 
-; but loading the second element of a struct from a BLEMISHED struct pointer is
-; a dirty load
+; but loading the second element of a struct from a BLEMISHED16 struct pointer is
+; (in this case) a BLEMISHED32 load
 ; CHECK-LABEL: load_second_from_blemished_struct
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with blemished16 addr: 0
-; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 1
 ; CHECK-NEXT: Loads with blemished64 addr: 0
 ; CHECK-NEXT: Loads with blemishedconst addr: 0
-; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i8 @load_second_from_blemished_struct() {
   %ptr = alloca [4 x { i8, i8 }]

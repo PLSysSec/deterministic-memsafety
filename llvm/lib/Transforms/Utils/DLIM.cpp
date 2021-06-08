@@ -580,19 +580,10 @@ private:
               // result of a GEP with all zeroes as indices, is the same as the input pointer.
               assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
               ptr_statuses.mark_as(&gep, input_kind);
-            } else if (trustLLVMStructTypes && areAllIndicesTrustworthy(gep)) {
-              // nonzero offset, but "trustworthy" offset.
-              // here output pointer is the same kind as input pointer.
-              // but as an exception, if input pointer was blemished, this is
-              // still an increment, so output pointer is dirty.
-              if (input_kind == BLEMISHED16
-                || input_kind == BLEMISHED32
-                || input_kind == BLEMISHED64
-                || input_kind == BLEMISHEDCONST) {
-                ptr_statuses.mark_dirty(&gep);
-              } else {
-                ptr_statuses.mark_as(&gep, input_kind);
-              }
+            } else if (trustLLVMStructTypes && input_kind == CLEAN && areAllIndicesTrustworthy(gep)) {
+              // nonzero offset, but "trustworthy" offset, from a clean pointer.
+              // The resulting pointer is clean.
+              ptr_statuses.mark_clean(&gep);
             } else if (offsetIsConstant) {
               switch (input_kind) {
                 case CLEAN: {
