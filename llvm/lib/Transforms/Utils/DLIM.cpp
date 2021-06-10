@@ -6,6 +6,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
@@ -20,7 +21,7 @@ using namespace llvm;
 #define DEBUG_TYPE "DLIM"
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
-static bool isOffsetAnInductionPattern(const GetElementPtrInst &gep, const LoopInfo &loopinfo, const PostDominatorTree &pdtree, /* output */ APInt* out_induction_offset, /* output */ APInt* out_initial_offset);
+static bool isOffsetAnInductionPattern(const GetElementPtrInst &gep, const DataLayout &DL, const LoopInfo &loopinfo, const PostDominatorTree &pdtree, /* output */ APInt* out_induction_offset, /* output */ APInt* out_initial_offset);
 static bool isInductionVar(const Value* val, /* output */ APInt* out_induction_increment, /* output */ APInt* out_initial_val);
 static bool isValuePlusConstant(const Value* val, /* output */ const Value** out_val, /* output */ APInt* out_const);
 static bool isAllocatingCall(const CallBase &call);
@@ -614,12 +615,13 @@ private:
             PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
             APInt offset = APInt(/* bits = */ 64, /* val = */ 0);
             // `offset` is only valid if `offsetIsConstant`
-            bool offsetIsConstant = gep.accumulateConstantOffset(F.getParent()->getDataLayout(), offset);
+            const DataLayout& DL = F.getParent()->getDataLayout();
+            bool offsetIsConstant = gep.accumulateConstantOffset(DL, offset);
             APInt induction_offset;
             APInt initial_offset;
             const LoopInfo& loopinfo = FAM.getResult<LoopAnalysis>(F);
             const PostDominatorTree& pdtree = FAM.getResult<PostDominatorTreeAnalysis>(F);
-            if (isOffsetAnInductionPattern(gep, loopinfo, pdtree, &induction_offset, &initial_offset)
+            if (isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree, &induction_offset, &initial_offset)
               && induction_offset.isNonNegative()
               && initial_offset.isNonNegative())
             {
@@ -1308,6 +1310,7 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
 /// subsequent loop iteration.
 static bool isOffsetAnInductionPattern(
   const GetElementPtrInst &gep,
+  const DataLayout &DL,
   const LoopInfo& loopinfo,
   const PostDominatorTree& pdtree,
   /* output */ APInt* out_induction_offset,
@@ -1375,8 +1378,14 @@ static bool isOffsetAnInductionPattern(
       }
     }
     if (success) {
-      *out_initial_offset = std::move(initial_val);
-      *out_induction_offset = std::move(induction_increment);
+      // we have the constant initial_val and induction_increment.
+      // but we still need to scale them by the size of the underlying array
+      // elements, in order to get the GEP offsets.
+      auto element_size = DL.getTypeStoreSize(gep.getSourceElementType()).getFixedSize();
+      assert(element_size > 0);
+      APInt ap_element_size = APInt(/* bits = */ 64, /* val = */ element_size);
+      *out_initial_offset = initial_val * ap_element_size;
+      *out_induction_offset = induction_increment * ap_element_size;
       return true;
     } else {
       LLVM_DEBUG(dbgs() << "DLIM:     but failed the dereference-inside-loop check\n");

@@ -152,6 +152,68 @@ done:
   ret i32 %newsum2
 }
 
+; Here, in each iteration the pointer is 24 more than it was in the previous
+; iteration. So, the load should be BLEMISHED32
+; CHECK-LABEL: loop_larger_stride
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 1
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
+define i64 @loop_larger_stride(i32 %len) {
+entry:
+  %allocated = alloca [64 x i64]
+  %arr = bitcast [64 x i64]* %allocated to i64*
+  br label %loop
+
+loop:
+  %i = phi i32 [ %new_i, %loop ], [ 0, %entry ]
+  %sum = phi i64 [ %newsum, %loop ], [ 0, %entry ]
+  %arrptr = getelementptr i64, i64* %arr, i32 %i
+  %loaded = load i64, i64* %arrptr
+  %newsum = add i64 %sum, %loaded
+  %new_i = add i32 %i, 3
+  %cmp = icmp ult i32 %new_i, %len
+  br i1 %cmp, label %loop, label %done
+
+done:
+  ret i64 %newsum
+}
+
+; Here, in each iteration the pointer is 30 more than it was in the previous
+; iteration. So, the load should be BLEMISHED32. (The important part of this
+; test is that the array is of i16, which is different from i8 and from the
+; pointer size)
+; CHECK-LABEL: loop_another_larger_stride
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 1
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
+define i16 @loop_another_larger_stride(i32 %len) {
+entry:
+  %allocated = alloca [64 x i16]
+  %arr = bitcast [64 x i16]* %allocated to i16*
+  br label %loop
+
+loop:
+  %i = phi i32 [ %new_i, %loop ], [ 0, %entry ]
+  %sum = phi i16 [ %newsum, %loop ], [ 0, %entry ]
+  %arrptr = getelementptr i16, i16* %arr, i32 %i
+  %loaded = load i16, i16* %arrptr
+  %newsum = add i16 %sum, %loaded
+  %new_i = add i32 %i, 15
+  %cmp = icmp ult i32 %new_i, %len
+  br i1 %cmp, label %loop, label %done
+
+done:
+  ret i16 %newsum
+}
+
 ; In this case, since we _might not_ dereference the pointer in _every_ iteration,
 ; we can't use the induction assumption. This access has to be dirty.
 ; CHECK-LABEL: loop_might_not_deref
