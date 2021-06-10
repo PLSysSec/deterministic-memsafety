@@ -6,6 +6,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
@@ -96,12 +97,24 @@ static PointerKind merge(const PointerKind a, const PointerKind b) {
   }
 }
 
+static PointerKind classifyGEPResult(const GetElementPtrInst &gep, const PointerKind input_kind, const DataLayout &DL, const bool trustLLVMStructTypes, const APInt* override_constant_offset, /* output */ bool* offsetIsNonzeroConstant);
+
 /// Conceptually stores the PointerKind of all currently valid pointers at a
 /// particular program point.
 class PointerStatuses {
 public:
-  PointerStatuses() {}
-  ~PointerStatuses() {}
+  PointerStatuses(const DataLayout &DL, const bool trustLLVMStructTypes)
+    : DL(DL), trustLLVMStructTypes(trustLLVMStructTypes) {}
+
+  PointerStatuses(const PointerStatuses& other)
+    : DL(other.DL), trustLLVMStructTypes(other.trustLLVMStructTypes), map(other.map) {}
+
+  PointerStatuses operator=(const PointerStatuses& other) {
+    assert(DL == other.DL);
+    assert(trustLLVMStructTypes == other.trustLLVMStructTypes);
+    map = other.map;
+    return *this;
+  }
 
   void mark_clean(const Value* ptr) {
     mark_as(ptr, CLEAN);
@@ -144,8 +157,31 @@ public:
   PointerKind getStatus(const Value* ptr) const {
     auto it = map.find(ptr);
     if (it == map.end()) {
-      return NOTDEFINEDYET;
+      // not found in map. Is this a constant-GEP of another pointer?
+      if (const ConstantExpr* expr = dyn_cast<ConstantExpr>(ptr)) {
+        if (expr->isGEPWithNoNotionalOverIndexing()) {
+          // this seems sufficient to consider the pointer clean, based on docs
+          // of this method. GEP on a constant pointer, with constant indices,
+          // that LLVM thinks are all in-bounds
+          return CLEAN;
+        }
+        if (expr->getOpcode() == Instruction::GetElementPtr) {
+          // constant-GEP expression
+          const Instruction* inst = expr->getAsInstruction();
+          const GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
+          bool dontcare;
+          return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL, &dontcare);
+        } else {
+          // constant expression, but not a constant-GEP.
+          // For now we don't handle these.
+          assert(false && "getting status of constant expression which isn't a constant-GEP");
+        }
+      } else {
+        // not found in map, and not a constant expression.
+        return NOTDEFINEDYET;
+      }
     } else {
+      // found in map
       return it->getSecond();
     }
   }
@@ -238,7 +274,9 @@ public:
   /// use the `PointerKind` `merge` function to combine the two results.
   /// Recall that any pointer not appearing in the `map` is considered NOTDEFINEDYET.
   static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b) {
-    PointerStatuses merged;
+    assert(a.DL == b.DL);
+    assert(a.trustLLVMStructTypes == b.trustLLVMStructTypes);
+    PointerStatuses merged(a.DL, a.trustLLVMStructTypes);
     for (const auto& pair : a.map) {
       const Value* ptr = pair.getFirst();
       const PointerKind kind_in_a = pair.getSecond();
@@ -267,6 +305,8 @@ public:
   }
 
 private:
+  const DataLayout &DL;
+  const bool trustLLVMStructTypes;
   /// Pointers not appearing in this map are considered NOTLIVE.
   /// As a corollary, hopefully all pointers which are currently live do appear
   /// in this map.
@@ -276,8 +316,8 @@ private:
 /// This holds the per-block state for the analysis
 class PerBlockState {
 public:
-  PerBlockState() {}
-  ~PerBlockState() {}
+  PerBlockState(const DataLayout &DL, const bool trustLLVMStructTypes)
+    : ptrs_beg(PointerStatuses(DL, trustLLVMStructTypes)), ptrs_end(PointerStatuses(DL, trustLLVMStructTypes)) {}
 
   /// The status of all pointers at the _beginning_ of the block.
   PointerStatuses ptrs_beg;
@@ -300,7 +340,7 @@ public:
   /// `inttoptr` instructions, i.e., by casting an integer to a pointer. This
   /// can be any `PointerKind` -- e.g., CLEAN, DIRTY, UNKNOWN, etc.
   DLIMAnalysis(Function &F, FunctionAnalysisManager &FAM, bool trustLLVMStructTypes, PointerKind inttoptr_kind)
-    : F(F), FAM(FAM), trustLLVMStructTypes(trustLLVMStructTypes), inttoptr_kind(inttoptr_kind) {
+    : F(F), FAM(FAM), DL(F.getParent()->getDataLayout()), trustLLVMStructTypes(trustLLVMStructTypes), inttoptr_kind(inttoptr_kind) {
     initialize_block_states();
   }
   ~DLIMAnalysis() {}
@@ -452,24 +492,25 @@ public:
 private:
   Function &F;
   FunctionAnalysisManager &FAM;
-  bool trustLLVMStructTypes;
-  PointerKind inttoptr_kind;
+  const DataLayout &DL;
+  const bool trustLLVMStructTypes;
+  const PointerKind inttoptr_kind;
 
-  DenseMap<const BasicBlock*, PerBlockState> block_states;
+  DenseMap<const BasicBlock*, PerBlockState*> block_states;
 
   void initialize_block_states() {
     for (const BasicBlock &block : F) {
       block_states.insert(
-        std::pair<const BasicBlock*, PerBlockState>(&block, PerBlockState())
+        std::pair<const BasicBlock*, PerBlockState*>(&block, new PerBlockState(DL, trustLLVMStructTypes))
       );
     }
 
     // For now, if any function parameters are pointers,
     // mark them UNKNOWN in the function's entry block
-    PerBlockState& entry_block_pbs = block_states[&F.getEntryBlock()];
+    PerBlockState* entry_block_pbs = block_states[&F.getEntryBlock()];
     for (const Argument& arg : F.args()) {
       if (arg.getType()->isPointerTy()) {
-        entry_block_pbs.ptrs_beg.mark_unknown(&arg);
+        entry_block_pbs->ptrs_beg.mark_unknown(&arg);
       }
     }
 
@@ -477,7 +518,7 @@ private:
     // (if the global variable itself is a pointer, it's still implicitly dirty)
     for (const GlobalVariable& gv : F.getParent()->globals()) {
       assert(gv.getType()->isPointerTy());
-      entry_block_pbs.ptrs_beg.mark_clean(&gv);
+      entry_block_pbs->ptrs_beg.mark_clean(&gv);
     }
   }
 
@@ -493,39 +534,41 @@ private:
     bool changed = false;
 
     for (BasicBlock &block : F) {
-      PerBlockState& pbs = block_states[&block];
+      PerBlockState* pbs = block_states[&block];
+      StringRef blockname;
       if (block.hasName()) {
-        LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << block.getName() << " which previously had " << pbs.ptrs_beg.describe() << " at beginning and " << pbs.ptrs_end.describe() << " at end\n");
+        blockname = block.getName();
       } else {
-        LLVM_DEBUG(dbgs() << "DLIM: analyzing block which previously had " << pbs.ptrs_beg.describe() << " at beginning and " << pbs.ptrs_end.describe() << " at end\n");
+        blockname = "";
       }
+      LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << blockname << " which previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
 
       // first: if any variable is clean at the end of all of this block's
       // predecessors, then it is also clean at the beginning of this block
       if (!block.hasNPredecessors(0)) {
         auto preds = pred_begin(&block);
         const BasicBlock* firstPred = *preds;
-        const PerBlockState& firstPred_pbs = block_states[firstPred];
+        const PerBlockState* firstPred_pbs = block_states[firstPred];
         // we start with all of the ptr_statuses at the end of our first predecessor,
         // then merge with the ptr_statuses at the end of our other predecessors
-        PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs.ptrs_end);
+        PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs->ptrs_end);
         LLVM_DEBUG(dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
         for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
           const BasicBlock* otherPred = *it;
-          const PerBlockState& otherPred_pbs = block_states[otherPred];
-          LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << otherPred_pbs.ptrs_end.describe() << " at end\n");
-          ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs.ptrs_end);
+          const PerBlockState* otherPred_pbs = block_states[otherPred];
+          LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
+          ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
         }
         // whatever's left is now the set of clean ptrs at beginning of this block
-        changed |= !ptr_statuses.isEqualTo(pbs.ptrs_beg);
-        pbs.ptrs_beg = std::move(ptr_statuses);
+        changed |= !ptr_statuses.isEqualTo(pbs->ptrs_beg);
+        pbs->ptrs_beg = std::move(ptr_statuses);
       }
-      LLVM_DEBUG(dbgs() << "DLIM:   at beginning of block, we now have " << pbs.ptrs_beg.describe() << "\n");
+      LLVM_DEBUG(dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
 
       // The current pointer statuses. This begins as `pbs.ptrs_beg`, and as we
       // go through the block, gets updated; its state at the end of the block
       // will become `pbs.ptrs_end`.
-      PointerStatuses ptr_statuses = PointerStatuses(pbs.ptrs_beg);
+      PointerStatuses ptr_statuses = PointerStatuses(pbs->ptrs_beg);
 
       #define COUNT_PTR(ptr, category, kind) \
         static_results.category.kind++; \
@@ -613,126 +656,36 @@ private:
             GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
             const Value* input_ptr = gep.getPointerOperand();
             PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
-            APInt offset = APInt(/* bits = */ 64, /* val = */ 0);
-            // `offset` is only valid if `offsetIsConstant`
-            const DataLayout& DL = F.getParent()->getDataLayout();
-            bool offsetIsConstant = gep.accumulateConstantOffset(DL, offset);
             APInt induction_offset;
             APInt initial_offset;
+            bool is_induction_pattern = false;
             const LoopInfo& loopinfo = FAM.getResult<LoopAnalysis>(F);
             const PostDominatorTree& pdtree = FAM.getResult<PostDominatorTreeAnalysis>(F);
             if (isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree, &induction_offset, &initial_offset)
               && induction_offset.isNonNegative()
               && initial_offset.isNonNegative())
             {
-              offsetIsConstant = true;
-              if (induction_offset.sge(initial_offset)) {
-                offset = std::move(induction_offset);
-              } else {
-                offset = std::move(initial_offset);
+              is_induction_pattern = true;
+              if (initial_offset.sge(induction_offset)) {
+                induction_offset = std::move(initial_offset);
               }
-              LLVM_DEBUG(dbgs() << "DLIM:   found an induction GEP with offset effectively constant " << offset << "\n");
+              LLVM_DEBUG(dbgs() << "DLIM:   found an induction GEP with offset effectively constant " << induction_offset << "\n");
             }
-            if (gep.hasAllZeroIndices()) {
-              // result of a GEP with all zeroes as indices, is the same as the input pointer.
-              assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
-              ptr_statuses.mark_as(&gep, input_kind);
-            } else if (trustLLVMStructTypes && input_kind == CLEAN && areAllIndicesTrustworthy(gep)) {
-              // nonzero offset, but "trustworthy" offset, from a clean pointer.
-              // The resulting pointer is clean.
-              ptr_statuses.mark_clean(&gep);
-            } else if (offsetIsConstant) {
+            bool offsetIsNonzeroConstant;
+            ptr_statuses.mark_as(&gep, classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, is_induction_pattern ? &induction_offset : NULL, &offsetIsNonzeroConstant));
+            // if we added a nonzero constant to a pointer, count that for stats purposes
+            if (offsetIsNonzeroConstant) {
               switch (input_kind) {
-                case CLEAN: {
-                  COUNT_PTR(&gep, pointer_arith_const, clean)
-                  // This GEP adds a constant but nonzero amount to a CLEAN
-                  // pointer. The result is some flavor of BLEMISHED depending
-                  // on how far the pointer arithmetic goes.
-                  if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
-                    ptr_statuses.mark_blemished16(&gep);
-                  } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
-                    ptr_statuses.mark_blemished32(&gep);
-                  } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 64))) {
-                    ptr_statuses.mark_blemished64(&gep);
-                  } else {
-                    // offset is constant, but larger than 64 bytes
-                    ptr_statuses.mark_blemishedconst(&gep);
-                  }
-                  break;
-                }
-                case BLEMISHED16: {
-                  COUNT_PTR(&gep, pointer_arith_const, blemished16)
-                  // This GEP adds a constant but nonzero amount to a
-                  // BLEMISHED16 pointer. The result is some flavor of BLEMISHED
-                  // depending on how far the pointer arithmetic goes.
-                  if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
-                    // Conservatively, the total offset can't exceed 32
-                    ptr_statuses.mark_blemished32(&gep);
-                  } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 48))) {
-                    // Conservatively, the total offset can't exceed 64
-                    ptr_statuses.mark_blemished64(&gep);
-                  } else {
-                    // offset is constant, but may be larger than 64 bytes
-                    ptr_statuses.mark_blemishedconst(&gep);
-                  }
-                  break;
-                }
-                case BLEMISHED32: {
-                  COUNT_PTR(&gep, pointer_arith_const, blemished32)
-                  // This GEP adds a constant but nonzero amount to a
-                  // BLEMISHED32 pointer. The result is some flavor of BLEMISHED
-                  // depending on how far the pointer arithmetic goes.
-                  if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
-                    // Conservatively, the total offset can't exceed 64
-                    ptr_statuses.mark_blemished64(&gep);
-                  } else {
-                    // offset is constant, but may be larger than 64 bytes
-                    ptr_statuses.mark_blemishedconst(&gep);
-                  }
-                  break;
-                }
-                case BLEMISHED64: {
-                  COUNT_PTR(&gep, pointer_arith_const, blemished64)
-                  // This GEP adds a constant but nonzero amount to a
-                  // BLEMISHED64 pointer. The result is BLEMISHEDCONST, as we
-                  // can't prove the total constant offset remains 64 or less.
-                  ptr_statuses.mark_blemishedconst(&gep);
-                  break;
-                }
-                case BLEMISHEDCONST: {
-                  COUNT_PTR(&gep, pointer_arith_const, blemishedconst)
-                  // This GEP adds a constant but nonzero amount to a
-                  // BLEMISHEDCONST pointer. The result is still BLEMISHEDCONST,
-                  // as the total offset is still a constant.
-                  ptr_statuses.mark_blemishedconst(&gep);
-                  break;
-                }
-                case DIRTY: {
-                  COUNT_PTR(&gep, pointer_arith_const, dirty)
-                  // result of a GEP with any nonzero indices, on a DIRTY or
-                  // UNKNOWN pointer, is always DIRTY.
-                  ptr_statuses.mark_dirty(&gep);
-                  break;
-                }
-                case UNKNOWN: {
-                  COUNT_PTR(&gep, pointer_arith_const, unknown)
-                  // result of a GEP with any nonzero indices, on a DIRTY or
-                  // UNKNOWN pointer, is always DIRTY.
-                  ptr_statuses.mark_dirty(&gep);
-                  break;
-                }
-                case NOTDEFINEDYET: {
-                  assert(false && "GEP on a pointer with no status");
-                  break;
-                }
-                default: {
-                  assert(false && "Missing PointerKind case");
-                  break;
-                }
+                case CLEAN: COUNT_PTR(&gep, pointer_arith_const, clean) break;
+                case BLEMISHED16: COUNT_PTR(&gep, pointer_arith_const, blemished16) break;
+                case BLEMISHED32: COUNT_PTR(&gep, pointer_arith_const, blemished32) break;
+                case BLEMISHED64: COUNT_PTR(&gep, pointer_arith_const, blemished64) break;
+                case BLEMISHEDCONST: COUNT_PTR(&gep, pointer_arith_const, blemishedconst) break;
+                case DIRTY: COUNT_PTR(&gep, pointer_arith_const, dirty) break;
+                case UNKNOWN: COUNT_PTR(&gep, pointer_arith_const, unknown) break;
+                case NOTDEFINEDYET: assert(false && "GEP on a pointer with no status"); break;
+                default: assert(false && "PointerKind case not handled");
               }
-            } else {
-              // offset is not constant; so, result is dirty
-              ptr_statuses.mark_dirty(&gep);
             }
             break;
           }
@@ -764,7 +717,7 @@ private:
               PointerKind merged_kind = CLEAN;
               for (const Use& use : phi.incoming_values()) {
                 const BasicBlock* bb = phi.getIncomingBlock(use);
-                auto& ptr_statuses_end_of_bb = block_states[bb].ptrs_end;
+                auto& ptr_statuses_end_of_bb = block_states[bb]->ptrs_end;
                 const Value* value = use.get();
                 merged_kind = merge(merged_kind, ptr_statuses_end_of_bb.getStatus(value));
               }
@@ -866,12 +819,12 @@ private:
       // Now that we've processed all the instructions, we have the final
       // statuses of pointers as of the end of the block
       LLVM_DEBUG(dbgs() << "DLIM:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-      const bool block_changed = !ptr_statuses.isEqualTo(pbs.ptrs_end);
+      const bool block_changed = !ptr_statuses.isEqualTo(pbs->ptrs_end);
       if (block_changed) {
         LLVM_DEBUG(dbgs() << "DLIM:   this was a change\n");
       }
       changed |= block_changed;
-      pbs.ptrs_end = std::move(ptr_statuses);
+      pbs->ptrs_end = std::move(ptr_statuses);
     }
 
     return changed;
@@ -1241,6 +1194,141 @@ PreservedAnalyses DynamicStdoutDLIMPass::run(Function &F, FunctionAnalysisManage
   // PreservedAnalyses::none() when they make any change, so we assume this is
   // reasonable.
   return PreservedAnalyses::none();
+}
+
+/// Classify the `PointerKind` of the result of the given `gep`, assuming that its
+/// input pointer is `input_kind`.
+/// This looks only at the `GetElementPtrInst` itself, and thus does not try to
+/// do any loop induction reasoning etc (that is done elsewhere).
+/// Think of this as giving the raw/default result for the `gep`.
+///
+/// `override_constant_offset`: if this is not NULL, then ignore the GEP's indices
+/// and classify it as if the offset were the given compile-time constant.
+///
+/// `offsetIsNonzeroConstant`: an output parameter. This function will write to
+/// `offsetIsNonzeroConstant` indicating if the total offset of the GEP was considered
+/// a nonzero constant or not. (If `override_constant_offset` is non-NULL, and
+/// nonzero, this will always be `true`, of course.)
+static PointerKind classifyGEPResult(
+  const GetElementPtrInst &gep,
+  const PointerKind input_kind,
+  const DataLayout &DL,
+  const bool trustLLVMStructTypes,
+  const APInt* override_constant_offset,
+  /* output */ bool* offsetIsNonzeroConstant
+) {
+  bool offsetIsConstant = false;
+  // `offset` is only valid if `offsetIsConstant`
+  APInt offset = APInt(/* bits = */ 64, /* val = */ 0);
+  if (override_constant_offset == NULL) {
+    offsetIsConstant = gep.accumulateConstantOffset(DL, offset);
+  } else {
+    offsetIsConstant = true;
+    offset = *override_constant_offset;
+  }
+
+  if (gep.hasAllZeroIndices()) {
+    // result of a GEP with all zeroes as indices, is the same as the input pointer.
+    assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
+    *offsetIsNonzeroConstant = false; // it's a zero constant
+    return input_kind;
+  }
+  if (trustLLVMStructTypes && input_kind == CLEAN && areAllIndicesTrustworthy(gep)) {
+    // nonzero offset, but "trustworthy" offset, from a clean pointer.
+    // The resulting pointer is clean.
+    *offsetIsNonzeroConstant = false; // we consider this a "zero" constant. For this purpose.
+    return CLEAN;
+  }
+
+  // if we get here, we don't have a zero constant offset. Either it's a nonzero constant,
+  // or a nonconstant.
+  *offsetIsNonzeroConstant = offsetIsConstant;
+  if (offsetIsConstant) {
+    switch (input_kind) {
+      case CLEAN: {
+        // This GEP adds a constant but nonzero amount to a CLEAN
+        // pointer. The result is some flavor of BLEMISHED depending
+        // on how far the pointer arithmetic goes.
+        if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
+          return BLEMISHED16;
+        } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
+          return BLEMISHED32;
+        } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 64))) {
+          return BLEMISHED64;
+        } else {
+          // offset is constant, but larger than 64 bytes
+          return BLEMISHEDCONST;
+        }
+        break;
+      }
+      case BLEMISHED16: {
+        // This GEP adds a constant but nonzero amount to a
+        // BLEMISHED16 pointer. The result is some flavor of BLEMISHED
+        // depending on how far the pointer arithmetic goes.
+        if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
+          // Conservatively, the total offset can't exceed 32
+          return BLEMISHED32;
+        } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 48))) {
+          // Conservatively, the total offset can't exceed 64
+          return BLEMISHED64;
+        } else {
+          // offset is constant, but may be larger than 64 bytes
+          return BLEMISHEDCONST;
+        }
+        break;
+      }
+      case BLEMISHED32: {
+        // This GEP adds a constant but nonzero amount to a
+        // BLEMISHED32 pointer. The result is some flavor of BLEMISHED
+        // depending on how far the pointer arithmetic goes.
+        if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
+          // Conservatively, the total offset can't exceed 64
+          return BLEMISHED64;
+        } else {
+          // offset is constant, but may be larger than 64 bytes
+          return BLEMISHEDCONST;
+        }
+        break;
+      }
+      case BLEMISHED64: {
+        // This GEP adds a constant but nonzero amount to a
+        // BLEMISHED64 pointer. The result is BLEMISHEDCONST, as we
+        // can't prove the total constant offset remains 64 or less.
+        return BLEMISHEDCONST;
+        break;
+      }
+      case BLEMISHEDCONST: {
+        // This GEP adds a constant but nonzero amount to a
+        // BLEMISHEDCONST pointer. The result is still BLEMISHEDCONST,
+        // as the total offset is still a constant.
+        return BLEMISHEDCONST;
+        break;
+      }
+      case DIRTY: {
+        // result of a GEP with any nonzero indices, on a DIRTY or
+        // UNKNOWN pointer, is always DIRTY.
+        return DIRTY;
+        break;
+      }
+      case UNKNOWN: {
+        // result of a GEP with any nonzero indices, on a DIRTY or
+        // UNKNOWN pointer, is always DIRTY.
+        return DIRTY;
+        break;
+      }
+      case NOTDEFINEDYET: {
+        assert(false && "GEP on a pointer with no status");
+        break;
+      }
+      default: {
+        assert(false && "Missing PointerKind case");
+        break;
+      }
+    }
+  } else {
+    // offset is not constant; so, result is dirty
+    return DIRTY;
+  }
 }
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
