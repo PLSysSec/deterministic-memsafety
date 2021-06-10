@@ -165,16 +165,21 @@ public:
           // that LLVM thinks are all in-bounds
           return CLEAN;
         }
-        if (expr->getOpcode() == Instruction::GetElementPtr) {
-          // constant-GEP expression
-          const Instruction* inst = expr->getAsInstruction();
-          const GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-          bool dontcare;
-          return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL, &dontcare);
-        } else {
-          // constant expression, but not a constant-GEP.
-          // For now we don't handle these.
-          assert(false && "getting status of constant expression which isn't a constant-GEP");
+        switch (expr->getOpcode()) {
+          case Instruction::BitCast: {
+            // bitcast doesn't change the status
+            return getStatus(expr->getOperand(0));
+          }
+          case Instruction::GetElementPtr: {
+            // constant-GEP expression
+            const Instruction* inst = expr->getAsInstruction();
+            const GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
+            bool dontcare;
+            return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL, &dontcare);
+          }
+          default: {
+            assert(false && "getting status of constant expression of unhandled opcode");
+          }
         }
       } else {
         // not found in map, and not a constant expression.
