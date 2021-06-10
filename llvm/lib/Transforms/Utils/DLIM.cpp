@@ -18,6 +18,9 @@ using namespace llvm;
 #define DEBUG_TYPE "DLIM"
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
+static bool isOffsetAnInductionPattern(const GetElementPtrInst &gep, /* output */ APInt* out_induction_offset, /* output */ APInt* out_initial_offset);
+static bool isInductionVar(const Value* val, /* output */ APInt* out_induction_increment, /* output */ APInt* out_initial_val);
+static bool isValuePlusConstant(const Value* val, /* output */ const Value** out_val, /* output */ APInt* out_const);
 static bool isAllocatingCall(const CallBase &call);
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str);
 static std::string regexSubAll(const Regex &R, const StringRef Repl, const StringRef String);
@@ -606,8 +609,22 @@ private:
             const Value* input_ptr = gep.getPointerOperand();
             PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
             APInt offset = APInt(/* bits = */ 64, /* val = */ 0);
-            const DataLayout& DL = F.getParent()->getDataLayout();
-            const bool offsetIsConstant = gep.accumulateConstantOffset(DL, offset);  // `offset` is only valid if `offsetIsConstant`
+            // `offset` is only valid if `offsetIsConstant`
+            bool offsetIsConstant = gep.accumulateConstantOffset(F.getParent()->getDataLayout(), offset);
+            APInt induction_offset;
+            APInt initial_offset;
+            if (isOffsetAnInductionPattern(gep, &induction_offset, &initial_offset)
+              && induction_offset.isNonNegative()
+              && initial_offset.isNonNegative())
+            {
+              offsetIsConstant = true;
+              if (induction_offset.sge(initial_offset)) {
+                offset = std::move(induction_offset);
+              } else {
+                offset = std::move(initial_offset);
+              }
+              LLVM_DEBUG(dbgs() << "DLIM:   found an induction GEP with offset effectively constant " << offset << "\n");
+            }
             if (gep.hasAllZeroIndices()) {
               // result of a GEP with all zeroes as indices, is the same as the input pointer.
               assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
@@ -1272,6 +1289,166 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
   }
   // if we get here without finding a non-trustworthy index, then we're all good
   return true;
+}
+
+/// Is the offset of the given GEP an induction pattern?
+/// This is looking for a pretty specific pattern for GEPs inside loops, which
+/// we can optimize checks for.
+///
+/// If this function identifies an induction pattern, it returns `true` and
+/// writes to `out_induction_offset` and `out_initial_offset`.
+/// The GEP has effectively the offset `out_initial_offset` during the first
+/// loop iteration, and the offset is incremented by `out_induction_offset` each
+/// subsequent loop iteration.
+static bool isOffsetAnInductionPattern(
+  const GetElementPtrInst &gep,
+  /* output */ APInt* out_induction_offset,
+  /* output */ APInt* out_initial_offset
+) {
+  LLVM_DEBUG(dbgs() << "DLIM:   Checking the following gep for induction:\n");
+  LLVM_DEBUG(gep.dump());
+  if (gep.getNumIndices() != 1) return false; // we only handle simple cases for now
+  for (const Use& idx_as_use : gep.indices()) {
+    // note that this for loop goes exactly one iteration, due to the check above.
+    // `idx` will be the one index of the GEP.
+    const Value* idx = idx_as_use.get();
+    APInt initial_val;
+    APInt induction_increment;
+    const Value* val;
+    APInt constant;
+    if (isInductionVar(idx, &induction_increment, &initial_val)) {
+      LLVM_DEBUG(dbgs() << "DLIM:     GEP single index is an induction var\n");
+      *out_initial_offset = std::move(initial_val);
+      *out_induction_offset = std::move(induction_increment);
+      return true;
+    } else if (isValuePlusConstant(idx, &val, &constant)) {
+      // GEP index is `val` plus `constant`. Let's see if `val` is itself an
+      // induction variable. This can happen if we are, say, accessing
+      // `arr[k+1]` in a loop over `k`
+      if (isInductionVar(val, &induction_increment, &initial_val)) {
+        LLVM_DEBUG(dbgs() << "DLIM:     GEP single index is an induction var plus a constant " << constant << "\n");
+        *out_initial_offset = initial_val + constant;  // the first iteration, it's the initial value of the induction variable plus the constant it's always modified by
+        *out_induction_offset = std::move(induction_increment);  // but the induction increment doesn't care about the constant modification
+        return true;
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+  assert(false && "should return from inside the for loop");
+}
+
+/// Is the given `val` an induction variable?
+/// Here, "induction variable" is narrowly defined as:
+///     a PHI between a constant (initial value) and a variable (induction)
+///     equal to itself plus or minus a constant
+///
+/// If so, returns `true` and writes to `out_induction_increment` and
+/// `out_initial_val`.
+/// `val` is equal to `out_initial_val` on the first loop iteration, and is
+/// incremented by `out_induction_increment` each iteration.
+static bool isInductionVar(
+  const Value* val,
+  /* output */ APInt* out_induction_increment,
+  /* output */ APInt* out_initial_val
+) {
+  if (const PHINode* phi = dyn_cast<PHINode>(val)) {
+    bool found_initial_val = false;
+    bool found_induction_increment = false;
+    APInt initial_val;
+    APInt induction_increment;
+    const Value* nonconstant_value;
+    for (const Use& use : phi->incoming_values()) {
+      const Value* phi_val = use.get();
+      if (const Constant* phi_val_const = dyn_cast<Constant>(phi_val)) {
+        if (found_initial_val) {
+          // two constants in this phi. For now, this isn't a pattern we'll consider for induction.
+          return false;
+        }
+        found_initial_val = true;
+        initial_val = phi_val_const->getUniqueInteger();
+      } else if (isValuePlusConstant(phi_val, &nonconstant_value, &induction_increment)) {
+        if (found_induction_increment) {
+          // two non-constants in this phi. For now, this isn't a pattern we'll consider for induction.
+          return false;
+        }
+        // we're looking for the case where we are adding or subbing a
+        // constant from the same value
+        if (nonconstant_value == val) {
+          found_induction_increment = true;
+        }
+      }
+    }
+    if (found_initial_val && found_induction_increment) {
+      initial_val = initial_val.sextOrSelf(64);
+      induction_increment = induction_increment.sextOrSelf(64);
+      LLVM_DEBUG(dbgs() << "DLIM:     Found an induction var, initial " << initial_val << " and induction " << induction_increment << "\n");
+      *out_initial_val = std::move(initial_val);
+      *out_induction_increment = std::move(induction_increment);
+      return true;
+    } else {
+      return false;
+    }
+  } else {
+    return false;
+  }
+}
+
+/// Is the given `val` defined as some other `Value` plus/minus a constant?
+/// If so, returns `true`, and writes to `out_val` and `out_const`, where `val`
+/// is defined as `out_val` plus `out_const`
+static bool isValuePlusConstant(
+  const Value* val,
+  /* output */ const Value** out_val,
+  /* output */ APInt* out_const
+) {
+  if (const BinaryOperator* bop = dyn_cast<BinaryOperator>(val)) {
+    switch (bop->getOpcode()) {
+      case Instruction::Add:
+      case Instruction::Sub:
+      {
+        bool found_constant_operand = false;
+        bool found_nonconstant_operand = false;
+        APInt constant_val;
+        const Value* nonconstant_val;
+        for (const Value* op : bop->operand_values()) {
+          if (const Constant* op_const = dyn_cast<Constant>(op)) {
+            if (found_constant_operand) {
+              // adding or subbing two constants. Shouldn't be valid LLVM, but we'll fail gracefully.
+              return false;
+            }
+            found_constant_operand = true;
+            constant_val = op_const->getUniqueInteger();
+            if (bop->getOpcode() == Instruction::Sub) {
+              constant_val = -constant_val;
+            }
+          } else {
+            if (found_nonconstant_operand) {
+              // two nonconstant operands
+              return false;
+            }
+            found_nonconstant_operand = true;
+            nonconstant_val = op;
+          }
+        }
+        if (found_constant_operand && found_nonconstant_operand) {
+          constant_val = constant_val.sextOrSelf(64);
+          *out_val = std::move(nonconstant_val);
+          *out_const = std::move(constant_val);
+          return true;
+        } else {
+          return false;
+        }
+      }
+      default: {
+        return false;
+      }
+    }
+  } else {
+    return false;
+  }
 }
 
 static bool isAllocatingCall(const CallBase &call) {
