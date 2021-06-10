@@ -151,3 +151,43 @@ loop:
 done:
   ret i32 %newsum2
 }
+
+; In this case, since we _might not_ dereference the pointer in _every_ iteration,
+; we can't use the induction assumption. This access has to be dirty.
+; CHECK-LABEL: loop_might_not_deref
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 2
+; CHECK-NEXT: Loads with unknown addr: 0
+declare i1 @should_load()
+define i32 @loop_might_not_deref(i32 %len) {
+entry:
+  %allocated = alloca [64 x i32]
+  %arr = bitcast [64 x i32]* %allocated to i32*
+  br label %loop
+
+loop:
+  %i = phi i32 [ %new_i, %finish_loop ], [ 0, %entry ]
+  %sum = phi i32 [ %newsum, %finish_loop ], [ 0, %entry ]
+  %arrptr = getelementptr i32, i32* %arr, i32 %i
+  %should_load = call i1 @should_load()
+  br i1 %should_load, label %do_load, label %finish_loop
+
+do_load:
+  %loaded = load i32, i32* %arrptr
+  %loaded_newsum = add i32 %sum, %loaded
+  br label %finish_loop
+
+finish_loop:
+  %newsum = phi i32 [ %loaded_newsum, %do_load ], [ %sum, %loop ]
+  %new_i = add i32 %i, 1
+  %cmp = icmp ult i32 %new_i, %len
+  br i1 %cmp, label %loop, label %done
+
+done:
+  %final_load = load i32, i32* %arrptr ; this one also has to be dirty - arrptr could have been incremented arbitrarily (dynamically) far since last deref
+  ret i32 %final_load
+}
