@@ -697,6 +697,11 @@ private:
             }
             break;
           }
+          case Instruction::AddrSpaceCast: {
+            const Value* input_ptr = inst.getOperand(0);
+            ptr_statuses.mark_as(&inst, ptr_statuses.getStatus(input_ptr));
+            break;
+          }
           case Instruction::Select: {
             const SelectInst& select = cast<SelectInst>(inst);
             if (select.getType()->isPointerTy()) {
