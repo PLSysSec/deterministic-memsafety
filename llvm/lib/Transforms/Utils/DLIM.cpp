@@ -785,20 +785,8 @@ private:
                 case BLEMISHED32: COUNT_PTR(&inst, returned_ptrs, blemished32) break;
                 case BLEMISHED64: COUNT_PTR(&inst, returned_ptrs, blemished64) break;
                 case BLEMISHEDCONST: COUNT_PTR(&inst, returned_ptrs, blemishedconst) break;
-                case DIRTY: {
-                  static_results.returned_ptrs.dirty++;
-                  if (instrument) {
-                    incrementGlobalCounter(dynamic_results->returned_ptrs.dirty, &inst);
-                  }
-                  break;
-                }
-                case UNKNOWN: {
-                  static_results.returned_ptrs.unknown++;
-                  if (instrument) {
-                    incrementGlobalCounter(dynamic_results->returned_ptrs.unknown, &inst);
-                  }
-                  break;
-                }
+                case DIRTY: COUNT_PTR(&inst, returned_ptrs, dirty) break;
+                case UNKNOWN: COUNT_PTR(&inst, returned_ptrs, unknown) break;
                 default: assert(false && "PointerKind case not handled");
               }
             }
