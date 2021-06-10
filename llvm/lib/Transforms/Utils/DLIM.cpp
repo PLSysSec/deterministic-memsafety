@@ -51,14 +51,27 @@ typedef enum PointerKind {
   // DIRTY means "may have been incremented by a non-compile-time-constant
   // amount (or decremented by any amount) since last allocated or dereferenced"
   DIRTY,
+  // NOTDEFINEDYET means that the pointer has not been defined yet at this program
+  // point (at least, to our current knowledge). All pointers are (effectively)
+  // initialized to NOTDEFINEDYET at the beginning of the fixpoint analysis, and
+  // as we iterate we gradually refine this.
+  NOTDEFINEDYET,
 } PointerKind;
 
 /// Merge two `PointerKind`s.
 /// For the purposes of this function, the ordering is
 /// DIRTY < UNKNOWN < BLEMISHEDCONST < BLEMISHED64 < BLEMISHED32 < BLEMISHED16 < CLEAN,
 /// and the merge returns the least element.
+/// NOTDEFINEDYET has the property where the merger of x and NOTDEFINEDYET is x
+/// (for all x) - for instance, if we are at a join point in the CFG where the
+/// pointer is x status on one incoming branch and not defined on the other,
+/// the pointer can have x status going forward.
 static PointerKind merge(const PointerKind a, const PointerKind b) {
-  if (a == DIRTY || b == DIRTY) {
+  if (a == NOTDEFINEDYET) {
+    return b;
+  } else if (b == NOTDEFINEDYET) {
+    return a;
+  } else if (a == DIRTY || b == DIRTY) {
     return DIRTY;
   } else if (a == UNKNOWN || b == UNKNOWN) {
     return UNKNOWN;
@@ -113,17 +126,19 @@ public:
   }
 
   void mark_as(const Value* ptr, PointerKind kind) {
+    // don't explicitly mark anything NOTDEFINEDYET - we reserve
+    // "not in the map" to mean NOTDEFINEDYET
+    assert(kind != NOTDEFINEDYET);
     // insert() does nothing if the key was already in the map.
     // instead, it appears we have to use operator[], which seems to
     // work whether or not `ptr` was already in the map
     map[ptr] = kind;
   }
 
-  PointerKind getStatus(const Value* ptr) {
+  PointerKind getStatus(const Value* ptr) const {
     auto it = map.find(ptr);
     if (it == map.end()) {
-      mark_dirty(ptr);
-      return DIRTY;
+      return NOTDEFINEDYET;
     } else {
       return it->getSecond();
     }
@@ -145,12 +160,12 @@ public:
       const auto& it = other.map.find(pair.getFirst());
       if (it == other.map.end()) {
         // key wasn't in other.map
-        if (pair.getSecond() == DIRTY) {
-          // missing from other.map, but marked DIRTY in this map: the maps are
-          // still equivalent (missing is implicitly DIRTY)
+        if (pair.getSecond() == NOTDEFINEDYET) {
+          // missing from other.map, but marked NOTDEFINEDYET in this map: the maps are
+          // still equivalent (missing is implicitly NOTDEFINEDYET)
           continue;
         } else {
-          // missing from other.map, but non-DIRTY in this map
+          // missing from other.map, but defined in this map
           return false;
         }
       }
@@ -164,12 +179,12 @@ public:
       const auto &it = map.find(pair.getFirst());
       if (it == map.end()) {
         // key wasn't in this map
-        if (pair.getSecond() == DIRTY) {
-          // missing from this map, but marked DIRTY in other.map: the maps are
-          // still equivalent (missing is implicitly DIRTY)
+        if (pair.getSecond() == NOTDEFINEDYET) {
+          // missing from this map, but marked NOTDEFINEDYET in other.map: the maps are
+          // still equivalent (missing is implicitly NOTDEFINEDYET)
           continue;
         } else {
-          // missing from this map, but non-DIRTY in other.map
+          // missing from this map, but defined in other.map
           return false;
         }
       }
@@ -215,7 +230,7 @@ public:
 
   /// Merge the two given PointerStatuses. If they disagree on any pointer,
   /// use the `PointerKind` `merge` function to combine the two results.
-  /// Recall that any pointer not appearing in the `map` is considered DIRTY.
+  /// Recall that any pointer not appearing in the `map` is considered NOTDEFINEDYET.
   static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b) {
     PointerStatuses merged;
     for (const auto& pair : a.map) {
@@ -224,18 +239,31 @@ public:
       const auto& it = b.map.find(ptr);
       PointerKind kind_in_b;
       if (it == b.map.end()) {
-        // implicitly DIRTY in b
-        kind_in_b = DIRTY;
+        // implicitly NOTDEFINEDYET in b
+        kind_in_b = NOTDEFINEDYET;
       } else {
         kind_in_b = it->getSecond();
       }
       merged.mark_as(ptr, ::merge(kind_in_a, kind_in_b));
     }
+    // at this point we've handled all the pointers which were defined in a.
+    // what's left is the pointers which were defined in b and NOTDEFINEDYET in a
+    for (const auto& pair : b.map) {
+      const Value* ptr = pair.getFirst();
+      const PointerKind kind_in_b = pair.getSecond();
+      const auto& it = a.map.find(ptr);
+      if (it == a.map.end()) {
+        // implicitly NOTDEFINEDYET in a
+        merged.mark_as(ptr, ::merge(NOTDEFINEDYET, kind_in_b));
+      }
+    }
     return merged;
   }
 
 private:
-  /// Pointers not appearing in this map are considered DIRTY.
+  /// Pointers not appearing in this map are considered NOTLIVE.
+  /// As a corollary, hopefully all pointers which are currently live do appear
+  /// in this map.
   SmallDenseMap<const Value*, PointerKind, 8> map;
 };
 
@@ -519,6 +547,7 @@ private:
                 case BLEMISHEDCONST: COUNT_PTR(&inst, store_vals, blemishedconst) break;
                 case DIRTY: COUNT_PTR(&inst, store_vals, dirty) break;
                 case UNKNOWN: COUNT_PTR(&inst, store_vals, unknown) break;
+                case NOTDEFINEDYET: assert(false && "Storing a pointer with no status"); break;
                 default: assert(false && "PointerKind case not handled");
               }
             }
@@ -533,6 +562,7 @@ private:
               case BLEMISHEDCONST: COUNT_PTR(&inst, store_addrs, blemishedconst) break;
               case DIRTY: COUNT_PTR(&inst, store_addrs, dirty) break;
               case UNKNOWN: COUNT_PTR(&inst, store_addrs, unknown) break;
+              case NOTDEFINEDYET: assert(false && "Storing to pointer with no status"); break;
               default: assert(false && "PointerKind case not handled");
             }
             // now, the pointer used as an address becomes clean
@@ -552,6 +582,7 @@ private:
               case BLEMISHEDCONST: COUNT_PTR(&inst, load_addrs, blemishedconst) break;
               case DIRTY: COUNT_PTR(&inst, load_addrs, dirty) break;
               case UNKNOWN: COUNT_PTR(&inst, load_addrs, unknown) break;
+              case NOTDEFINEDYET: assert(false && "Loading from pointer with no status"); break;
               default: assert(false && "PointerKind case not handled");
             }
             // now, the pointer becomes clean
@@ -665,6 +696,10 @@ private:
                   ptr_statuses.mark_dirty(&gep);
                   break;
                 }
+                case NOTDEFINEDYET: {
+                  assert(false && "GEP on a pointer with no status");
+                  break;
+                }
                 default: {
                   assert(false && "Missing PointerKind case");
                   break;
@@ -741,6 +776,7 @@ private:
                   case BLEMISHEDCONST: COUNT_PTR(&inst, passed_ptrs, blemishedconst) break;
                   case DIRTY: COUNT_PTR(&inst, passed_ptrs, dirty) break;
                   case UNKNOWN: COUNT_PTR(&inst, passed_ptrs, unknown) break;
+                  case NOTDEFINEDYET: assert(false && "Call argument is a pointer with no status"); break;
                   default: assert(false && "PointerKind case not handled");
                 }
               }
@@ -787,6 +823,7 @@ private:
                 case BLEMISHEDCONST: COUNT_PTR(&inst, returned_ptrs, blemishedconst) break;
                 case DIRTY: COUNT_PTR(&inst, returned_ptrs, dirty) break;
                 case UNKNOWN: COUNT_PTR(&inst, returned_ptrs, unknown) break;
+                case NOTDEFINEDYET: assert(false && "Returning a pointer with no status"); break;
                 default: assert(false && "PointerKind case not handled");
               }
             }

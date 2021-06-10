@@ -189,6 +189,46 @@ end:
   ret i32 %res
 }
 
+; This checks that you can jump through many blocks, then through a loop, and
+; the clean pointer still stays clean.
+; CHECK-LABEL: many_blocks_loop
+; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
+define i32 @many_blocks_loop(i32 %arg) {
+  %ptr = alloca i32, align 4
+  %cond = icmp sgt i32 %arg, 4
+  br i1 %cond, label %a, label %b
+
+a:
+  %res_a = add i32 %arg, 14
+  br label %end
+
+b:
+  br label %c
+
+c:
+  br label %d
+
+d:
+  %i = phi i32 [ %new_i, %d ], [ 0, %c ]
+  %new_i = add i32 %i, 1
+  %cmp = icmp ult i32 %i, %arg
+  br i1 %cmp, label %d, label %e
+
+e:
+  %res_e = load i32, i32* %ptr, align 4
+  br label %end
+
+end:
+  %res = phi i32 [ %res_e, %e ], [ %res_a, %a ]
+  ret i32 %res
+}
+
 ; This checks that loading from a PHI'd pointer, where both possibilities
 ; are clean, is a clean load.
 ; CHECK-LABEL: phi_both_clean
