@@ -563,7 +563,8 @@ private:
       } else {
         blockname = "";
       }
-      LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << blockname << " which previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
+      LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << blockname << "\n");
+      DEBUG_WITH_TYPE("DLIM-block-previous-state", dbgs() << "DLIM:   this block previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
 
       // first: if any variable is clean at the end of all of this block's
       // predecessors, then it is also clean at the beginning of this block
@@ -574,18 +575,18 @@ private:
         // we start with all of the ptr_statuses at the end of our first predecessor,
         // then merge with the ptr_statuses at the end of our other predecessors
         PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs->ptrs_end);
-        LLVM_DEBUG(dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
+        DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
         for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
           const BasicBlock* otherPred = *it;
           const PerBlockState* otherPred_pbs = block_states[otherPred];
-          LLVM_DEBUG(dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
+          DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
           ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
         }
         // whatever's left is now the set of clean ptrs at beginning of this block
         changed |= !ptr_statuses.isEqualTo(pbs->ptrs_beg);
         pbs->ptrs_beg = std::move(ptr_statuses);
       }
-      LLVM_DEBUG(dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
+      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
 
       // The current pointer statuses. This begins as `pbs.ptrs_beg`, and as we
       // go through the block, gets updated; its state at the end of the block
@@ -845,10 +846,10 @@ private:
 
       // Now that we've processed all the instructions, we have the final
       // statuses of pointers as of the end of the block
-      LLVM_DEBUG(dbgs() << "DLIM:   at end of block, we now have " << ptr_statuses.describe() << "\n");
+      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at end of block, we now have " << ptr_statuses.describe() << "\n");
       const bool block_changed = !ptr_statuses.isEqualTo(pbs->ptrs_end);
       if (block_changed) {
-        LLVM_DEBUG(dbgs() << "DLIM:   this was a change\n");
+        DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   this was a change\n");
       }
       changed |= block_changed;
       pbs->ptrs_end = std::move(ptr_statuses);
@@ -1388,8 +1389,8 @@ static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::o
 }
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
-  //LLVM_DEBUG(dbgs() << "Analyzing the following gep:\n");
-  //LLVM_DEBUG(gep.dump());
+  DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "Analyzing the following gep:\n");
+  DEBUG_WITH_TYPE("DLIM-trustworthy-indices", gep.dump());
   Type* current_ty = gep.getPointerOperandType();
   SmallVector<Constant*, 8> seen_indices;
   for (const Use& idx : gep.indices()) {
@@ -1398,32 +1399,32 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
       return false;
     }
     if (ConstantInt* c = dyn_cast<ConstantInt>(idx.get())) {
-      //LLVM_DEBUG(dbgs() << "Encountered constant index " << c->getSExtValue() << "\n");
-      //LLVM_DEBUG(dbgs() << "Current ty is " << *current_ty << "\n");
+      DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "Encountered constant index " << c->getSExtValue() << "\n");
+      DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "Current ty is " << *current_ty << "\n");
       seen_indices.push_back(cast<Constant>(c));
       if (c->isZero()) {
         // zero is always trustworthy
-        //LLVM_DEBUG(dbgs() << "zero is always trustworthy\n");
+        DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "zero is always trustworthy\n");
       } else {
         // constant, nonzero index
         if (seen_indices.size() == 1) {
           // the first time is just selecting the element of the implied array.
-          //LLVM_DEBUG(dbgs() << "indexing into an implicit array is not trustworthy\n");
+          DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "indexing into an implicit array is not trustworthy\n");
           return false;
         }
         const PointerType* current_ty_as_ptrtype = cast<const PointerType>(current_ty);
         const Type* current_pointee_ty = current_ty_as_ptrtype->getElementType();
-        //LLVM_DEBUG(dbgs() << "Current pointee ty is " << *current_pointee_ty << "\n");
+        DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "Current pointee ty is " << *current_pointee_ty << "\n");
         if (current_pointee_ty->isStructTy()) {
           // trustworthy
-          //LLVM_DEBUG(dbgs() << "indexing into a struct ty is trustworthy\n");
+          DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "indexing into a struct ty is trustworthy\n");
         } else if (current_pointee_ty->isArrayTy()) {
           // not trustworthy
-          //LLVM_DEBUG(dbgs() << "indexing into an array ty is not trustworthy\n");
+          DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "indexing into an array ty is not trustworthy\n");
           return false;
         } else {
           // implicit array type. e.g., indexing into an i32*.
-          //LLVM_DEBUG(dbgs() << "indexing into an implicit array is not trustworthy\n");
+          DEBUG_WITH_TYPE("DLIM-trustworthy-indices", dbgs() << "indexing into an implicit array is not trustworthy\n");
           return false;
         }
       }
@@ -1460,8 +1461,8 @@ static bool isOffsetAnInductionPattern(
   /* output */ APInt* out_induction_offset,
   /* output */ APInt* out_initial_offset
 ) {
-  //LLVM_DEBUG(dbgs() << "DLIM:   Checking the following gep for induction:\n");
-  //LLVM_DEBUG(gep.dump());
+  DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:   Checking the following gep for induction:\n");
+  DEBUG_WITH_TYPE("DLIM-loop-induction", gep.dump());
   if (gep.getNumIndices() != 1) return false; // we only handle simple cases for now
   for (const Use& idx_as_use : gep.indices()) {
     // note that this for loop goes exactly one iteration, due to the check above.
@@ -1473,14 +1474,14 @@ static bool isOffsetAnInductionPattern(
     APInt constant;
     bool success = false;
     if (isInductionVar(idx, &induction_increment, &initial_val)) {
-      //LLVM_DEBUG(dbgs() << "DLIM:     GEP single index is an induction var\n");
+      DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     GEP single index is an induction var\n");
       success = true;
     } else if (isValuePlusConstant(idx, &val, &constant)) {
       // GEP index is `val` plus `constant`. Let's see if `val` is itself an
       // induction variable. This can happen if we are, say, accessing
       // `arr[k+1]` in a loop over `k`
       if (isInductionVar(val, &induction_increment, &initial_val)) {
-        //LLVM_DEBUG(dbgs() << "DLIM:     GEP single index is an induction var plus a constant " << constant << "\n");
+        DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     GEP single index is an induction var plus a constant " << constant << "\n");
         initial_val = initial_val + constant;  // the first iteration, it's the initial value of the induction variable plus the constant it's always modified by
         // but the induction increment doesn't care about the constant modification
         success = true;
@@ -1532,7 +1533,7 @@ static bool isOffsetAnInductionPattern(
       *out_induction_offset = induction_increment * ap_element_size;
       return true;
     } else {
-      //LLVM_DEBUG(dbgs() << "DLIM:     but failed the dereference-inside-loop check\n");
+      DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     but failed the dereference-inside-loop check\n");
       return false;
     }
   }
@@ -1583,7 +1584,7 @@ static bool isInductionVar(
     if (found_initial_val && found_induction_increment) {
       initial_val = initial_val.sextOrSelf(64);
       induction_increment = induction_increment.sextOrSelf(64);
-      LLVM_DEBUG(dbgs() << "DLIM:     Found an induction var, initial " << initial_val << " and induction " << induction_increment << "\n");
+      DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     Found an induction var, initial " << initial_val << " and induction " << induction_increment << "\n");
       *out_initial_val = std::move(initial_val);
       *out_induction_increment = std::move(induction_increment);
       return true;
