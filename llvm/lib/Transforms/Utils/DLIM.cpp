@@ -787,13 +787,16 @@ private:
                 }
               }
             }
-            // If this is an allocating call (eg, a call to `malloc`), then the
-            // returned pointer is CLEAN
-            if (isAllocatingCall(call)) {
-              ptr_statuses.mark_clean(&call);
-            } else {
-              // For now, mark pointers returned from other calls as UNKNOWN
-              ptr_statuses.mark_unknown(&call);
+            // now classify the returned pointer, if the return value is a pointer
+            if (call.getType()->isPointerTy()) {
+              // If this is an allocating call (eg, a call to `malloc`), then the
+              // returned pointer is CLEAN
+              if (isAllocatingCall(call)) {
+                ptr_statuses.mark_clean(&call);
+              } else {
+                // For now, mark pointers returned from other calls as UNKNOWN
+                ptr_statuses.mark_unknown(&call);
+              }
             }
             break;
           }
