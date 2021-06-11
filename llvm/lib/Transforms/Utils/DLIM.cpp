@@ -368,7 +368,12 @@ public:
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())) {
     initialize_block_states();
   }
-  ~DLIMAnalysis() {}
+  ~DLIMAnalysis() {
+    // clean up the `PerBlockState`s which were created with `new`
+    for (auto& pair : block_states) {
+      delete pair.getSecond();
+    }
+  }
 
   typedef struct StaticCounts {
     unsigned clean;
@@ -548,7 +553,7 @@ private:
     }
 
     // Mark pointers to global variables as CLEAN in the function's entry block
-    // (if the global variable itself is a pointer, it's still implicitly dirty)
+    // (if the global variable itself is a pointer, it's still implicitly NOTDEFINEDYET)
     for (const GlobalVariable& gv : F.getParent()->globals()) {
       assert(gv.getType()->isPointerTy());
       entry_block_pbs->ptrs_beg.mark_clean(&gv);
