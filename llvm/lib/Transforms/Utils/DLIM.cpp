@@ -251,12 +251,33 @@ public:
 
   std::string describe() const {
     SmallVector<const Value*, 8> clean_ptrs = SmallVector<const Value*, 8>();
+    SmallVector<const Value*, 8> blem_ptrs = SmallVector<const Value*, 8>();
+    SmallVector<const Value*, 8> dirty_ptrs = SmallVector<const Value*, 8>();
     SmallVector<const Value*, 8> unk_ptrs = SmallVector<const Value*, 8>();
     for (auto& pair : map) {
-      if (pair.getSecond() == CLEAN) {
-        clean_ptrs.push_back(pair.getFirst());
-      } else if (pair.getSecond() == UNKNOWN) {
-        unk_ptrs.push_back(pair.getFirst());
+      const Value* ptr = pair.getFirst();
+      if (ptr->getNameOrAsOperand().rfind("__DLIM", 0) == 0) {
+        // name starts with __DLIM, skip it
+        continue;
+      }
+      switch (pair.getSecond()) {
+        case CLEAN:
+          clean_ptrs.push_back(ptr);
+          break;
+        case BLEMISHED16:
+        case BLEMISHED32:
+        case BLEMISHED64:
+        case BLEMISHEDCONST:
+          blem_ptrs.push_back(ptr);
+          break;
+        case DIRTY:
+          dirty_ptrs.push_back(ptr);
+          break;
+        case UNKNOWN:
+          unk_ptrs.push_back(ptr);
+          break;
+        default:
+          break;
       }
     }
     std::ostringstream out;
@@ -271,15 +292,90 @@ public:
         break;
       }
       default: {
-        out << clean_ptrs.size() << " clean ptrs (";
-        for (const Value* clean_ptr : clean_ptrs) {
-          out << clean_ptr->getNameOrAsOperand() << ", ";
+        if (clean_ptrs.size() <= 8) {
+          out << clean_ptrs.size() << " clean ptrs (";
+          for (const Value* clean_ptr : clean_ptrs) {
+            out << clean_ptr->getNameOrAsOperand() << ", ";
+          }
+          out << ")";
+        } else {
+          out << clean_ptrs.size() << " clean ptrs";
         }
-        out << ")";
         break;
       }
     }
-    out << " and " << unk_ptrs.size() << " unknown ptrs";
+    out << " and ";
+    switch (blem_ptrs.size()) {
+      case 0: {
+        out << "0 blem ptrs";
+        break;
+      }
+      case 1: {
+        const Value* blem_ptr = blem_ptrs[0];
+        out << "1 blem ptr (" << blem_ptr->getNameOrAsOperand() << ")";
+        break;
+      }
+      default: {
+        if (blem_ptrs.size() <= 8) {
+          out << blem_ptrs.size() << " blem ptrs (";
+          for (const Value* blem_ptr : blem_ptrs) {
+            out << blem_ptr->getNameOrAsOperand() << ", ";
+          }
+          out << ")";
+        } else {
+          out << blem_ptrs.size() << " blem ptrs";
+        }
+        break;
+      }
+    }
+    out << " and ";
+    switch (dirty_ptrs.size()) {
+      case 0: {
+        out << "0 dirty ptrs";
+        break;
+      }
+      case 1: {
+        const Value* dirty_ptr = dirty_ptrs[0];
+        out << "1 dirty ptr (" << dirty_ptr->getNameOrAsOperand() << ")";
+        break;
+      }
+      default: {
+        if (dirty_ptrs.size() <= 8) {
+          out << dirty_ptrs.size() << " dirty ptrs (";
+          for (const Value* dirty_ptr : dirty_ptrs) {
+            out << dirty_ptr->getNameOrAsOperand() << ", ";
+          }
+          out << ")";
+        } else {
+          out << dirty_ptrs.size() << " dirty ptrs";
+        }
+        break;
+      }
+    }
+    out << " and ";
+    switch (unk_ptrs.size()) {
+      case 0: {
+        out << "0 unk ptrs";
+        break;
+      }
+      case 1: {
+        const Value* unk_ptr = unk_ptrs[0];
+        out << "1 unk ptr (" << unk_ptr->getNameOrAsOperand() << ")";
+        break;
+      }
+      default: {
+        if (unk_ptrs.size() <= 8) {
+          out << unk_ptrs.size() << " unk ptrs (";
+          for (const Value* unk_ptr : unk_ptrs) {
+            out << unk_ptr->getNameOrAsOperand() << ", ";
+          }
+          out << ")";
+        } else {
+          out << unk_ptrs.size() << " unk ptrs";
+        }
+        break;
+      }
+    }
     return out.str();
   }
 
