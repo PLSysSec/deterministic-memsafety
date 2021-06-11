@@ -552,312 +552,318 @@ private:
   bool doIteration(StaticResults &static_results, DynamicResults* dynamic_results, bool instrument) {
     // Reset the static results - we'll collect them new
     static_results = { 0 };
-
     bool changed = false;
 
     for (BasicBlock &block : F) {
-      PerBlockState* pbs = block_states[&block];
-      StringRef blockname;
-      if (block.hasName()) {
-        blockname = block.getName();
-      } else {
-        blockname = "";
-      }
-      LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << blockname << "\n");
-      DEBUG_WITH_TYPE("DLIM-block-previous-state", dbgs() << "DLIM:   this block previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
-
-      // first: if any variable is clean at the end of all of this block's
-      // predecessors, then it is also clean at the beginning of this block
-      if (!block.hasNPredecessors(0)) {
-        auto preds = pred_begin(&block);
-        const BasicBlock* firstPred = *preds;
-        const PerBlockState* firstPred_pbs = block_states[firstPred];
-        // we start with all of the ptr_statuses at the end of our first predecessor,
-        // then merge with the ptr_statuses at the end of our other predecessors
-        PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs->ptrs_end);
-        DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
-        for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
-          const BasicBlock* otherPred = *it;
-          const PerBlockState* otherPred_pbs = block_states[otherPred];
-          DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
-          ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
-        }
-        // whatever's left is now the set of clean ptrs at beginning of this block
-        changed |= !ptr_statuses.isEqualTo(pbs->ptrs_beg);
-        pbs->ptrs_beg = std::move(ptr_statuses);
-      }
-      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
-
-      // The current pointer statuses. This begins as `pbs.ptrs_beg`, and as we
-      // go through the block, gets updated; its state at the end of the block
-      // will become `pbs.ptrs_end`.
-      PointerStatuses ptr_statuses = PointerStatuses(pbs->ptrs_beg);
-
-      #define COUNT_PTR(ptr, category, kind) \
-        static_results.category.kind++; \
-        if (instrument) { \
-          incrementGlobalCounter(dynamic_results->category.kind, (ptr)); \
-        }
-
-      // now: process each instruction
-      // the only way for a dirty pointer to become clean is by being dereferenced
-      // there is no way for a clean pointer to become dirty
-      // so we only need to worry about pointer dereferences, and instructions
-      // which produce pointers
-      // (and of course we want to statically count clean/dirty loads/stores)
-      for (Instruction &inst : block) {
-        switch (inst.getOpcode()) {
-          case Instruction::Store: {
-            const StoreInst& store = cast<StoreInst>(inst);
-            // first count the stored value (if it's a pointer)
-            const Value* storedVal = store.getValueOperand();
-            if (storedVal->getType()->isPointerTy()) {
-              const PointerKind kind = ptr_statuses.getStatus(storedVal);
-              switch (kind) {
-                case CLEAN: COUNT_PTR(&inst, store_vals, clean) break;
-                case BLEMISHED16: COUNT_PTR(&inst, store_vals, blemished16) break;
-                case BLEMISHED32: COUNT_PTR(&inst, store_vals, blemished32) break;
-                case BLEMISHED64: COUNT_PTR(&inst, store_vals, blemished64) break;
-                case BLEMISHEDCONST: COUNT_PTR(&inst, store_vals, blemishedconst) break;
-                case DIRTY: COUNT_PTR(&inst, store_vals, dirty) break;
-                case UNKNOWN: COUNT_PTR(&inst, store_vals, unknown) break;
-                case NOTDEFINEDYET: assert(false && "Storing a pointer with no status"); break;
-                default: assert(false && "PointerKind case not handled");
-              }
-            }
-            // next count the address
-            const Value* addr = store.getPointerOperand();
-            const PointerKind kind = ptr_statuses.getStatus(addr);
-            switch (kind) {
-              case CLEAN: COUNT_PTR(&inst, store_addrs, clean) break;
-              case BLEMISHED16: COUNT_PTR(&inst, store_addrs, blemished16) break;
-              case BLEMISHED32: COUNT_PTR(&inst, store_addrs, blemished32) break;
-              case BLEMISHED64: COUNT_PTR(&inst, store_addrs, blemished64) break;
-              case BLEMISHEDCONST: COUNT_PTR(&inst, store_addrs, blemishedconst) break;
-              case DIRTY: COUNT_PTR(&inst, store_addrs, dirty) break;
-              case UNKNOWN: COUNT_PTR(&inst, store_addrs, unknown) break;
-              case NOTDEFINEDYET: assert(false && "Storing to pointer with no status"); break;
-              default: assert(false && "PointerKind case not handled");
-            }
-            // now, the pointer used as an address becomes clean
-            ptr_statuses.mark_clean(addr);
-            break;
-          }
-          case Instruction::Load: {
-            const LoadInst& load = cast<LoadInst>(inst);
-            const Value* ptr = load.getPointerOperand();
-            // first count this for static stats
-            const PointerKind kind = ptr_statuses.getStatus(ptr);
-            switch (kind) {
-              case CLEAN: COUNT_PTR(&inst, load_addrs, clean) break;
-              case BLEMISHED16: COUNT_PTR(&inst, load_addrs, blemished16) break;
-              case BLEMISHED32: COUNT_PTR(&inst, load_addrs, blemished32) break;
-              case BLEMISHED64: COUNT_PTR(&inst, load_addrs, blemished64) break;
-              case BLEMISHEDCONST: COUNT_PTR(&inst, load_addrs, blemishedconst) break;
-              case DIRTY: COUNT_PTR(&inst, load_addrs, dirty) break;
-              case UNKNOWN: COUNT_PTR(&inst, load_addrs, unknown) break;
-              case NOTDEFINEDYET: assert(false && "Loading from pointer with no status"); break;
-              default: assert(false && "PointerKind case not handled");
-            }
-            // now, the pointer becomes clean
-            ptr_statuses.mark_clean(ptr);
-
-            if (load.getType()->isPointerTy()) {
-              // in this case, we loaded a pointer from memory, and have to
-              // worry about whether it's clean or not.
-              // For now, we mark it UNKNOWN.
-              ptr_statuses.mark_unknown(&load);
-            }
-            break;
-          }
-          case Instruction::Alloca: {
-            // result of an alloca is a clean pointer
-            ptr_statuses.mark_clean(&inst);
-            break;
-          }
-          case Instruction::GetElementPtr: {
-            GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
-            const Value* input_ptr = gep.getPointerOperand();
-            PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
-            APInt induction_offset;
-            APInt initial_offset;
-            bool is_induction_pattern = false;
-            const LoopInfo& loopinfo = FAM.getResult<LoopAnalysis>(F);
-            const PostDominatorTree& pdtree = FAM.getResult<PostDominatorTreeAnalysis>(F);
-            if (isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree, &induction_offset, &initial_offset)
-              && induction_offset.isNonNegative()
-              && initial_offset.isNonNegative())
-            {
-              is_induction_pattern = true;
-              if (initial_offset.sge(induction_offset)) {
-                induction_offset = std::move(initial_offset);
-              }
-              LLVM_DEBUG(dbgs() << "DLIM:   found an induction GEP with offset effectively constant " << induction_offset << "\n");
-            }
-            bool offsetIsNonzeroConstant;
-            ptr_statuses.mark_as(&gep, classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, is_induction_pattern ? &induction_offset : NULL, &offsetIsNonzeroConstant));
-            // if we added a nonzero constant to a pointer, count that for stats purposes
-            if (offsetIsNonzeroConstant) {
-              switch (input_kind) {
-                case CLEAN: COUNT_PTR(&gep, pointer_arith_const, clean) break;
-                case BLEMISHED16: COUNT_PTR(&gep, pointer_arith_const, blemished16) break;
-                case BLEMISHED32: COUNT_PTR(&gep, pointer_arith_const, blemished32) break;
-                case BLEMISHED64: COUNT_PTR(&gep, pointer_arith_const, blemished64) break;
-                case BLEMISHEDCONST: COUNT_PTR(&gep, pointer_arith_const, blemishedconst) break;
-                case DIRTY: COUNT_PTR(&gep, pointer_arith_const, dirty) break;
-                case UNKNOWN: COUNT_PTR(&gep, pointer_arith_const, unknown) break;
-                case NOTDEFINEDYET: assert(false && "GEP on a pointer with no status"); break;
-                default: assert(false && "PointerKind case not handled");
-              }
-            }
-            break;
-          }
-          case Instruction::BitCast: {
-            const BitCastInst& bitcast = cast<BitCastInst>(inst);
-            if (bitcast.getType()->isPointerTy()) {
-              const Value* input_ptr = bitcast.getOperand(0);
-              ptr_statuses.mark_as(&bitcast, ptr_statuses.getStatus(input_ptr));
-            }
-            break;
-          }
-          case Instruction::AddrSpaceCast: {
-            const Value* input_ptr = inst.getOperand(0);
-            ptr_statuses.mark_as(&inst, ptr_statuses.getStatus(input_ptr));
-            break;
-          }
-          case Instruction::Select: {
-            const SelectInst& select = cast<SelectInst>(inst);
-            if (select.getType()->isPointerTy()) {
-              // output is clean if both inputs are clean; etc
-              const Value* true_input = select.getTrueValue();
-              const Value* false_input = select.getFalseValue();
-              const PointerKind true_kind = ptr_statuses.getStatus(true_input);
-              const PointerKind false_kind = ptr_statuses.getStatus(false_input);
-              ptr_statuses.mark_as(&select, merge(true_kind, false_kind));
-            }
-            break;
-          }
-          case Instruction::PHI: {
-            const PHINode& phi = cast<PHINode>(inst);
-            if (phi.getType()->isPointerTy()) {
-              // phi: result kind is the merger of the kinds of all the inputs
-              // in their corresponding blocks
-              PointerKind merged_kind = CLEAN;
-              for (const Use& use : phi.incoming_values()) {
-                const BasicBlock* bb = phi.getIncomingBlock(use);
-                auto& ptr_statuses_end_of_bb = block_states[bb]->ptrs_end;
-                const Value* value = use.get();
-                merged_kind = merge(merged_kind, ptr_statuses_end_of_bb.getStatus(value));
-              }
-              ptr_statuses.mark_as(&phi, merged_kind);
-            }
-            break;
-          }
-          case Instruction::IntToPtr: {
-            // count this for stats, and then mark it as `inttoptr_kind`
-            static_results.inttoptrs++;
-            if (instrument) {
-              incrementGlobalCounter(dynamic_results->inttoptrs, &inst);
-            }
-            ptr_statuses.mark_as(&inst, inttoptr_kind);
-            break;
-          }
-          case Instruction::Call:
-          case Instruction::CallBr:
-          case Instruction::Invoke:
-          // all three of these are instructions which call functions, and we
-          // handle them the same
-          {
-            const CallBase& call = cast<CallBase>(inst);
-            // count call arguments for static stats
-            for (const Use& arg : call.args()) {
-              const Value* value = arg.get();
-              if (value->getType()->isPointerTy()) {
-                const PointerKind kind = ptr_statuses.getStatus(value);
-                switch (kind) {
-                  case CLEAN: COUNT_PTR(&inst, passed_ptrs, clean) break;
-                  case BLEMISHED16: COUNT_PTR(&inst, passed_ptrs, blemished16) break;
-                  case BLEMISHED32: COUNT_PTR(&inst, passed_ptrs, blemished32) break;
-                  case BLEMISHED64: COUNT_PTR(&inst, passed_ptrs, blemished64) break;
-                  case BLEMISHEDCONST: COUNT_PTR(&inst, passed_ptrs, blemishedconst) break;
-                  case DIRTY: COUNT_PTR(&inst, passed_ptrs, dirty) break;
-                  case UNKNOWN: COUNT_PTR(&inst, passed_ptrs, unknown) break;
-                  case NOTDEFINEDYET: assert(false && "Call argument is a pointer with no status"); break;
-                  default: assert(false && "PointerKind case not handled");
-                }
-              }
-            }
-            // now classify the returned pointer, if the return value is a pointer
-            if (call.getType()->isPointerTy()) {
-              // If this is an allocating call (eg, a call to `malloc`), then the
-              // returned pointer is CLEAN
-              if (isAllocatingCall(call)) {
-                ptr_statuses.mark_clean(&call);
-              } else {
-                // For now, mark pointers returned from other calls as UNKNOWN
-                ptr_statuses.mark_unknown(&call);
-              }
-            }
-            break;
-          }
-          case Instruction::ExtractValue: {
-            // this gets a pointer out of a field of a first-class struct (not a
-            // pointer-to-a-struct, so ptr_statuses doesn't have any information
-            // about this struct).
-            // the question is where did the struct come from.
-            // As I see it, probably either (a) we created the struct with
-            // insertvalue - in which case, ideally we'd give this result
-            // the same PointerKind as the original pointer which was inserted;
-            // or (b) we loaded the struct from memory (?), in which case we
-            // should just mark the result UNKNOWN per our current assumptions.
-            // So for now, we'll just mark UNKNOWN and move on
-            ptr_statuses.mark_unknown(&inst);
-            break;
-          }
-          case Instruction::ExtractElement: {
-            // same comments apply as for ExtractValue, basically
-            ptr_statuses.mark_unknown(&inst);
-            break;
-          }
-          case Instruction::Ret: {
-            const ReturnInst& ret = cast<ReturnInst>(inst);
-            const Value* retval = ret.getReturnValue();
-            if (retval && retval->getType()->isPointerTy()) {
-              const PointerKind kind = ptr_statuses.getStatus(retval);
-              switch (kind) {
-                case CLEAN: COUNT_PTR(&inst, returned_ptrs, clean) break;
-                case BLEMISHED16: COUNT_PTR(&inst, returned_ptrs, blemished16) break;
-                case BLEMISHED32: COUNT_PTR(&inst, returned_ptrs, blemished32) break;
-                case BLEMISHED64: COUNT_PTR(&inst, returned_ptrs, blemished64) break;
-                case BLEMISHEDCONST: COUNT_PTR(&inst, returned_ptrs, blemishedconst) break;
-                case DIRTY: COUNT_PTR(&inst, returned_ptrs, dirty) break;
-                case UNKNOWN: COUNT_PTR(&inst, returned_ptrs, unknown) break;
-                case NOTDEFINEDYET: assert(false && "Returning a pointer with no status"); break;
-                default: assert(false && "PointerKind case not handled");
-              }
-            }
-            break;
-          }
-          default:
-            if (inst.getType()->isPointerTy()) {
-              errs() << "Encountered a pointer-producing instruction which we don't have a case for. Does it produce a clean or dirty pointer?\n";
-              inst.dump();
-            }
-            break;
-        }
-      }
-
-      // Now that we've processed all the instructions, we have the final
-      // statuses of pointers as of the end of the block
-      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-      const bool block_changed = !ptr_statuses.isEqualTo(pbs->ptrs_end);
-      if (block_changed) {
-        DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   this was a change\n");
-      }
-      changed |= block_changed;
-      pbs->ptrs_end = std::move(ptr_statuses);
+      changed |= analyze_block(block, static_results, dynamic_results, instrument);
     }
 
+    return changed;
+  }
+
+  bool analyze_block(BasicBlock &block, StaticResults &static_results, DynamicResults* dynamic_results, bool instrument) {
+    PerBlockState* pbs = block_states[&block];
+    bool changed = false;
+
+    StringRef blockname;
+    if (block.hasName()) {
+      blockname = block.getName();
+    } else {
+      blockname = "";
+    }
+    LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << blockname << "\n");
+    DEBUG_WITH_TYPE("DLIM-block-previous-state", dbgs() << "DLIM:   this block previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
+
+    // first: if any variable is clean at the end of all of this block's
+    // predecessors, then it is also clean at the beginning of this block
+    if (!block.hasNPredecessors(0)) {
+      auto preds = pred_begin(&block);
+      const BasicBlock* firstPred = *preds;
+      const PerBlockState* firstPred_pbs = block_states[firstPred];
+      // we start with all of the ptr_statuses at the end of our first predecessor,
+      // then merge with the ptr_statuses at the end of our other predecessors
+      PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs->ptrs_end);
+      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
+      for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
+        const BasicBlock* otherPred = *it;
+        const PerBlockState* otherPred_pbs = block_states[otherPred];
+        DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
+        ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
+      }
+      // whatever's left is now the set of clean ptrs at beginning of this block
+      changed |= !ptr_statuses.isEqualTo(pbs->ptrs_beg);
+      pbs->ptrs_beg = std::move(ptr_statuses);
+    }
+    DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
+
+    // The current pointer statuses. This begins as `pbs.ptrs_beg`, and as we
+    // go through the block, gets updated; its state at the end of the block
+    // will become `pbs.ptrs_end`.
+    PointerStatuses ptr_statuses = PointerStatuses(pbs->ptrs_beg);
+
+    #define COUNT_PTR(ptr, category, kind) \
+      static_results.category.kind++; \
+      if (instrument) { \
+        incrementGlobalCounter(dynamic_results->category.kind, (ptr)); \
+      }
+
+    // now: process each instruction
+    // the only way for a dirty pointer to become clean is by being dereferenced
+    // there is no way for a clean pointer to become dirty
+    // so we only need to worry about pointer dereferences, and instructions
+    // which produce pointers
+    // (and of course we want to statically count clean/dirty loads/stores)
+    for (Instruction &inst : block) {
+      switch (inst.getOpcode()) {
+        case Instruction::Store: {
+          const StoreInst& store = cast<StoreInst>(inst);
+          // first count the stored value (if it's a pointer)
+          const Value* storedVal = store.getValueOperand();
+          if (storedVal->getType()->isPointerTy()) {
+            const PointerKind kind = ptr_statuses.getStatus(storedVal);
+            switch (kind) {
+              case CLEAN: COUNT_PTR(&inst, store_vals, clean) break;
+              case BLEMISHED16: COUNT_PTR(&inst, store_vals, blemished16) break;
+              case BLEMISHED32: COUNT_PTR(&inst, store_vals, blemished32) break;
+              case BLEMISHED64: COUNT_PTR(&inst, store_vals, blemished64) break;
+              case BLEMISHEDCONST: COUNT_PTR(&inst, store_vals, blemishedconst) break;
+              case DIRTY: COUNT_PTR(&inst, store_vals, dirty) break;
+              case UNKNOWN: COUNT_PTR(&inst, store_vals, unknown) break;
+              case NOTDEFINEDYET: assert(false && "Storing a pointer with no status"); break;
+              default: assert(false && "PointerKind case not handled");
+            }
+          }
+          // next count the address
+          const Value* addr = store.getPointerOperand();
+          const PointerKind kind = ptr_statuses.getStatus(addr);
+          switch (kind) {
+            case CLEAN: COUNT_PTR(&inst, store_addrs, clean) break;
+            case BLEMISHED16: COUNT_PTR(&inst, store_addrs, blemished16) break;
+            case BLEMISHED32: COUNT_PTR(&inst, store_addrs, blemished32) break;
+            case BLEMISHED64: COUNT_PTR(&inst, store_addrs, blemished64) break;
+            case BLEMISHEDCONST: COUNT_PTR(&inst, store_addrs, blemishedconst) break;
+            case DIRTY: COUNT_PTR(&inst, store_addrs, dirty) break;
+            case UNKNOWN: COUNT_PTR(&inst, store_addrs, unknown) break;
+            case NOTDEFINEDYET: assert(false && "Storing to pointer with no status"); break;
+            default: assert(false && "PointerKind case not handled");
+          }
+          // now, the pointer used as an address becomes clean
+          ptr_statuses.mark_clean(addr);
+          break;
+        }
+        case Instruction::Load: {
+          const LoadInst& load = cast<LoadInst>(inst);
+          const Value* ptr = load.getPointerOperand();
+          // first count this for static stats
+          const PointerKind kind = ptr_statuses.getStatus(ptr);
+          switch (kind) {
+            case CLEAN: COUNT_PTR(&inst, load_addrs, clean) break;
+            case BLEMISHED16: COUNT_PTR(&inst, load_addrs, blemished16) break;
+            case BLEMISHED32: COUNT_PTR(&inst, load_addrs, blemished32) break;
+            case BLEMISHED64: COUNT_PTR(&inst, load_addrs, blemished64) break;
+            case BLEMISHEDCONST: COUNT_PTR(&inst, load_addrs, blemishedconst) break;
+            case DIRTY: COUNT_PTR(&inst, load_addrs, dirty) break;
+            case UNKNOWN: COUNT_PTR(&inst, load_addrs, unknown) break;
+            case NOTDEFINEDYET: assert(false && "Loading from pointer with no status"); break;
+            default: assert(false && "PointerKind case not handled");
+          }
+          // now, the pointer becomes clean
+          ptr_statuses.mark_clean(ptr);
+
+          if (load.getType()->isPointerTy()) {
+            // in this case, we loaded a pointer from memory, and have to
+            // worry about whether it's clean or not.
+            // For now, we mark it UNKNOWN.
+            ptr_statuses.mark_unknown(&load);
+          }
+          break;
+        }
+        case Instruction::Alloca: {
+          // result of an alloca is a clean pointer
+          ptr_statuses.mark_clean(&inst);
+          break;
+        }
+        case Instruction::GetElementPtr: {
+          GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
+          const Value* input_ptr = gep.getPointerOperand();
+          PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
+          APInt induction_offset;
+          APInt initial_offset;
+          bool is_induction_pattern = false;
+          const LoopInfo& loopinfo = FAM.getResult<LoopAnalysis>(F);
+          const PostDominatorTree& pdtree = FAM.getResult<PostDominatorTreeAnalysis>(F);
+          if (isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree, &induction_offset, &initial_offset)
+            && induction_offset.isNonNegative()
+            && initial_offset.isNonNegative())
+          {
+            is_induction_pattern = true;
+            if (initial_offset.sge(induction_offset)) {
+              induction_offset = std::move(initial_offset);
+            }
+            LLVM_DEBUG(dbgs() << "DLIM:   found an induction GEP with offset effectively constant " << induction_offset << "\n");
+          }
+          bool offsetIsNonzeroConstant;
+          ptr_statuses.mark_as(&gep, classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, is_induction_pattern ? &induction_offset : NULL, &offsetIsNonzeroConstant));
+          // if we added a nonzero constant to a pointer, count that for stats purposes
+          if (offsetIsNonzeroConstant) {
+            switch (input_kind) {
+              case CLEAN: COUNT_PTR(&gep, pointer_arith_const, clean) break;
+              case BLEMISHED16: COUNT_PTR(&gep, pointer_arith_const, blemished16) break;
+              case BLEMISHED32: COUNT_PTR(&gep, pointer_arith_const, blemished32) break;
+              case BLEMISHED64: COUNT_PTR(&gep, pointer_arith_const, blemished64) break;
+              case BLEMISHEDCONST: COUNT_PTR(&gep, pointer_arith_const, blemishedconst) break;
+              case DIRTY: COUNT_PTR(&gep, pointer_arith_const, dirty) break;
+              case UNKNOWN: COUNT_PTR(&gep, pointer_arith_const, unknown) break;
+              case NOTDEFINEDYET: assert(false && "GEP on a pointer with no status"); break;
+              default: assert(false && "PointerKind case not handled");
+            }
+          }
+          break;
+        }
+        case Instruction::BitCast: {
+          const BitCastInst& bitcast = cast<BitCastInst>(inst);
+          if (bitcast.getType()->isPointerTy()) {
+            const Value* input_ptr = bitcast.getOperand(0);
+            ptr_statuses.mark_as(&bitcast, ptr_statuses.getStatus(input_ptr));
+          }
+          break;
+        }
+        case Instruction::AddrSpaceCast: {
+          const Value* input_ptr = inst.getOperand(0);
+          ptr_statuses.mark_as(&inst, ptr_statuses.getStatus(input_ptr));
+          break;
+        }
+        case Instruction::Select: {
+          const SelectInst& select = cast<SelectInst>(inst);
+          if (select.getType()->isPointerTy()) {
+            // output is clean if both inputs are clean; etc
+            const Value* true_input = select.getTrueValue();
+            const Value* false_input = select.getFalseValue();
+            const PointerKind true_kind = ptr_statuses.getStatus(true_input);
+            const PointerKind false_kind = ptr_statuses.getStatus(false_input);
+            ptr_statuses.mark_as(&select, merge(true_kind, false_kind));
+          }
+          break;
+        }
+        case Instruction::PHI: {
+          const PHINode& phi = cast<PHINode>(inst);
+          if (phi.getType()->isPointerTy()) {
+            // phi: result kind is the merger of the kinds of all the inputs
+            // in their corresponding blocks
+            PointerKind merged_kind = CLEAN;
+            for (const Use& use : phi.incoming_values()) {
+              const BasicBlock* bb = phi.getIncomingBlock(use);
+              auto& ptr_statuses_end_of_bb = block_states[bb]->ptrs_end;
+              const Value* value = use.get();
+              merged_kind = merge(merged_kind, ptr_statuses_end_of_bb.getStatus(value));
+            }
+            ptr_statuses.mark_as(&phi, merged_kind);
+          }
+          break;
+        }
+        case Instruction::IntToPtr: {
+          // count this for stats, and then mark it as `inttoptr_kind`
+          static_results.inttoptrs++;
+          if (instrument) {
+            incrementGlobalCounter(dynamic_results->inttoptrs, &inst);
+          }
+          ptr_statuses.mark_as(&inst, inttoptr_kind);
+          break;
+        }
+        case Instruction::Call:
+        case Instruction::CallBr:
+        case Instruction::Invoke:
+        // all three of these are instructions which call functions, and we
+        // handle them the same
+        {
+          const CallBase& call = cast<CallBase>(inst);
+          // count call arguments for static stats
+          for (const Use& arg : call.args()) {
+            const Value* value = arg.get();
+            if (value->getType()->isPointerTy()) {
+              const PointerKind kind = ptr_statuses.getStatus(value);
+              switch (kind) {
+                case CLEAN: COUNT_PTR(&inst, passed_ptrs, clean) break;
+                case BLEMISHED16: COUNT_PTR(&inst, passed_ptrs, blemished16) break;
+                case BLEMISHED32: COUNT_PTR(&inst, passed_ptrs, blemished32) break;
+                case BLEMISHED64: COUNT_PTR(&inst, passed_ptrs, blemished64) break;
+                case BLEMISHEDCONST: COUNT_PTR(&inst, passed_ptrs, blemishedconst) break;
+                case DIRTY: COUNT_PTR(&inst, passed_ptrs, dirty) break;
+                case UNKNOWN: COUNT_PTR(&inst, passed_ptrs, unknown) break;
+                case NOTDEFINEDYET: assert(false && "Call argument is a pointer with no status"); break;
+                default: assert(false && "PointerKind case not handled");
+              }
+            }
+          }
+          // now classify the returned pointer, if the return value is a pointer
+          if (call.getType()->isPointerTy()) {
+            // If this is an allocating call (eg, a call to `malloc`), then the
+            // returned pointer is CLEAN
+            if (isAllocatingCall(call)) {
+              ptr_statuses.mark_clean(&call);
+            } else {
+              // For now, mark pointers returned from other calls as UNKNOWN
+              ptr_statuses.mark_unknown(&call);
+            }
+          }
+          break;
+        }
+        case Instruction::ExtractValue: {
+          // this gets a pointer out of a field of a first-class struct (not a
+          // pointer-to-a-struct, so ptr_statuses doesn't have any information
+          // about this struct).
+          // the question is where did the struct come from.
+          // As I see it, probably either (a) we created the struct with
+          // insertvalue - in which case, ideally we'd give this result
+          // the same PointerKind as the original pointer which was inserted;
+          // or (b) we loaded the struct from memory (?), in which case we
+          // should just mark the result UNKNOWN per our current assumptions.
+          // So for now, we'll just mark UNKNOWN and move on
+          ptr_statuses.mark_unknown(&inst);
+          break;
+        }
+        case Instruction::ExtractElement: {
+          // same comments apply as for ExtractValue, basically
+          ptr_statuses.mark_unknown(&inst);
+          break;
+        }
+        case Instruction::Ret: {
+          const ReturnInst& ret = cast<ReturnInst>(inst);
+          const Value* retval = ret.getReturnValue();
+          if (retval && retval->getType()->isPointerTy()) {
+            const PointerKind kind = ptr_statuses.getStatus(retval);
+            switch (kind) {
+              case CLEAN: COUNT_PTR(&inst, returned_ptrs, clean) break;
+              case BLEMISHED16: COUNT_PTR(&inst, returned_ptrs, blemished16) break;
+              case BLEMISHED32: COUNT_PTR(&inst, returned_ptrs, blemished32) break;
+              case BLEMISHED64: COUNT_PTR(&inst, returned_ptrs, blemished64) break;
+              case BLEMISHEDCONST: COUNT_PTR(&inst, returned_ptrs, blemishedconst) break;
+              case DIRTY: COUNT_PTR(&inst, returned_ptrs, dirty) break;
+              case UNKNOWN: COUNT_PTR(&inst, returned_ptrs, unknown) break;
+              case NOTDEFINEDYET: assert(false && "Returning a pointer with no status"); break;
+              default: assert(false && "PointerKind case not handled");
+            }
+          }
+          break;
+        }
+        default:
+          if (inst.getType()->isPointerTy()) {
+            errs() << "Encountered a pointer-producing instruction which we don't have a case for. Does it produce a clean or dirty pointer?\n";
+            inst.dump();
+          }
+          break;
+      }
+    }
+
+    // Now that we've processed all the instructions, we have the final
+    // statuses of pointers as of the end of the block
+    DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at end of block, we now have " << ptr_statuses.describe() << "\n");
+    const bool end_changed = !ptr_statuses.isEqualTo(pbs->ptrs_end);
+    if (end_changed) {
+      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   this was a change\n");
+    }
+    changed |= end_changed;
+    pbs->ptrs_end = std::move(ptr_statuses);
     return changed;
   }
 
