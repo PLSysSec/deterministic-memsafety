@@ -206,16 +206,6 @@ public:
     }
   }
 
-  size_t numClean() const {
-    unsigned count = 0;
-    for (auto& pair : map) {
-      if (pair.getSecond() == CLEAN) {
-        count++;
-      }
-    }
-    return count;
-  }
-
   bool isEqualTo(const PointerStatuses& other) const {
     // first we check if every pair in A is also in B
     for (const auto &pair : map) {
