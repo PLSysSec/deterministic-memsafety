@@ -21,6 +21,7 @@ using namespace llvm;
 
 #define DEBUG_TYPE "DLIM"
 
+static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool isOffsetAnInductionPattern(const GetElementPtrInst &gep, const DataLayout &DL, const LoopInfo &loopinfo, const PostDominatorTree &pdtree, /* output */ APInt* out_induction_offset, /* output */ APInt* out_initial_offset);
 static bool isInductionVar(const Value* val, /* output */ APInt* out_induction_increment, /* output */ APInt* out_initial_val);
@@ -281,101 +282,13 @@ public:
       }
     }
     std::ostringstream out;
-    switch (clean_ptrs.size()) {
-      case 0: {
-        out << "0 clean ptrs";
-        break;
-      }
-      case 1: {
-        const Value* clean_ptr = clean_ptrs[0];
-        out << "1 clean ptr (" << clean_ptr->getNameOrAsOperand() << ")";
-        break;
-      }
-      default: {
-        if (clean_ptrs.size() <= 8) {
-          out << clean_ptrs.size() << " clean ptrs (";
-          for (const Value* clean_ptr : clean_ptrs) {
-            out << clean_ptr->getNameOrAsOperand() << ", ";
-          }
-          out << ")";
-        } else {
-          out << clean_ptrs.size() << " clean ptrs";
-        }
-        break;
-      }
-    }
+    describePointerList(clean_ptrs, out, "clean");
     out << " and ";
-    switch (blem_ptrs.size()) {
-      case 0: {
-        out << "0 blem ptrs";
-        break;
-      }
-      case 1: {
-        const Value* blem_ptr = blem_ptrs[0];
-        out << "1 blem ptr (" << blem_ptr->getNameOrAsOperand() << ")";
-        break;
-      }
-      default: {
-        if (blem_ptrs.size() <= 8) {
-          out << blem_ptrs.size() << " blem ptrs (";
-          for (const Value* blem_ptr : blem_ptrs) {
-            out << blem_ptr->getNameOrAsOperand() << ", ";
-          }
-          out << ")";
-        } else {
-          out << blem_ptrs.size() << " blem ptrs";
-        }
-        break;
-      }
-    }
+    describePointerList(blem_ptrs, out, "blem");
     out << " and ";
-    switch (dirty_ptrs.size()) {
-      case 0: {
-        out << "0 dirty ptrs";
-        break;
-      }
-      case 1: {
-        const Value* dirty_ptr = dirty_ptrs[0];
-        out << "1 dirty ptr (" << dirty_ptr->getNameOrAsOperand() << ")";
-        break;
-      }
-      default: {
-        if (dirty_ptrs.size() <= 8) {
-          out << dirty_ptrs.size() << " dirty ptrs (";
-          for (const Value* dirty_ptr : dirty_ptrs) {
-            out << dirty_ptr->getNameOrAsOperand() << ", ";
-          }
-          out << ")";
-        } else {
-          out << dirty_ptrs.size() << " dirty ptrs";
-        }
-        break;
-      }
-    }
+    describePointerList(dirty_ptrs, out, "dirty");
     out << " and ";
-    switch (unk_ptrs.size()) {
-      case 0: {
-        out << "0 unk ptrs";
-        break;
-      }
-      case 1: {
-        const Value* unk_ptr = unk_ptrs[0];
-        out << "1 unk ptr (" << unk_ptr->getNameOrAsOperand() << ")";
-        break;
-      }
-      default: {
-        if (unk_ptrs.size() <= 8) {
-          out << unk_ptrs.size() << " unk ptrs (";
-          for (const Value* unk_ptr : unk_ptrs) {
-            out << unk_ptr->getNameOrAsOperand() << ", ";
-          }
-          out << ")";
-        } else {
-          out << unk_ptrs.size() << " unk ptrs";
-        }
-        break;
-      }
-    }
+    describePointerList(unk_ptrs, out, "unk");
     return out.str();
   }
 
@@ -1442,6 +1355,35 @@ static PointerKind classifyGEPResult(
   } else {
     // offset is not constant; so, result is dirty
     return DIRTY;
+  }
+}
+
+/// Print a description of the pointers in `ptrs` to `out`. `desc` is an
+/// adjective describing the pointers (e.g., "clean")
+static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc) {
+  std::string desc_str = desc.str();
+  switch (ptrs.size()) {
+    case 0: {
+      out << "0 " << desc_str << " ptrs";
+      break;
+    }
+    case 1: {
+      const Value* ptr = ptrs[0];
+      out << "1 " << desc_str << " ptr (" << ptr->getNameOrAsOperand() << ")";
+      break;
+    }
+    default: {
+      if (ptrs.size() <= 8) {
+        out << ptrs.size() << " " << desc_str << " ptrs (";
+        for (const Value* ptr : ptrs) {
+          out << ptr->getNameOrAsOperand() << ", ";
+        }
+        out << ")";
+      } else {
+        out << ptrs.size() << " " << desc_str << " ptrs";
+      }
+      break;
+    }
   }
 }
 
