@@ -1460,8 +1460,8 @@ static bool isOffsetAnInductionPattern(
   /* output */ APInt* out_induction_offset,
   /* output */ APInt* out_initial_offset
 ) {
-  LLVM_DEBUG(dbgs() << "DLIM:   Checking the following gep for induction:\n");
-  LLVM_DEBUG(gep.dump());
+  //LLVM_DEBUG(dbgs() << "DLIM:   Checking the following gep for induction:\n");
+  //LLVM_DEBUG(gep.dump());
   if (gep.getNumIndices() != 1) return false; // we only handle simple cases for now
   for (const Use& idx_as_use : gep.indices()) {
     // note that this for loop goes exactly one iteration, due to the check above.
@@ -1473,14 +1473,14 @@ static bool isOffsetAnInductionPattern(
     APInt constant;
     bool success = false;
     if (isInductionVar(idx, &induction_increment, &initial_val)) {
-      LLVM_DEBUG(dbgs() << "DLIM:     GEP single index is an induction var\n");
+      //LLVM_DEBUG(dbgs() << "DLIM:     GEP single index is an induction var\n");
       success = true;
     } else if (isValuePlusConstant(idx, &val, &constant)) {
       // GEP index is `val` plus `constant`. Let's see if `val` is itself an
       // induction variable. This can happen if we are, say, accessing
       // `arr[k+1]` in a loop over `k`
       if (isInductionVar(val, &induction_increment, &initial_val)) {
-        LLVM_DEBUG(dbgs() << "DLIM:     GEP single index is an induction var plus a constant " << constant << "\n");
+        //LLVM_DEBUG(dbgs() << "DLIM:     GEP single index is an induction var plus a constant " << constant << "\n");
         initial_val = initial_val + constant;  // the first iteration, it's the initial value of the induction variable plus the constant it's always modified by
         // but the induction increment doesn't care about the constant modification
         success = true;
@@ -1532,7 +1532,7 @@ static bool isOffsetAnInductionPattern(
       *out_induction_offset = induction_increment * ap_element_size;
       return true;
     } else {
-      LLVM_DEBUG(dbgs() << "DLIM:     but failed the dereference-inside-loop check\n");
+      //LLVM_DEBUG(dbgs() << "DLIM:     but failed the dereference-inside-loop check\n");
       return false;
     }
   }
