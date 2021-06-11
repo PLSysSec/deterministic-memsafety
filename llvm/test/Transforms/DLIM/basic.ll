@@ -695,6 +695,22 @@ define i8 @globals_clean() {
   ret i8 %loaded
 }
 
+; This checks that NULL and undef are considered CLEAN.
+; CHECK-LABEL: null_undef_clean
+; CHECK-NEXT: Loads with clean addr: 2
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
+define i8 @null_undef_clean() {
+  %loaded1 = load i8, i8* null
+  %loaded2 = load i8, i8* undef
+  %sum = add i8 %loaded1, %loaded2
+  ret i8 %sum
+}
+
 ; This checks that a nonzero GEP on an UNKNOWN pointer produces a dirty
 ; pointer.
 ; CHECK-LABEL: gep_on_unk
@@ -710,4 +726,23 @@ define void @gep_on_unk(i32* %arg) {
   %gepptr = getelementptr i32, i32* %arg, i32 1
   store i32 3, i32* %gepptr
   ret void
+}
+
+; This checks that constexpr GEP on a global variable produces a clean pointer.
+; While we're at it, also bitcasts of global variable pointers.
+; See issue #1.
+; CHECK-LABEL: constexpr_gep
+; CHECK: Passing a clean ptr to a func: 2
+; CHECK-NEXT: Passing a blemished16 ptr to a func: 0
+; CHECK-NEXT: Passing a blemished32 ptr to a func: 0
+; CHECK-NEXT: Passing a blemished64 ptr to a func: 0
+; CHECK-NEXT: Passing a blemishedconst ptr to a func: 0
+; CHECK-NEXT: Passing a dirty ptr to a func: 0
+; CHECK-NEXT: Passing an unknown ptr to a func: 0
+@str = private unnamed_addr constant [12 x i8] c"Hello world\00", align 1
+declare noundef i32 @puts(i8* nocapture noundef readonly)
+define i32 @constexpr_gep() {
+  %puts1 = call i32 @puts(i8* nonnull dereferenceable(1) getelementptr inbounds ([12 x i8], [12 x i8]* @str, i64 0, i64 0))
+  %puts2 = call i32 @puts(i8* nonnull dereferenceable(1) bitcast ([12 x i8]* @str to i8*))
+  ret i32 0
 }

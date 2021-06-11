@@ -167,6 +167,9 @@ public:
       if (constant->isNullValue()) {
         // the null pointer can be considered CLEAN
         return CLEAN;
+      } else if (isa<UndefValue>(constant)) {
+        // undef values, which includes poison values, can be considered CLEAN
+        return CLEAN;
       } else if (const ConstantExpr* expr = dyn_cast<ConstantExpr>(constant)) {
         // it's a pointer created by a compile-time constant expression
         if (expr->isGEPWithNoNotionalOverIndexing()) {
@@ -193,6 +196,8 @@ public:
         }
       } else {
         // a constant, but not null and not a constant expression.
+        LLVM_DEBUG(dbgs() << "constant pointer of unhandled kind:\n");
+        LLVM_DEBUG(constant->dump());
         assert(false && "getting status of constant pointer of unhandled kind");
       }
     } else {
@@ -552,9 +557,11 @@ private:
       }
     }
 
-    // Mark pointers to global variables as CLEAN in the function's entry block
-    // (if the global variable itself is a pointer, it's still implicitly NOTDEFINEDYET)
-    for (const GlobalVariable& gv : F.getParent()->globals()) {
+    // Mark pointers to global variables (and other global values, e.g.,
+    // functions and IFuncs) as CLEAN in the function's entry block.
+    // (If the global variable itself is a pointer, it's still implicitly
+    // NOTDEFINEDYET.)
+    for (const GlobalValue& gv : F.getParent()->global_values()) {
       assert(gv.getType()->isPointerTy());
       entry_block_pbs->ptrs_beg.mark_clean(&gv);
     }
