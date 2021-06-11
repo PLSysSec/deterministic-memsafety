@@ -2,6 +2,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
@@ -362,7 +363,9 @@ public:
   /// `inttoptr` instructions, i.e., by casting an integer to a pointer. This
   /// can be any `PointerKind` -- e.g., CLEAN, DIRTY, UNKNOWN, etc.
   DLIMAnalysis(Function &F, FunctionAnalysisManager &FAM, bool trustLLVMStructTypes, PointerKind inttoptr_kind)
-    : F(F), FAM(FAM), DL(F.getParent()->getDataLayout()), trustLLVMStructTypes(trustLLVMStructTypes), inttoptr_kind(inttoptr_kind) {
+    : F(F), FAM(FAM), DL(F.getParent()->getDataLayout()),
+      trustLLVMStructTypes(trustLLVMStructTypes), inttoptr_kind(inttoptr_kind),
+      RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())) {
     initialize_block_states();
   }
   ~DLIMAnalysis() {}
@@ -518,6 +521,14 @@ private:
   const bool trustLLVMStructTypes;
   const PointerKind inttoptr_kind;
 
+  /// we use "reverse post order" in an attempt to process block predecessors
+  /// before the blocks themselves. (Of course, this isn't possible to do
+  /// perfectly, because of loops.)
+  /// We also store this as a class member because constructing it is expensive,
+  /// according to the docs in PostOrderIterator.h. We don't want to construct it
+  /// each time it's needed in `doIteration()`.
+  const ReversePostOrderTraversal<BasicBlock*> RPOT;
+
   DenseMap<const BasicBlock*, PerBlockState*> block_states;
 
   void initialize_block_states() {
@@ -554,8 +565,8 @@ private:
     static_results = { 0 };
     bool changed = false;
 
-    for (BasicBlock &block : F) {
-      changed |= analyze_block(block, static_results, dynamic_results, instrument);
+    for (BasicBlock* block : RPOT) {
+      changed |= analyze_block(*block, static_results, dynamic_results, instrument);
     }
 
     return changed;
