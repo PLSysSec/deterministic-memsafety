@@ -556,7 +556,8 @@ private:
   }
 
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
-  /// Do this only after the analysis has reached a fixpoint.
+  /// Caller must only set this to `true` after the analysis has reached a
+  /// fixpoint.
   ///
   /// Returns `true` if any change was made to internal state (not counting the
   /// results objects of course)
@@ -572,6 +573,12 @@ private:
     return changed;
   }
 
+  /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
+  /// Caller must only set this to `true` after the analysis has reached a
+  /// fixpoint.
+  ///
+  /// Returns `true` if any change was made to internal state (not counting the
+  /// results objects of course)
   bool analyze_block(BasicBlock &block, StaticResults &static_results, DynamicResults* dynamic_results, bool instrument) {
     PerBlockState* pbs = block_states[&block];
     bool changed = false;

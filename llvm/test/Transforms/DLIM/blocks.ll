@@ -229,6 +229,63 @@ end:
   ret i32 %res
 }
 
+; This is a simplified example of something that came up in real code --
+; we want to check that the load here is properly marked UNKNOWN.
+; (Yes, LLVM had the blocks in this order in the real code.)
+; CHECK-LABEL: multi_for_loops_example
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 1
+declare i1 @do_cmp()
+define i32 @multi_for_loops_example(i32* %unkptr) {
+entry:
+  %cmp0 = call i1 @do_cmp()
+  br i1 %cmp0, label %forloop1.end, label %forloop1.body
+
+forloop1.body:  ; preds = forloop1.body, entry
+  %cmp1 = call i1 @do_cmp()
+  br i1 %cmp1, label %forloop1.end, label %forloop1.body
+
+forloop1.end:  ; preds = forloop1.body, entry
+  %cmp2 = call i1 @do_cmp()
+  br i1 %cmp2, label %forloop2.preheader, label %forloop2.body
+
+forloop2.preheader:  ; preds = forloop2.body, forloop1.end
+  %cmp3 = call i1 @do_cmp()
+  br i1 %cmp3, label %done, label %forloop3.bodyupper
+
+forloop2.body:  ; preds = forloop1.end, forloop2.body
+  %cmp4 = call i1 @do_cmp()
+  br i1 %cmp4, label %forloop2.preheader, label %forloop2.body
+
+forloop3.preheader:  ; preds = forloop3.bottom
+  %cmp5 = call i1 @do_cmp()
+  br i1 %cmp5, label %do_load, label %done
+
+do_load:  ; preds = forloop3.preheader
+  %loaded = load i32, i32* %unkptr
+  ret i32 %loaded
+
+forloop3.bodyupper:  ; preds = forloop2.preheader, forloop3.bottom
+  %cmp6 = call i1 @do_cmp()
+  br i1 %cmp6, label %forloop3.bottom, label %forloop3.bodyinner
+
+forloop3.bodyinner:  ; preds = forloop3.bodyupper, forloop3.bodyinner
+  %cmp7 = call i1 @do_cmp()
+  br i1 %cmp7, label %forloop3.bottom, label %forloop3.bodyinner
+
+forloop3.bottom:  ; preds = forloop3.bodyupper, forloop3.bodyinner
+  %cmp8 = call i1 @do_cmp()
+  br i1 %cmp8, label %forloop3.bodyupper, label %forloop3.preheader
+
+done:  ; preds = forloop2.preheader, forloop3.preheader
+  ret i32 0
+}
+
 ; This checks that loading from a PHI'd pointer, where both possibilities
 ; are clean, is a clean load.
 ; CHECK-LABEL: phi_both_clean
