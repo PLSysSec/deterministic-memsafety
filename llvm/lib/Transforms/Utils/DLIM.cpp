@@ -156,9 +156,17 @@ public:
 
   PointerKind getStatus(const Value* ptr) const {
     auto it = map.find(ptr);
-    if (it == map.end()) {
-      // not found in map. Is this a constant-GEP of another pointer?
-      if (const ConstantExpr* expr = dyn_cast<ConstantExpr>(ptr)) {
+    if (it != map.end()) {
+      // found it in the map
+      return it->getSecond();
+    }
+    // if we get here, the pointer wasn't found in the map. Is it a constant pointer?
+    if (const Constant* constant = dyn_cast<Constant>(ptr)) {
+      if (constant->isNullValue()) {
+        // the null pointer can be considered CLEAN
+        return CLEAN;
+      } else if (const ConstantExpr* expr = dyn_cast<ConstantExpr>(constant)) {
+        // it's a pointer created by a compile-time constant expression
         if (expr->isGEPWithNoNotionalOverIndexing()) {
           // this seems sufficient to consider the pointer clean, based on docs
           // of this method. GEP on a constant pointer, with constant indices,
@@ -182,12 +190,12 @@ public:
           }
         }
       } else {
-        // not found in map, and not a constant expression.
-        return NOTDEFINEDYET;
+        // a constant, but not null and not a constant expression.
+        assert(false && "getting status of constant pointer of unhandled kind");
       }
     } else {
-      // found in map
-      return it->getSecond();
+      // not found in map, and not a constant.
+      return NOTDEFINEDYET;
     }
   }
 
