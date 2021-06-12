@@ -191,6 +191,8 @@ public:
             return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL, &dontcare);
           }
           default: {
+            LLVM_DEBUG(dbgs() << "constant expression of unhandled opcode:\n");
+            LLVM_DEBUG(expr->dump());
             assert(false && "getting status of constant expression of unhandled opcode");
           }
         }
@@ -325,7 +327,7 @@ public:
 private:
   const DataLayout &DL;
   const bool trustLLVMStructTypes;
-  /// Pointers not appearing in this map are considered NOTLIVE.
+  /// Pointers not appearing in this map are considered NOTDEFINEDYET.
   /// As a corollary, hopefully all pointers which are currently live do appear
   /// in this map.
   SmallDenseMap<const Value*, PointerKind, 8> map;
@@ -358,7 +360,8 @@ public:
   /// `inttoptr` instructions, i.e., by casting an integer to a pointer. This
   /// can be any `PointerKind` -- e.g., CLEAN, DIRTY, UNKNOWN, etc.
   DLIMAnalysis(Function &F, FunctionAnalysisManager &FAM, bool trustLLVMStructTypes, PointerKind inttoptr_kind)
-    : F(F), FAM(FAM), DL(F.getParent()->getDataLayout()),
+    : F(F), DL(F.getParent()->getDataLayout()),
+      loopinfo(FAM.getResult<LoopAnalysis>(F)), pdtree(FAM.getResult<PostDominatorTreeAnalysis>(F)),
       trustLLVMStructTypes(trustLLVMStructTypes), inttoptr_kind(inttoptr_kind),
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())) {
     initialize_block_states();
@@ -440,7 +443,6 @@ public:
 
     bool changed = true;
     while (changed) {
-      LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
       changed = doIteration(static_results, NULL, false);
     }
 
@@ -516,8 +518,9 @@ public:
 
 private:
   Function &F;
-  FunctionAnalysisManager &FAM;
   const DataLayout &DL;
+  const LoopInfo& loopinfo;
+  const PostDominatorTree& pdtree;
   const bool trustLLVMStructTypes;
   const PointerKind inttoptr_kind;
 
@@ -568,6 +571,8 @@ private:
     static_results = { 0 };
     bool changed = false;
 
+    LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
+
     for (BasicBlock* block : RPOT) {
       changed |= analyze_block(*block, static_results, dynamic_results, instrument);
     }
@@ -585,13 +590,15 @@ private:
     PerBlockState* pbs = block_states[&block];
     bool changed = false;
 
-    StringRef blockname;
-    if (block.hasName()) {
-      blockname = block.getName();
-    } else {
-      blockname = "";
-    }
-    LLVM_DEBUG(dbgs() << "DLIM: analyzing block " << blockname << "\n");
+    LLVM_DEBUG(
+      StringRef blockname;
+      if (block.hasName()) {
+        blockname = block.getName();
+      } else {
+        blockname = "";
+      }
+      dbgs() << "DLIM: analyzing block " << blockname << "\n";
+    );
     DEBUG_WITH_TYPE("DLIM-block-previous-state", dbgs() << "DLIM:   this block previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
 
     // first: if any variable is clean at the end of all of this block's
@@ -610,15 +617,15 @@ private:
         DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
         ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
       }
-      // whatever's left is now the set of clean ptrs at beginning of this block
+      // whatever's left is now the ptr_statuses at beginning of this block
       changed |= !ptr_statuses.isEqualTo(pbs->ptrs_beg);
       pbs->ptrs_beg = std::move(ptr_statuses);
     }
     DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
 
-    // The current pointer statuses. This begins as `pbs.ptrs_beg`, and as we
+    // The current pointer statuses. This begins as `pbs->ptrs_beg`, and as we
     // go through the block, gets updated; its state at the end of the block
-    // will become `pbs.ptrs_end`.
+    // will become `pbs->ptrs_end`.
     PointerStatuses ptr_statuses = PointerStatuses(pbs->ptrs_beg);
 
     #define COUNT_PTR(ptr, category, kind) \
@@ -628,11 +635,9 @@ private:
       }
 
     // now: process each instruction
-    // the only way for a dirty pointer to become clean is by being dereferenced
-    // there is no way for a clean pointer to become dirty
-    // so we only need to worry about pointer dereferences, and instructions
-    // which produce pointers
-    // (and of course we want to statically count clean/dirty loads/stores)
+    // we only need to worry about pointer dereferences, and instructions which
+    // produce pointers
+    // (and of course we want to statically count a few other kinds of events)
     for (Instruction &inst : block) {
       switch (inst.getOpcode()) {
         case Instruction::Store: {
@@ -640,8 +645,7 @@ private:
           // first count the stored value (if it's a pointer)
           const Value* storedVal = store.getValueOperand();
           if (storedVal->getType()->isPointerTy()) {
-            const PointerKind kind = ptr_statuses.getStatus(storedVal);
-            switch (kind) {
+            switch (ptr_statuses.getStatus(storedVal)) {
               case CLEAN: COUNT_PTR(&inst, store_vals, clean) break;
               case BLEMISHED16: COUNT_PTR(&inst, store_vals, blemished16) break;
               case BLEMISHED32: COUNT_PTR(&inst, store_vals, blemished32) break;
@@ -655,8 +659,7 @@ private:
           }
           // next count the address
           const Value* addr = store.getPointerOperand();
-          const PointerKind kind = ptr_statuses.getStatus(addr);
-          switch (kind) {
+          switch (ptr_statuses.getStatus(addr)) {
             case CLEAN: COUNT_PTR(&inst, store_addrs, clean) break;
             case BLEMISHED16: COUNT_PTR(&inst, store_addrs, blemished16) break;
             case BLEMISHED32: COUNT_PTR(&inst, store_addrs, blemished32) break;
@@ -675,8 +678,7 @@ private:
           const LoadInst& load = cast<LoadInst>(inst);
           const Value* ptr = load.getPointerOperand();
           // first count this for static stats
-          const PointerKind kind = ptr_statuses.getStatus(ptr);
-          switch (kind) {
+          switch (ptr_statuses.getStatus(ptr)) {
             case CLEAN: COUNT_PTR(&inst, load_addrs, clean) break;
             case BLEMISHED16: COUNT_PTR(&inst, load_addrs, blemished16) break;
             case BLEMISHED32: COUNT_PTR(&inst, load_addrs, blemished32) break;
@@ -710,8 +712,6 @@ private:
           APInt induction_offset;
           APInt initial_offset;
           bool is_induction_pattern = false;
-          const LoopInfo& loopinfo = FAM.getResult<LoopAnalysis>(F);
-          const PostDominatorTree& pdtree = FAM.getResult<PostDominatorTreeAnalysis>(F);
           if (isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree, &induction_offset, &initial_offset)
             && induction_offset.isNonNegative()
             && initial_offset.isNonNegative())
@@ -801,8 +801,7 @@ private:
           for (const Use& arg : call.args()) {
             const Value* value = arg.get();
             if (value->getType()->isPointerTy()) {
-              const PointerKind kind = ptr_statuses.getStatus(value);
-              switch (kind) {
+              switch (ptr_statuses.getStatus(value)) {
                 case CLEAN: COUNT_PTR(&inst, passed_ptrs, clean) break;
                 case BLEMISHED16: COUNT_PTR(&inst, passed_ptrs, blemished16) break;
                 case BLEMISHED32: COUNT_PTR(&inst, passed_ptrs, blemished32) break;
@@ -851,8 +850,7 @@ private:
           const ReturnInst& ret = cast<ReturnInst>(inst);
           const Value* retval = ret.getReturnValue();
           if (retval && retval->getType()->isPointerTy()) {
-            const PointerKind kind = ptr_statuses.getStatus(retval);
-            switch (kind) {
+            switch (ptr_statuses.getStatus(retval)) {
               case CLEAN: COUNT_PTR(&inst, returned_ptrs, clean) break;
               case BLEMISHED16: COUNT_PTR(&inst, returned_ptrs, blemished16) break;
               case BLEMISHED32: COUNT_PTR(&inst, returned_ptrs, blemished32) break;
