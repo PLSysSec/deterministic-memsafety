@@ -187,8 +187,7 @@ public:
             // constant-GEP expression
             const Instruction* inst = expr->getAsInstruction();
             const GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-            bool dontcare;
-            return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL, &dontcare);
+            return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL, NULL);
           }
           default: {
             LLVM_DEBUG(dbgs() << "constant expression of unhandled opcode:\n");
@@ -1264,6 +1263,7 @@ PreservedAnalyses DynamicStdoutDLIMPass::run(Function &F, FunctionAnalysisManage
 /// `offsetIsNonzeroConstant` indicating if the total offset of the GEP was considered
 /// a nonzero constant or not. (If `override_constant_offset` is non-NULL, and
 /// nonzero, this will always be `true`, of course.)
+/// You can set `offsetIsNonzeroConstant` to `NULL` if you don't need this output.
 static PointerKind classifyGEPResult(
   const GetElementPtrInst &gep,
   const PointerKind input_kind,
@@ -1285,19 +1285,19 @@ static PointerKind classifyGEPResult(
   if (gep.hasAllZeroIndices()) {
     // result of a GEP with all zeroes as indices, is the same as the input pointer.
     assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
-    *offsetIsNonzeroConstant = false; // it's a zero constant
+    if (offsetIsNonzeroConstant != NULL) *offsetIsNonzeroConstant = false; // it's a zero constant
     return input_kind;
   }
   if (trustLLVMStructTypes && input_kind == CLEAN && areAllIndicesTrustworthy(gep)) {
     // nonzero offset, but "trustworthy" offset, from a clean pointer.
     // The resulting pointer is clean.
-    *offsetIsNonzeroConstant = false; // we consider this a "zero" constant. For this purpose.
+    if (offsetIsNonzeroConstant != NULL) *offsetIsNonzeroConstant = false; // we consider this a "zero" constant. For this purpose.
     return CLEAN;
   }
 
   // if we get here, we don't have a zero constant offset. Either it's a nonzero constant,
   // or a nonconstant.
-  *offsetIsNonzeroConstant = offsetIsConstant;
+  if (offsetIsNonzeroConstant != NULL) *offsetIsNonzeroConstant = offsetIsConstant;
   if (offsetIsConstant) {
     switch (input_kind) {
       case CLEAN: {
