@@ -332,18 +332,6 @@ private:
   SmallDenseMap<const Value*, PointerKind, 8> map;
 };
 
-/// This holds the per-block state for the analysis
-class PerBlockState {
-public:
-  PerBlockState(const DataLayout &DL, const bool trustLLVMStructTypes)
-    : ptrs_beg(PointerStatuses(DL, trustLLVMStructTypes)), ptrs_end(PointerStatuses(DL, trustLLVMStructTypes)) {}
-
-  /// The status of all pointers at the _beginning_ of the block.
-  PointerStatuses ptrs_beg;
-  /// The status of all pointers at the _end_ of the block.
-  PointerStatuses ptrs_end;
-};
-
 class DLIMAnalysis {
 public:
   /// Creates and initializes the Analysis but doesn't actually run the analysis.
@@ -576,6 +564,22 @@ private:
   /// each time it's needed in `doIteration()`.
   const ReversePostOrderTraversal<BasicBlock*> RPOT;
 
+  /// This holds the per-block state for the analysis
+  class PerBlockState {
+  public:
+    PerBlockState(const DataLayout &DL, const bool trustLLVMStructTypes)
+      : ptrs_beg(PointerStatuses(DL, trustLLVMStructTypes)),
+        ptrs_end(PointerStatuses(DL, trustLLVMStructTypes)),
+        static_results(StaticResults { 0 }) {}
+
+    /// The status of all pointers at the _beginning_ of the block.
+    PointerStatuses ptrs_beg;
+    /// The status of all pointers at the _end_ of the block.
+    PointerStatuses ptrs_end;
+    /// The `StaticResults` which we got last time we analyzed this block.
+    DLIMAnalysis::StaticResults static_results;
+  };
+
   DenseMap<const BasicBlock*, PerBlockState*> block_states;
 
   void initialize_block_states() {
@@ -606,7 +610,11 @@ private:
 
   /// Return value for `doIteration` and `analyze_block`.
   struct IntermediateResult {
-    /// `true` if any change was made to internal state
+    /// For `analyze_block`, this indicates if any change was made to the
+    /// pointer statuses at the _end_ of the block.  (If so, subsequent blocks
+    /// may need to be reanalyzed.)
+    /// For `doIteration`, this indicates if any change was made to the pointer
+    /// statuses in _any_ block.  (If so, we should do another iteration.)
     bool changed;
     /// `StaticResults` for this function or block
     StaticResults static_results;
@@ -636,22 +644,23 @@ private:
   IntermediateResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, bool instrument) {
     PerBlockState* pbs = block_states[&block];
     StaticResults static_results = { 0 };
-    bool changed = false;
 
     LLVM_DEBUG(
       StringRef blockname;
       if (block.hasName()) {
         blockname = block.getName();
       } else {
-        blockname = "";
+        blockname = "<anonymous>";
       }
       dbgs() << "DLIM: analyzing block " << blockname << "\n";
     );
     DEBUG_WITH_TYPE("DLIM-block-previous-state", dbgs() << "DLIM:   this block previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
 
-    // first: if any variable is clean at the end of all of this block's
-    // predecessors, then it is also clean at the beginning of this block
-    if (!block.hasNPredecessors(0)) {
+    if (block.hasNPredecessors(0)) {
+      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we have " << pbs->ptrs_beg.describe() << "\n");
+    } else {
+      // if any variable is clean at the end of all of this block's predecessors,
+      // then it is also clean at the beginning of this block
       auto preds = pred_begin(&block);
       const BasicBlock* firstPred = *preds;
       const PerBlockState* firstPred_pbs = block_states[firstPred];
@@ -665,11 +674,27 @@ private:
         DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
         ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
       }
-      // whatever's left is now the ptr_statuses at beginning of this block
-      changed |= !ptr_statuses.isEqualTo(pbs->ptrs_beg);
-      pbs->ptrs_beg = std::move(ptr_statuses);
+      // whatever's left is now the ptr_statuses at beginning of this block.
+      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
+      // Let's check if that's any different from what we had last time
+      if (ptr_statuses.isEqualTo(pbs->ptrs_beg)) {
+        // no change. Unless we're instrumenting, there's no need to actually
+        // analyze this block. Just return the `StaticResults` we got last time.
+        LLVM_DEBUG(dbgs() << "DLIM:   top-of-block statuses haven't changed\n");
+        if (!instrument) return IntermediateResult { false, pbs->static_results };
+        // (you could be concerned that this check could pass on the first
+        // iteration if the top-of-block statuses happen to be equal to the
+        // initial state of a `PointerStatuses`; and then we wouldn't ever
+        // analyze the block, whoops. but this is actually impossible:
+        // an initial `PointerStatuses` has no pointers, but every block has at
+        // least one pointer status at top-of-block: namely, the pointer to the
+        // current function, which will be in the `PointerStatuses` as CLEAN)
+      } else {
+        // save the beginning-of-block ptr_statuses so we can do the above check
+        // on the next iteration
+        pbs->ptrs_beg = std::move(ptr_statuses);
+      }
     }
-    DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
 
     // The current pointer statuses. This begins as `pbs->ptrs_beg`, and as we
     // go through the block, gets updated; its state at the end of the block
@@ -924,12 +949,12 @@ private:
     // Now that we've processed all the instructions, we have the final
     // statuses of pointers as of the end of the block
     DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-    const bool end_changed = !ptr_statuses.isEqualTo(pbs->ptrs_end);
-    if (end_changed) {
+    const bool changed = !ptr_statuses.isEqualTo(pbs->ptrs_end);
+    if (changed) {
       DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   this was a change\n");
     }
-    changed |= end_changed;
     pbs->ptrs_end = std::move(ptr_statuses);
+    pbs->static_results = static_results;
     return IntermediateResult { changed, static_results };
   }
 
