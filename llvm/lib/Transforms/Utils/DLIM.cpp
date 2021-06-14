@@ -372,7 +372,7 @@ public:
     }
   }
 
-  typedef struct StaticCounts {
+  struct StaticCounts {
     unsigned clean;
     unsigned blemished16;
     unsigned blemished32;
@@ -380,10 +380,33 @@ public:
     unsigned blemishedconst;
     unsigned dirty;
     unsigned unknown;
-  } StaticCounts;
+
+    StaticCounts operator+(const StaticCounts& other) const {
+      return StaticCounts {
+        clean + other.clean,
+        blemished16 + other.blemished16,
+        blemished32 + other.blemished32,
+        blemished64 + other.blemished64,
+        blemishedconst + other.blemishedconst,
+        dirty + other.dirty,
+        unknown + other.unknown,
+      };
+    }
+
+    StaticCounts& operator+=(const StaticCounts& other) {
+      clean += other.clean;
+      blemished16 += other.blemished16;
+      blemished32 += other.blemished32;
+      blemished64 += other.blemished64;
+      blemishedconst += other.blemishedconst;
+      dirty += other.dirty;
+      unknown += other.unknown;
+      return *this;
+    }
+  };
 
   /// This struct holds the STATIC results of the analysis
-  typedef struct StaticResults {
+  struct StaticResults {
     // How many loads have a clean/dirty pointer as address
     StaticCounts load_addrs;
     // How many stores have a clean/dirty pointer as address (we don't count the
@@ -401,10 +424,33 @@ public:
     StaticCounts pointer_arith_const;
     // How many times did we produce a pointer via a 'inttoptr' instruction
     unsigned inttoptrs;
-  } StaticResults;
+
+    StaticResults operator+(const StaticResults& other) const {
+      return StaticResults {
+        load_addrs + other.load_addrs,
+        store_addrs + other.store_addrs,
+        store_vals + other.store_vals,
+        passed_ptrs + other.passed_ptrs,
+        returned_ptrs + other.returned_ptrs,
+        pointer_arith_const + other.pointer_arith_const,
+        inttoptrs + other.inttoptrs,
+      };
+    }
+
+    StaticResults& operator+=(const StaticResults& other) {
+      load_addrs += other.load_addrs;
+      store_addrs += other.store_addrs;
+      store_vals += other.store_vals;
+      passed_ptrs += other.passed_ptrs;
+      returned_ptrs += other.returned_ptrs;
+      pointer_arith_const += other.pointer_arith_const;
+      inttoptrs += other.inttoptrs;
+      return *this;
+    }
+  };
 
   /// Holds the IR global variables containing dynamic counts
-  typedef struct DynamicCounts {
+  struct DynamicCounts {
     Constant* clean;
     Constant* blemished16;
     Constant* blemished32;
@@ -412,11 +458,11 @@ public:
     Constant* blemishedconst;
     Constant* dirty;
     Constant* unknown;
-  } DynamicCounts;
+  };
 
   /// This struct holds the IR global variables representing the DYNAMIC results
   /// of the analysis
-  typedef struct DynamicResults {
+  struct DynamicResults {
     // How many loads have a clean/dirty pointer as address
     DynamicCounts load_addrs;
     // How many stores have a clean/dirty pointer as address (we don't count the
@@ -434,7 +480,7 @@ public:
     DynamicCounts pointer_arith_const;
     // How many times did we produce a pointer via a 'inttoptr' instruction
     Constant* inttoptrs;
-  } DynamicResults;
+  };
 
   /// Runs the analysis and returns the `StaticResults`
   StaticResults run() {
@@ -559,6 +605,14 @@ private:
     }
   }
 
+  /// Return value for `analyze_block`.
+  typedef struct AnalyzeBlockResult {
+    /// `true` if any change was made to internal state
+    bool changed;
+    /// `StaticResults` for this block
+    StaticResults static_results;
+  } AnalyzeBlockResult;
+
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
   /// Caller must only set this to `true` after the analysis has reached a
   /// fixpoint.
@@ -573,7 +627,9 @@ private:
     LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
 
     for (BasicBlock* block : RPOT) {
-      changed |= analyze_block(*block, static_results, dynamic_results, instrument);
+      AnalyzeBlockResult abr = analyze_block(*block, dynamic_results, instrument);
+      changed |= abr.changed;
+      static_results += abr.static_results;
     }
 
     return changed;
@@ -582,11 +638,9 @@ private:
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
   /// Caller must only set this to `true` after the analysis has reached a
   /// fixpoint.
-  ///
-  /// Returns `true` if any change was made to internal state (not counting the
-  /// results objects of course)
-  bool analyze_block(BasicBlock &block, StaticResults &static_results, DynamicResults* dynamic_results, bool instrument) {
+  AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, bool instrument) {
     PerBlockState* pbs = block_states[&block];
+    StaticResults static_results = { 0 };
     bool changed = false;
 
     LLVM_DEBUG(
@@ -881,7 +935,7 @@ private:
     }
     changed |= end_changed;
     pbs->ptrs_end = std::move(ptr_statuses);
-    return changed;
+    return AnalyzeBlockResult { changed, static_results };
   }
 
   DynamicResults initializeDynamicResults() {
