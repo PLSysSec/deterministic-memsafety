@@ -484,14 +484,14 @@ public:
 
   /// Runs the analysis and returns the `StaticResults`
   StaticResults run() {
-    StaticResults static_results;
+    IntermediateResult res;
+    res.changed = true;
 
-    bool changed = true;
-    while (changed) {
-      changed = doIteration(static_results, NULL, false);
+    while (res.changed) {
+      res = doIteration(NULL, false);
     }
 
-    return static_results;
+    return res.static_results;
   }
 
   /// Where to print results dynamically (at runtime)
@@ -507,9 +507,8 @@ public:
   /// analysis is complete.
   void instrument(DynamicPrintType print_type) {
     DynamicResults results = initializeDynamicResults();
-    StaticResults _ignore;
-    bool changed = doIteration(_ignore, &results, true);
-    assert(!changed && "Don't run instrument() until analysis has reached fixpoint");
+    IntermediateResult res = doIteration(&results, true);
+    assert(!res.changed && "Don't run instrument() until analysis has reached fixpoint");
     addDynamicResultsPrint(results, print_type);
   }
 
@@ -605,40 +604,36 @@ private:
     }
   }
 
-  /// Return value for `analyze_block`.
-  typedef struct AnalyzeBlockResult {
+  /// Return value for `doIteration` and `analyze_block`.
+  struct IntermediateResult {
     /// `true` if any change was made to internal state
     bool changed;
-    /// `StaticResults` for this block
+    /// `StaticResults` for this function or block
     StaticResults static_results;
-  } AnalyzeBlockResult;
+  };
 
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
   /// Caller must only set this to `true` after the analysis has reached a
   /// fixpoint.
-  ///
-  /// Returns `true` if any change was made to internal state (not counting the
-  /// results objects of course)
-  bool doIteration(StaticResults &static_results, DynamicResults* dynamic_results, bool instrument) {
-    // Reset the static results - we'll collect them new
-    static_results = { 0 };
+  IntermediateResult doIteration(DynamicResults* dynamic_results, bool instrument) {
+    StaticResults static_results = { 0 };
     bool changed = false;
 
     LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
 
     for (BasicBlock* block : RPOT) {
-      AnalyzeBlockResult abr = analyze_block(*block, dynamic_results, instrument);
-      changed |= abr.changed;
-      static_results += abr.static_results;
+      IntermediateResult res = analyze_block(*block, dynamic_results, instrument);
+      changed |= res.changed;
+      static_results += res.static_results;
     }
 
-    return changed;
+    return IntermediateResult { changed, static_results };
   }
 
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
   /// Caller must only set this to `true` after the analysis has reached a
   /// fixpoint.
-  AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, bool instrument) {
+  IntermediateResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, bool instrument) {
     PerBlockState* pbs = block_states[&block];
     StaticResults static_results = { 0 };
     bool changed = false;
@@ -935,7 +930,7 @@ private:
     }
     changed |= end_changed;
     pbs->ptrs_end = std::move(ptr_statuses);
-    return AnalyzeBlockResult { changed, static_results };
+    return IntermediateResult { changed, static_results };
   }
 
   DynamicResults initializeDynamicResults() {
