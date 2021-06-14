@@ -28,6 +28,7 @@ static bool isOffsetAnInductionPattern(const GetElementPtrInst &gep, const DataL
 static bool isInductionVar(const Value* val, /* output */ APInt* out_induction_increment, /* output */ APInt* out_initial_val);
 static bool isValuePlusConstant(const Value* val, /* output */ const Value** out_val, /* output */ APInt* out_const);
 static bool isAllocatingCall(const CallBase &call);
+static bool shouldCountCallForStatsPurposes(const CallBase &call);
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str);
 static std::string regexSubAll(const Regex &R, const StringRef Repl, const StringRef String);
 
@@ -254,7 +255,7 @@ public:
     SmallVector<const Value*, 8> unk_ptrs = SmallVector<const Value*, 8>();
     for (auto& pair : map) {
       const Value* ptr = pair.getFirst();
-      if (ptr->getNameOrAsOperand().rfind("__DLIM", 0) == 0) {
+      if (ptr->hasName() && ptr->getName().startswith("__DLIM")) {
         // name starts with __DLIM, skip it
         continue;
       }
@@ -870,20 +871,22 @@ private:
         // handle them the same
         {
           const CallBase& call = cast<CallBase>(inst);
-          // count call arguments for static stats
-          for (const Use& arg : call.args()) {
-            const Value* value = arg.get();
-            if (value->getType()->isPointerTy()) {
-              switch (ptr_statuses.getStatus(value)) {
-                case CLEAN: COUNT_PTR(&inst, passed_ptrs, clean) break;
-                case BLEMISHED16: COUNT_PTR(&inst, passed_ptrs, blemished16) break;
-                case BLEMISHED32: COUNT_PTR(&inst, passed_ptrs, blemished32) break;
-                case BLEMISHED64: COUNT_PTR(&inst, passed_ptrs, blemished64) break;
-                case BLEMISHEDCONST: COUNT_PTR(&inst, passed_ptrs, blemishedconst) break;
-                case DIRTY: COUNT_PTR(&inst, passed_ptrs, dirty) break;
-                case UNKNOWN: COUNT_PTR(&inst, passed_ptrs, unknown) break;
-                case NOTDEFINEDYET: assert(false && "Call argument is a pointer with no status"); break;
-                default: assert(false && "PointerKind case not handled");
+          // count call arguments for stats purposes, if appropriate
+          if (shouldCountCallForStatsPurposes(call)) {
+            for (const Use& arg : call.args()) {
+              const Value* value = arg.get();
+              if (value->getType()->isPointerTy()) {
+                switch (ptr_statuses.getStatus(value)) {
+                  case CLEAN: COUNT_PTR(&inst, passed_ptrs, clean) break;
+                  case BLEMISHED16: COUNT_PTR(&inst, passed_ptrs, blemished16) break;
+                  case BLEMISHED32: COUNT_PTR(&inst, passed_ptrs, blemished32) break;
+                  case BLEMISHED64: COUNT_PTR(&inst, passed_ptrs, blemished64) break;
+                  case BLEMISHEDCONST: COUNT_PTR(&inst, passed_ptrs, blemishedconst) break;
+                  case DIRTY: COUNT_PTR(&inst, passed_ptrs, dirty) break;
+                  case UNKNOWN: COUNT_PTR(&inst, passed_ptrs, unknown) break;
+                  case NOTDEFINEDYET: assert(false && "Call argument is a pointer with no status"); break;
+                  default: assert(false && "PointerKind case not handled");
+                }
               }
             }
           }
@@ -1770,6 +1773,37 @@ static bool isAllocatingCall(const CallBase &call) {
     return true;
   }
   return false;
+}
+
+/// Is the given call one of the ones which we "should count" for stats
+/// purposes?
+/// (Calls to some LLVM intrinsics "shouldn't count" because they "aren't real",
+/// i.e., won't appear in the final binary)
+///
+/// (When unsure, we conservatively return `true`)
+static bool shouldCountCallForStatsPurposes(const CallBase &call) {
+  Function* callee = call.getCalledFunction();
+  if (!callee) {
+    // indirect call. when in doubt, count it.
+    return true;
+  }
+  if (!callee->hasName()) {
+    // call to anonymous function. when in doubt, count it.
+    return true;
+  }
+  StringRef name = callee->getName();
+  if (name.startswith("llvm.lifetime")
+    || name.startswith("llvm.invariant")
+    || name.startswith("llvm.launder.invariant")
+    || name.startswith("llvm.strip.invariant")
+    || name.startswith("llvm.dbg")
+    || name.startswith("llvm.expect"))
+  {
+    // these LLVM intrinsics shouldn't be counted for stats purposes
+    return false;
+  }
+  // count calls to all other functions
+  return true;
 }
 
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str) {
