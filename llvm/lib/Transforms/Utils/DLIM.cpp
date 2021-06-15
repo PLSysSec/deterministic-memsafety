@@ -639,12 +639,36 @@ private:
     return IntermediateResult { changed, static_results };
   }
 
+  /// Compute the `PointerStatuses` for the top of the given block, based on the
+  /// current `PointerStatuses` at the end of the block's predecessors.
+  ///
+  /// Caller must not call this on a block with no predecessors (e.g., the entry
+  /// block).
+  PointerStatuses computeTopOfBlockPointerStatuses(BasicBlock &block) {
+    assert(block.hasNPredecessorsOrMore(1));
+    // if any variable is clean at the end of all of this block's predecessors,
+    // then it is also clean at the beginning of this block
+    auto preds = pred_begin(&block);
+    const BasicBlock* firstPred = *preds;
+    const PerBlockState* firstPred_pbs = block_states[firstPred];
+    // we start with all of the ptr_statuses at the end of our first predecessor,
+    // then merge with the ptr_statuses at the end of our other predecessors
+    PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs->ptrs_end);
+    DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
+    for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
+      const BasicBlock* otherPred = *it;
+      const PerBlockState* otherPred_pbs = block_states[otherPred];
+      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
+      ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
+    }
+    return ptr_statuses;
+  }
+
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
   /// Caller must only set this to `true` after the analysis has reached a
   /// fixpoint.
   IntermediateResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, bool instrument) {
     PerBlockState* pbs = block_states[&block];
-    StaticResults static_results = { 0 };
 
     LLVM_DEBUG(
       StringRef blockname;
@@ -657,26 +681,20 @@ private:
     );
     DEBUG_WITH_TYPE("DLIM-block-previous-state", dbgs() << "DLIM:   this block previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
 
-    if (block.hasNPredecessors(0)) {
-      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we have " << pbs->ptrs_beg.describe() << "\n");
-    } else {
-      // if any variable is clean at the end of all of this block's predecessors,
-      // then it is also clean at the beginning of this block
-      auto preds = pred_begin(&block);
-      const BasicBlock* firstPred = *preds;
-      const PerBlockState* firstPred_pbs = block_states[firstPred];
-      // we start with all of the ptr_statuses at the end of our first predecessor,
-      // then merge with the ptr_statuses at the end of our other predecessors
-      PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs->ptrs_end);
-      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   first predecessor has " << ptr_statuses.describe() << " at end\n");
-      for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
-        const BasicBlock* otherPred = *it;
-        const PerBlockState* otherPred_pbs = block_states[otherPred];
-        DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
-        ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
-      }
-      // whatever's left is now the ptr_statuses at beginning of this block.
-      DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we now have " << pbs->ptrs_beg.describe() << "\n");
+    bool isEntryBlock = block.hasNPredecessors(0);  // technically a dead block could also have 0 predecessors, but we don't care what this analysis does with dead blocks. (If you run this pass after optimizations there shouldn't be dead blocks anyway.)
+
+    // The current pointer statuses. As we go through the block, this gets
+    // updated; its state at the end of the block will become `pbs->ptrs_end`.
+    PointerStatuses ptr_statuses = isEntryBlock ?
+      // for the entry block, we already correctly initialized the top-of-block
+      // pointer statuses, so just retrieve those and return them
+      pbs->ptrs_beg :
+      // for all other blocks, compute the top-of-block pointer statuses based
+      // on the block's predecessors
+      computeTopOfBlockPointerStatuses(block);
+    DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   at beginning of block, we have " << ptr_statuses.describe() << "\n");
+
+    if (!isEntryBlock) {
       // Let's check if that's any different from what we had last time
       if (ptr_statuses.isEqualTo(pbs->ptrs_beg)) {
         // no change. Unless we're instrumenting, there's no need to actually
@@ -691,16 +709,13 @@ private:
         // least one pointer status at top-of-block: namely, the pointer to the
         // current function, which will be in the `PointerStatuses` as CLEAN)
       } else {
-        // save the beginning-of-block ptr_statuses so we can do the above check
-        // on the next iteration
-        pbs->ptrs_beg = std::move(ptr_statuses);
+        // save the top-of-block ptr_statuses so we can do the above check on
+        // the next iteration
+        pbs->ptrs_beg = ptr_statuses;
       }
     }
 
-    // The current pointer statuses. This begins as `pbs->ptrs_beg`, and as we
-    // go through the block, gets updated; its state at the end of the block
-    // will become `pbs->ptrs_end`.
-    PointerStatuses ptr_statuses = PointerStatuses(pbs->ptrs_beg);
+    StaticResults static_results = { 0 };
 
     #define COUNT_PTR(ptr, category, kind) \
       static_results.category.kind++; \
