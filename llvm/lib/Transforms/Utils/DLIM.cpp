@@ -1387,11 +1387,35 @@ static PointerKind classifyGEPResult(
     if (offsetIsNonzeroConstant != NULL) *offsetIsNonzeroConstant = false; // it's a zero constant
     return input_kind;
   }
-  if (trustLLVMStructTypes && input_kind == CLEAN && areAllIndicesTrustworthy(gep)) {
-    // nonzero offset, but "trustworthy" offset, from a clean pointer.
-    // The resulting pointer is clean.
-    if (offsetIsNonzeroConstant != NULL) *offsetIsNonzeroConstant = false; // we consider this a "zero" constant. For this purpose.
-    return CLEAN;
+  if (trustLLVMStructTypes && areAllIndicesTrustworthy(gep)) {
+    // nonzero offset, but "trustworthy" offset.
+    switch (input_kind) {
+      case CLEAN: {
+        if (offsetIsNonzeroConstant != NULL) *offsetIsNonzeroConstant = false; // we consider this a "zero" constant. For this purpose.
+        return CLEAN;
+      }
+      case UNKNOWN: {
+        if (offsetIsNonzeroConstant != NULL) *offsetIsNonzeroConstant = false; // we consider this a "zero" constant. For this purpose.
+        return UNKNOWN;
+      }
+      case DIRTY: {
+        if (offsetIsNonzeroConstant != NULL) *offsetIsNonzeroConstant = false; // we consider this a "zero" constant. For this purpose.
+        return DIRTY;
+      }
+      case BLEMISHED16:
+      case BLEMISHED32:
+      case BLEMISHED64:
+      case BLEMISHEDCONST: {
+        // fall through. "Trustworthy" offset from a blemished pointer still needs
+        // to increase the blemished-ness of the pointer, as handled below.
+        break;
+      }
+      case NOTDEFINEDYET: {
+        assert(false && "GEP on a pointer with no status");
+      }
+      default:
+        assert(false && "PointerKind case not handled");
+    }
   }
 
   // if we get here, we don't have a zero constant offset. Either it's a nonzero constant,
