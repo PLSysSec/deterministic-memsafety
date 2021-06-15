@@ -473,7 +473,7 @@ public:
 
   /// Runs the analysis and returns the `StaticResults`
   StaticResults run() {
-    IntermediateResult res;
+    IterationResult res;
     res.changed = true;
 
     while (res.changed) {
@@ -496,7 +496,7 @@ public:
   /// analysis is complete.
   void instrument(DynamicPrintType print_type) {
     DynamicResults results = initializeDynamicResults();
-    IntermediateResult res = doIteration(&results, true);
+    IterationResult res = doIteration(&results, true);
     assert(!res.changed && "Don't run instrument() until analysis has reached fixpoint");
     addDynamicResultsPrint(results, print_type);
   }
@@ -609,34 +609,31 @@ private:
     }
   }
 
-  /// Return value for `doIteration` and `analyze_block`.
-  struct IntermediateResult {
-    /// For `analyze_block`, this indicates if any change was made to the
-    /// pointer statuses at the _end_ of the block.  (If so, subsequent blocks
-    /// may need to be reanalyzed.)
-    /// For `doIteration`, this indicates if any change was made to the pointer
-    /// statuses in _any_ block.  (If so, we should do another iteration.)
+  /// Return value for `doIteration`.
+  struct IterationResult {
+    /// This indicates if any change was made to the pointer statuses in _any_
+    /// block.  (If so, we should do another iteration.)
     bool changed;
-    /// `StaticResults` for this function or block
+    /// `StaticResults` for this function
     StaticResults static_results;
   };
 
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
   /// Caller must only set this to `true` after the analysis has reached a
   /// fixpoint.
-  IntermediateResult doIteration(DynamicResults* dynamic_results, bool instrument) {
+  IterationResult doIteration(DynamicResults* dynamic_results, bool instrument) {
     StaticResults static_results = { 0 };
     bool changed = false;
 
     LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
 
     for (BasicBlock* block : RPOT) {
-      IntermediateResult res = analyze_block(*block, dynamic_results, instrument);
-      changed |= res.changed;
+      AnalyzeBlockResult res = analyze_block(*block, dynamic_results, instrument);
+      changed |= res.end_of_block_statuses_changed;
       static_results += res.static_results;
     }
 
-    return IntermediateResult { changed, static_results };
+    return IterationResult { changed, static_results };
   }
 
   /// Compute the `PointerStatuses` for the top of the given block, based on the
@@ -664,10 +661,20 @@ private:
     return ptr_statuses;
   }
 
+  /// Return value for `analyze_block`.
+  struct AnalyzeBlockResult {
+    /// This indicates if any change was made to the pointer statuses at the
+    /// _end_ of the block.  (If so, subsequent blocks may need to be
+    /// reanalyzed.)
+    bool end_of_block_statuses_changed;
+    /// `StaticResults` for this block
+    StaticResults static_results;
+  };
+
   /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
   /// Caller must only set this to `true` after the analysis has reached a
   /// fixpoint.
-  IntermediateResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, bool instrument) {
+  AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, bool instrument) {
     PerBlockState* pbs = block_states[&block];
 
     LLVM_DEBUG(
@@ -700,7 +707,7 @@ private:
         // no change. Unless we're instrumenting, there's no need to actually
         // analyze this block. Just return the `StaticResults` we got last time.
         LLVM_DEBUG(dbgs() << "DLIM:   top-of-block statuses haven't changed\n");
-        if (!instrument) return IntermediateResult { false, pbs->static_results };
+        if (!instrument) return AnalyzeBlockResult { false, pbs->static_results };
         // (you could be concerned that this check could pass on the first
         // iteration if the top-of-block statuses happen to be equal to the
         // initial state of a `PointerStatuses`; and then we wouldn't ever
@@ -973,7 +980,7 @@ private:
     }
     pbs->ptrs_end = std::move(ptr_statuses);
     pbs->static_results = static_results;
-    return IntermediateResult { changed, static_results };
+    return AnalyzeBlockResult { changed, static_results };
   }
 
   DynamicResults initializeDynamicResults() {
