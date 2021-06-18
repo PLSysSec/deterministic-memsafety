@@ -22,6 +22,7 @@ using namespace llvm;
 
 #define DEBUG_TYPE "DLIM"
 
+template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool isOffsetAnInductionPattern(const GetElementPtrInst &gep, const DataLayout &DL, const LoopInfo &loopinfo, const PostDominatorTree &pdtree, /* output */ APInt* out_induction_offset, /* output */ APInt* out_initial_offset);
@@ -209,43 +210,10 @@ public:
   }
 
   bool isEqualTo(const PointerStatuses& other) const {
-    // first we check if every pair in A is also in B
-    for (const auto &pair : map) {
-      const auto& it = other.map.find(pair.getFirst());
-      if (it == other.map.end()) {
-        // key wasn't in other.map
-        if (pair.getSecond() == NOTDEFINEDYET) {
-          // missing from other.map, but marked NOTDEFINEDYET in this map: the maps are
-          // still equivalent (missing is implicitly NOTDEFINEDYET)
-          continue;
-        } else {
-          // missing from other.map, but defined in this map
-          return false;
-        }
-      }
-      if (it->getSecond() != pair.getSecond()) {
-        // maps disagree on what this key maps to
-        return false;
-      }
-    }
-    // now we check if every pair in B is also in A
-    for (const auto &pair : other.map) {
-      const auto &it = map.find(pair.getFirst());
-      if (it == map.end()) {
-        // key wasn't in this map
-        if (pair.getSecond() == NOTDEFINEDYET) {
-          // missing from this map, but marked NOTDEFINEDYET in other.map: the maps are
-          // still equivalent (missing is implicitly NOTDEFINEDYET)
-          continue;
-        } else {
-          // missing from this map, but defined in other.map
-          return false;
-        }
-      }
-      // if the key is in both maps, we already checked above that the maps
-      // agree on what this key maps to
-    }
-    return true;
+    // since we assert in `mark_as()` that we never explicitly mark anything
+    // NOTDEFINEDYET, we can just check that the `map`s contain exactly the same
+    // elements mapped to the same things
+    return mapsAreEqual(map, other.map);
   }
 
   std::string describe() const {
@@ -327,11 +295,34 @@ public:
 private:
   const DataLayout &DL;
   const bool trustLLVMStructTypes;
+  /// Maps a pointer to its status.
   /// Pointers not appearing in this map are considered NOTDEFINEDYET.
   /// As a corollary, hopefully all pointers which are currently live do appear
   /// in this map.
   SmallDenseMap<const Value*, PointerKind, 8> map;
 };
+
+template<typename K, typename V, unsigned N>
+static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B) {
+  // first: maps of different sizes can never be equal
+  if (A.size() != B.size()) return false;
+  // now check that all keys in A are also in B, and map to the same things
+  for (const auto &pair : A) {
+    const auto& it = B.find(pair.getFirst());
+    if (it == B.end()) {
+      // key wasn't in B
+      return false;
+    }
+    if (it->getSecond() != pair.getSecond()) {
+      // maps disagree on what this key maps to
+      return false;
+    }
+  }
+  // we don't need the reverse check (all keys in B are also in A) because we
+  // already checked that A and B have the same number of keys, and all keys in
+  // A are also in B
+  return true;
+}
 
 class DLIMAnalysis {
 public:
