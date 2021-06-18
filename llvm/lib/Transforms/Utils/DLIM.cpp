@@ -96,7 +96,7 @@ static PointerKind merge(const PointerKind a, const PointerKind b) {
   } else if (a == CLEAN && b == CLEAN) {
     return CLEAN;
   } else {
-    assert(false && "Missing case in merge function");
+    llvm_unreachable("Missing case in merge function");
   }
 }
 
@@ -193,14 +193,14 @@ public:
           default: {
             LLVM_DEBUG(dbgs() << "constant expression of unhandled opcode:\n");
             LLVM_DEBUG(expr->dump());
-            assert(false && "getting status of constant expression of unhandled opcode");
+            llvm_unreachable("getting status of constant expression of unhandled opcode");
           }
         }
       } else {
         // a constant, but not null and not a constant expression.
         LLVM_DEBUG(dbgs() << "constant pointer of unhandled kind:\n");
         LLVM_DEBUG(constant->dump());
-        assert(false && "getting status of constant pointer of unhandled kind");
+        llvm_unreachable("getting status of constant pointer of unhandled kind");
       }
     } else {
       // not found in map, and not a constant.
@@ -749,8 +749,8 @@ private:
               case BLEMISHEDCONST: COUNT_PTR(&inst, store_vals, blemishedconst) break;
               case DIRTY: COUNT_PTR(&inst, store_vals, dirty) break;
               case UNKNOWN: COUNT_PTR(&inst, store_vals, unknown) break;
-              case NOTDEFINEDYET: assert(false && "Storing a pointer with no status"); break;
-              default: assert(false && "PointerKind case not handled");
+              case NOTDEFINEDYET: llvm_unreachable("Storing a pointer with no status"); break;
+              default: llvm_unreachable("PointerKind case not handled");
             }
           }
           // next count the address
@@ -763,8 +763,8 @@ private:
             case BLEMISHEDCONST: COUNT_PTR(&inst, store_addrs, blemishedconst) break;
             case DIRTY: COUNT_PTR(&inst, store_addrs, dirty) break;
             case UNKNOWN: COUNT_PTR(&inst, store_addrs, unknown) break;
-            case NOTDEFINEDYET: assert(false && "Storing to pointer with no status"); break;
-            default: assert(false && "PointerKind case not handled");
+            case NOTDEFINEDYET: llvm_unreachable("Storing to pointer with no status"); break;
+            default: llvm_unreachable("PointerKind case not handled");
           }
           // now, the pointer used as an address becomes clean
           ptr_statuses.mark_clean(addr);
@@ -782,8 +782,8 @@ private:
             case BLEMISHEDCONST: COUNT_PTR(&inst, load_addrs, blemishedconst) break;
             case DIRTY: COUNT_PTR(&inst, load_addrs, dirty) break;
             case UNKNOWN: COUNT_PTR(&inst, load_addrs, unknown) break;
-            case NOTDEFINEDYET: assert(false && "Loading from pointer with no status"); break;
-            default: assert(false && "PointerKind case not handled");
+            case NOTDEFINEDYET: llvm_unreachable("Loading from pointer with no status"); break;
+            default: llvm_unreachable("PointerKind case not handled");
           }
           // now, the pointer becomes clean
           ptr_statuses.mark_clean(ptr);
@@ -830,8 +830,8 @@ private:
               case BLEMISHEDCONST: COUNT_PTR(&gep, pointer_arith_const, blemishedconst) break;
               case DIRTY: COUNT_PTR(&gep, pointer_arith_const, dirty) break;
               case UNKNOWN: COUNT_PTR(&gep, pointer_arith_const, unknown) break;
-              case NOTDEFINEDYET: assert(false && "GEP on a pointer with no status"); break;
-              default: assert(false && "PointerKind case not handled");
+              case NOTDEFINEDYET: llvm_unreachable("GEP on a pointer with no status"); break;
+              default: llvm_unreachable("PointerKind case not handled");
             }
           }
           break;
@@ -906,8 +906,8 @@ private:
                   case BLEMISHEDCONST: COUNT_PTR(&inst, passed_ptrs, blemishedconst) break;
                   case DIRTY: COUNT_PTR(&inst, passed_ptrs, dirty) break;
                   case UNKNOWN: COUNT_PTR(&inst, passed_ptrs, unknown) break;
-                  case NOTDEFINEDYET: assert(false && "Call argument is a pointer with no status"); break;
-                  default: assert(false && "PointerKind case not handled");
+                  case NOTDEFINEDYET: llvm_unreachable("Call argument is a pointer with no status"); break;
+                  default: llvm_unreachable("PointerKind case not handled");
                 }
               }
             }
@@ -956,8 +956,8 @@ private:
               case BLEMISHEDCONST: COUNT_PTR(&inst, returned_ptrs, blemishedconst) break;
               case DIRTY: COUNT_PTR(&inst, returned_ptrs, dirty) break;
               case UNKNOWN: COUNT_PTR(&inst, returned_ptrs, unknown) break;
-              case NOTDEFINEDYET: assert(false && "Returning a pointer with no status"); break;
-              default: assert(false && "PointerKind case not handled");
+              case NOTDEFINEDYET: llvm_unreachable("Returning a pointer with no status"); break;
+              default: llvm_unreachable("PointerKind case not handled");
             }
           }
           break;
@@ -1287,7 +1287,7 @@ private:
       Builder.CreateCall(Fclose, {file_handle});
       Builder.CreateBr(JustReturnBB);
     } else {
-      assert(false && "unexpected print_type\n");
+      llvm_unreachable("unexpected print_type\n");
     }
 
     // Inject this wrapper function into the GlobalDtors for the module
@@ -1411,10 +1411,10 @@ static PointerKind classifyGEPResult(
         break;
       }
       case NOTDEFINEDYET: {
-        assert(false && "GEP on a pointer with no status");
+        llvm_unreachable("GEP on a pointer with no status");
       }
       default:
-        assert(false && "PointerKind case not handled");
+        llvm_unreachable("PointerKind case not handled");
     }
   }
 
@@ -1495,11 +1495,11 @@ static PointerKind classifyGEPResult(
         break;
       }
       case NOTDEFINEDYET: {
-        assert(false && "GEP on a pointer with no status");
+        llvm_unreachable("GEP on a pointer with no status");
         break;
       }
       default: {
-        assert(false && "Missing PointerKind case");
+        llvm_unreachable("Missing PointerKind case");
         break;
       }
     }
@@ -1687,7 +1687,7 @@ static bool isOffsetAnInductionPattern(
       return false;
     }
   }
-  assert(false && "should return from inside the for loop");
+  llvm_unreachable("should return from inside the for loop");
 }
 
 /// Is the given `val` an induction variable?
