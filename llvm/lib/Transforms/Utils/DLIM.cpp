@@ -324,6 +324,8 @@ static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K,
   return true;
 }
 
+static const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
+
 class DLIMAnalysis {
 public:
   /// Creates and initializes the Analysis but doesn't actually run the analysis.
@@ -813,7 +815,7 @@ private:
           APInt constant_offset;
           ptr_statuses.mark_as(&gep, classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, is_induction_pattern ? &induction_offset : NULL, &offsetIsConstant, &constant_offset));
           // if we added a nonzero constant to a pointer, count that for stats purposes
-          if (offsetIsConstant && constant_offset != APInt(/* bits = */ 64, /* val = */ 0)) {
+          if (offsetIsConstant && constant_offset != zero) {
             switch (input_kind) {
               case CLEAN: COUNT_PTR(&gep, pointer_arith_const, clean) break;
               case BLEMISHED16: COUNT_PTR(&gep, pointer_arith_const, blemished16) break;
@@ -1008,7 +1010,7 @@ private:
     if (!gv->hasInitializer()) {
       gv->setLinkage(GlobalValue::PrivateLinkage);
       gv->setAlignment(MaybeAlign(8));
-      gv->setInitializer(ConstantInt::get(ctx, APInt(/* bits = */ 64, /* val = */ 0)));
+      gv->setInitializer(ConstantInt::get(ctx, zero));
     }
 
     return global;
@@ -1372,7 +1374,7 @@ static PointerKind classifyGEPResult(
 ) {
   bool offsetIsConstant = false;
   // `offset` is only valid if `offsetIsConstant`
-  APInt offset = APInt(/* bits = */ 64, /* val = */ 0);
+  APInt offset = zero;
   if (override_constant_offset == NULL) {
     offsetIsConstant = gep.accumulateConstantOffset(DL, offset);
   } else {
@@ -1382,7 +1384,7 @@ static PointerKind classifyGEPResult(
 
   if (gep.hasAllZeroIndices()) {
     // result of a GEP with all zeroes as indices, is the same as the input pointer.
-    assert(offsetIsConstant && offset == APInt(/* bits = */ 64, /* val = */ 0) && "If all indices are constant 0, then the total offset should be constant 0");
+    assert(offsetIsConstant && offset == zero && "If all indices are constant 0, then the total offset should be constant 0");
     if (out_offsetIsConstant != NULL) *out_offsetIsConstant = true; // it's a zero constant
     if (out_constant_offset != NULL) *out_constant_offset = offset;
     return input_kind;
@@ -1393,19 +1395,19 @@ static PointerKind classifyGEPResult(
       case CLEAN: {
         // we consider this a "zero" constant. For this purpose.
         if (out_offsetIsConstant != NULL) *out_offsetIsConstant = true;
-        if (out_constant_offset != NULL) *out_constant_offset = APInt(/* bits = */ 64, /* val = */ 0);
+        if (out_constant_offset != NULL) *out_constant_offset = zero;
         return CLEAN;
       }
       case UNKNOWN: {
         // we consider this a "zero" constant. For this purpose.
         if (out_offsetIsConstant != NULL) *out_offsetIsConstant = true;
-        if (out_constant_offset != NULL) *out_constant_offset = APInt(/* bits = */ 64, /* val = */ 0);
+        if (out_constant_offset != NULL) *out_constant_offset = zero;
         return UNKNOWN;
       }
       case DIRTY: {
         // we consider this a "zero" constant. For this purpose.
         if (out_offsetIsConstant != NULL) *out_offsetIsConstant = true;
-        if (out_constant_offset != NULL) *out_constant_offset = APInt(/* bits = */ 64, /* val = */ 0);
+        if (out_constant_offset != NULL) *out_constant_offset = zero;
         return DIRTY;
       }
       case BLEMISHED16:
