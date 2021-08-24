@@ -114,7 +114,7 @@ inttoptrs=$(cat $SCRATCH_DIR/inttoptrs.txt)
 rm -rf $SCRATCH_DIR
 
 RESULTS_FILE=dynamic_results.csv
-echo " ,clean,blemished16,blemished32,blemished64,blemishedconst,dirty,unknown" > $RESULTS_FILE
+echo " Category,clean,blemished16,blemished32,blemished64,blemishedconst,dirty,unknown" > $RESULTS_FILE
 echo "Load addresses,$loads_clean_addr,$loads_blemished16_addr,$loads_blemished32_addr,$loads_blemished64_addr,$loads_blemishedconst_addr,$loads_dirty_addr,$loads_unknown_addr" >> $RESULTS_FILE
 echo "Store addresses,$stores_clean_addr,$stores_blemished16_addr,$stores_blemished32_addr,$stores_blemished64_addr,$stores_blemishedconst_addr,$stores_dirty_addr,$stores_unknown_addr" >> $RESULTS_FILE
 echo "Pointers stored to memory,$stores_clean_val,$stores_blemished16_val,$stores_blemished32_val,$stores_blemished64_val,$stores_blemishedconst_val,$stores_dirty_val,$stores_unknown_val" >> $RESULTS_FILE
