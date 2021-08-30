@@ -157,7 +157,29 @@ static PointerKind merge(const PointerKind a, const PointerKind b) {
   }
 }
 
-static PointerKind classifyGEPResult(const GetElementPtrInst &gep, const PointerKind input_kind, const DataLayout &DL, const bool trustLLVMStructTypes, const APInt* override_constant_offset, /* output */ bool* out_offsetIsConstant, /* output */ APInt* out_constant_offset);
+/// Return type for `classifyGEPResult`.
+struct GEPResultClassification {
+  /// Classification of the result of the given `gep`.
+  PointerKind classification;
+  /// Was the total offset of the GEP considered a constant?
+  /// (If `override_constant_offset` is non-NULL, this will always be `true`, of
+  /// course.)
+  bool offset_is_constant;
+  /// If `offset_is_constant` is `true`, then this holds the value of the
+  /// constant offset.
+  /// (If `override_constant_offset` is non-NULL, `classifyGEPResult` will
+  /// copy that value to `constant_offset`.)
+  APInt constant_offset;
+};
+/// Classify the `PointerKind` of the result of the given `gep`, assuming that its
+/// input pointer is `input_kind`.
+/// This looks only at the `GetElementPtrInst` itself, and thus does not try to
+/// do any loop induction reasoning etc (that is done elsewhere).
+/// Think of this as giving the raw/default result for the `gep`.
+///
+/// `override_constant_offset`: if this is not NULL, then ignore the GEP's indices
+/// and classify it as if the offset were the given compile-time constant.
+static GEPResultClassification classifyGEPResult(const GetElementPtrInst &gep, const PointerKind input_kind, const DataLayout &DL, const bool trustLLVMStructTypes, const APInt* override_constant_offset);
 
 /// Conceptually stores the PointerKind of all currently valid pointers at a
 /// particular program point.
@@ -245,7 +267,7 @@ public:
             // constant-GEP expression
             const Instruction* inst = expr->getAsInstruction();
             const GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-            return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL, NULL, NULL);
+            return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL).classification;
           }
           default: {
             LLVM_DEBUG(dbgs() << "constant expression of unhandled opcode:\n");
@@ -863,11 +885,10 @@ private:
             // we don't consider it an induction pattern if it had negative initial and/or induction offsets
             ipr.is_induction_pattern = false;
           }
-          bool offsetIsConstant;
-          APInt constant_offset;
-          ptr_statuses.mark_as(&gep, classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, ipr.is_induction_pattern ? &ipr.induction_offset : NULL, &offsetIsConstant, &constant_offset));
+          GEPResultClassification grc = classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, ipr.is_induction_pattern ? &ipr.induction_offset : NULL);
+          ptr_statuses.mark_as(&gep, grc.classification);
           // if we added a nonzero constant to a pointer, count that for stats purposes
-          if (offsetIsConstant && constant_offset != zero) {
+          if (grc.offset_is_constant && grc.constant_offset != zero) {
             switch (input_kind) {
               case CLEAN: COUNT_PTR(&gep, pointer_arith_const, clean) break;
               case BLEMISHED16: COUNT_PTR(&gep, pointer_arith_const, blemished16) break;
@@ -1403,26 +1424,12 @@ PreservedAnalyses DynamicStdoutDLIMPass::run(Function &F, FunctionAnalysisManage
 ///
 /// `override_constant_offset`: if this is not NULL, then ignore the GEP's indices
 /// and classify it as if the offset were the given compile-time constant.
-///
-/// `out_offsetIsConstant`: an output parameter. This function will write to
-/// `out_offsetIsConstant` indicating if the total offset of the GEP was considered
-/// a constant or not. (If `override_constant_offset` is non-NULL, this will
-/// always be `true`, of course.)
-/// You can set `out_offsetIsConstant` to `NULL` if you don't need this output.
-///
-/// `out_constant_offset`: an output parameter. If the total offset of the GEP is
-/// considered to be a constant, this function will write that constant offset
-/// to `constant_offset`. (If `override_constant_offset` is non-NULL, this will
-/// copy that value to `constant_offset`.)
-/// You can set `constant_offset` to `NULL` if you don't need this output.
-static PointerKind classifyGEPResult(
+static GEPResultClassification classifyGEPResult(
   const GetElementPtrInst &gep,
   const PointerKind input_kind,
   const DataLayout &DL,
   const bool trustLLVMStructTypes,
-  const APInt* override_constant_offset,
-  /* output */ bool* out_offsetIsConstant,
-  /* output */ APInt* out_constant_offset
+  const APInt* override_constant_offset
 ) {
   bool offsetIsConstant = false;
   // `offset` is only valid if `offsetIsConstant`
@@ -1437,30 +1444,38 @@ static PointerKind classifyGEPResult(
   if (gep.hasAllZeroIndices()) {
     // result of a GEP with all zeroes as indices, is the same as the input pointer.
     assert(offsetIsConstant && offset == zero && "If all indices are constant 0, then the total offset should be constant 0");
-    if (out_offsetIsConstant != NULL) *out_offsetIsConstant = true; // it's a zero constant
-    if (out_constant_offset != NULL) *out_constant_offset = offset;
-    return input_kind;
+    GEPResultClassification grc;
+    grc.classification = input_kind;
+    grc.offset_is_constant = true; // it's a zero constant
+    grc.constant_offset = offset;
+    return grc;
   }
   if (trustLLVMStructTypes && areAllIndicesTrustworthy(gep)) {
     // nonzero offset, but "trustworthy" offset.
     switch (input_kind) {
       case CLEAN: {
+        GEPResultClassification grc;
+        grc.classification = CLEAN;
         // we consider this a "zero" constant. For this purpose.
-        if (out_offsetIsConstant != NULL) *out_offsetIsConstant = true;
-        if (out_constant_offset != NULL) *out_constant_offset = zero;
-        return CLEAN;
+        grc.offset_is_constant = true;
+        grc.constant_offset = zero;
+        return grc;
       }
       case UNKNOWN: {
+        GEPResultClassification grc;
+        grc.classification = UNKNOWN;
         // we consider this a "zero" constant. For this purpose.
-        if (out_offsetIsConstant != NULL) *out_offsetIsConstant = true;
-        if (out_constant_offset != NULL) *out_constant_offset = zero;
-        return UNKNOWN;
+        grc.offset_is_constant = true;
+        grc.constant_offset = zero;
+        return grc;
       }
       case DIRTY: {
+        GEPResultClassification grc;
+        grc.classification = DIRTY;
         // we consider this a "zero" constant. For this purpose.
-        if (out_offsetIsConstant != NULL) *out_offsetIsConstant = true;
-        if (out_constant_offset != NULL) *out_constant_offset = zero;
-        return DIRTY;
+        grc.offset_is_constant = true;
+        grc.constant_offset = zero;
+        return grc;
       }
       case BLEMISHED16:
       case BLEMISHED32:
@@ -1480,23 +1495,28 @@ static PointerKind classifyGEPResult(
 
   // if we get here, we don't have a zero constant offset. Either it's a nonzero constant,
   // or a nonconstant.
-  if (out_offsetIsConstant != NULL) *out_offsetIsConstant = offsetIsConstant;
-  if (offsetIsConstant && out_constant_offset != NULL) *out_constant_offset = offset;
+  GEPResultClassification grc;
+  grc.offset_is_constant = offsetIsConstant;
   if (offsetIsConstant) {
+    grc.constant_offset = offset;
     switch (input_kind) {
       case CLEAN: {
         // This GEP adds a constant but nonzero amount to a CLEAN
         // pointer. The result is some flavor of BLEMISHED depending
         // on how far the pointer arithmetic goes.
         if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
-          return BLEMISHED16;
+          grc.classification = BLEMISHED16;
+          return grc;
         } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
-          return BLEMISHED32;
+          grc.classification = BLEMISHED32;
+          return grc;
         } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 64))) {
-          return BLEMISHED64;
+          grc.classification = BLEMISHED64;
+          return grc;
         } else {
           // offset is constant, but larger than 64 bytes
-          return BLEMISHEDCONST;
+          grc.classification = BLEMISHEDCONST;
+          return grc;
         }
         break;
       }
@@ -1506,13 +1526,16 @@ static PointerKind classifyGEPResult(
         // depending on how far the pointer arithmetic goes.
         if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
           // Conservatively, the total offset can't exceed 32
-          return BLEMISHED32;
+          grc.classification = BLEMISHED32;
+          return grc;
         } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 48))) {
           // Conservatively, the total offset can't exceed 64
-          return BLEMISHED64;
+          grc.classification = BLEMISHED64;
+          return grc;
         } else {
           // offset is constant, but may be larger than 64 bytes
-          return BLEMISHEDCONST;
+          grc.classification = BLEMISHEDCONST;
+          return grc;
         }
         break;
       }
@@ -1522,10 +1545,12 @@ static PointerKind classifyGEPResult(
         // depending on how far the pointer arithmetic goes.
         if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
           // Conservatively, the total offset can't exceed 64
-          return BLEMISHED64;
+          grc.classification = BLEMISHED64;
+          return grc;
         } else {
           // offset is constant, but may be larger than 64 bytes
-          return BLEMISHEDCONST;
+          grc.classification = BLEMISHEDCONST;
+          return grc;
         }
         break;
       }
@@ -1533,26 +1558,30 @@ static PointerKind classifyGEPResult(
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED64 pointer. The result is BLEMISHEDCONST, as we
         // can't prove the total constant offset remains 64 or less.
-        return BLEMISHEDCONST;
+        grc.classification = BLEMISHEDCONST;
+        return grc;
         break;
       }
       case BLEMISHEDCONST: {
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHEDCONST pointer. The result is still BLEMISHEDCONST,
         // as the total offset is still a constant.
-        return BLEMISHEDCONST;
+        grc.classification = BLEMISHEDCONST;
+        return grc;
         break;
       }
       case DIRTY: {
         // result of a GEP with any nonzero indices, on a DIRTY or
         // UNKNOWN pointer, is always DIRTY.
-        return DIRTY;
+        grc.classification = DIRTY;
+        return grc;
         break;
       }
       case UNKNOWN: {
         // result of a GEP with any nonzero indices, on a DIRTY or
         // UNKNOWN pointer, is always DIRTY.
-        return DIRTY;
+        grc.classification = DIRTY;
+        return grc;
         break;
       }
       case NOTDEFINEDYET: {
@@ -1566,7 +1595,8 @@ static PointerKind classifyGEPResult(
     }
   } else {
     // offset is not constant; so, result is dirty
-    return DIRTY;
+    grc.classification = DIRTY;
+    return grc;
   }
 }
 
