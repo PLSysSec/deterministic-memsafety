@@ -29,6 +29,7 @@ static const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
 /// `is_induction_pattern` will be `true`; the GEP has effectively the offset
 /// `initial_offset` during the first loop iteration, and the offset is
 /// incremented by `induction_offset` each subsequent loop iteration.
+/// Offsets are in bytes.
 ///
 /// If the offset is not an induction pattern, then `is_induction_pattern` will
 /// be `false`, and the other fields are undefined.
@@ -40,10 +41,25 @@ struct InductionPatternResult {
 static InductionPatternResult no_induction_pattern = { false, zero, zero };
 static InductionPatternResult isOffsetAnInductionPattern(const GetElementPtrInst &gep, const DataLayout &DL, const LoopInfo &loopinfo, const PostDominatorTree &pdtree);
 
+/// Return type for `isInductionVar`.
+///
+/// If the given `val` is an induction variable, then `is_induction_var` will be
+/// `true`; `val` is equal to `initial_val` on the first loop iteration, and
+/// is incremented by `induction_increment` each iteration.
+///
+/// If `val` is not an induction variable, then `is_induction_var` will be
+/// `false`, and the other fields are undefined.
+struct InductionVarResult {
+  bool is_induction_var;
+  APInt induction_increment;
+  APInt initial_val;
+};
+static InductionVarResult no_induction_var = { false, zero, zero };
+static InductionVarResult isInductionVar(const Value* val);
+
 template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
-static bool isInductionVar(const Value* val, /* output */ APInt* out_induction_increment, /* output */ APInt* out_initial_val);
 static bool isValuePlusConstant(const Value* val, /* output */ const Value** out_val, /* output */ APInt* out_const);
 static bool isAllocatingCall(const CallBase &call);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
@@ -1632,28 +1648,27 @@ static InductionPatternResult isOffsetAnInductionPattern(
     // note that this for loop goes exactly one iteration, due to the check above.
     // `idx` will be the one index of the GEP.
     const Value* idx = idx_as_use.get();
-    APInt initial_val;
-    APInt induction_increment;
     const Value* val;
     APInt constant;
-    bool success = false;
-    if (isInductionVar(idx, &induction_increment, &initial_val)) {
+    InductionVarResult ivr = isInductionVar(idx);
+    if (ivr.is_induction_var) {
       DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     GEP single index is an induction var\n");
-      success = true;
     } else if (isValuePlusConstant(idx, &val, &constant)) {
       // GEP index is `val` plus `constant`. Let's see if `val` is itself an
       // induction variable. This can happen if we are, say, accessing
       // `arr[k+1]` in a loop over `k`
-      if (isInductionVar(val, &induction_increment, &initial_val)) {
+      ivr = isInductionVar(val);
+      if (ivr.is_induction_var) {
         DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     GEP single index is an induction var plus a constant " << constant << "\n");
-        initial_val = initial_val + constant;  // the first iteration, it's the initial value of the induction variable plus the constant it's always modified by
-        // but the induction increment doesn't care about the constant modification
-        success = true;
+        ivr.initial_val = ivr.initial_val + constant;
+        // the first iteration, it's the initial value of the induction variable
+        // plus the constant it's always modified by. but the induction increment
+        // doesn't care about the constant modification
       }
     }
-    if (!success) return no_induction_pattern;
+    if (!ivr.is_induction_var) return no_induction_pattern;
     // If we get to here, we've found an induction pattern, described by
-    // `initial_val` and `induction_increment`.
+    // `ivr.initial_val` and `ivr.induction_increment`.
     // However, we still need to ensure that the pointer produced by the GEP
     // actually is guaranteed to be dereferenced during every iteration
     // (resetting it to clean) -- otherwise we can't use the induction reasoning.
@@ -1662,7 +1677,7 @@ static InductionPatternResult isOffsetAnInductionPattern(
     //   - at least one of those load/stores must have both of these properties:
     //     - postdominates the GEP
     //     - is inside the loop
-    success = false;
+    bool success = false;
     const Loop* geploop = loopinfo.getLoopFor(gep.getParent());
     assert(geploop && "GEP should be in a loop");
     for (const User* user : gep.users()) {
@@ -1695,8 +1710,8 @@ static InductionPatternResult isOffsetAnInductionPattern(
       APInt ap_element_size = APInt(/* bits = */ 64, /* val = */ element_size);
       InductionPatternResult ipr;
       ipr.is_induction_pattern = true;
-      ipr.initial_offset = initial_val * ap_element_size;
-      ipr.induction_offset = induction_increment * ap_element_size;
+      ipr.initial_offset = ivr.initial_val * ap_element_size;
+      ipr.induction_offset = ivr.induction_increment * ap_element_size;
       return ipr;
     } else {
       DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     but failed the dereference-inside-loop check\n");
@@ -1710,16 +1725,7 @@ static InductionPatternResult isOffsetAnInductionPattern(
 /// Here, "induction variable" is narrowly defined as:
 ///     a PHI between a constant (initial value) and a variable (induction)
 ///     equal to itself plus or minus a constant
-///
-/// If so, returns `true` and writes to `out_induction_increment` and
-/// `out_initial_val`.
-/// `val` is equal to `out_initial_val` on the first loop iteration, and is
-/// incremented by `out_induction_increment` each iteration.
-static bool isInductionVar(
-  const Value* val,
-  /* output */ APInt* out_induction_increment,
-  /* output */ APInt* out_initial_val
-) {
+static InductionVarResult isInductionVar(const Value* val) {
   if (const PHINode* phi = dyn_cast<PHINode>(val)) {
     bool found_initial_val = false;
     bool found_induction_increment = false;
@@ -1731,14 +1737,14 @@ static bool isInductionVar(
       if (const Constant* phi_val_const = dyn_cast<Constant>(phi_val)) {
         if (found_initial_val) {
           // two constants in this phi. For now, this isn't a pattern we'll consider for induction.
-          return false;
+          return no_induction_var;
         }
         found_initial_val = true;
         initial_val = phi_val_const->getUniqueInteger();
       } else if (isValuePlusConstant(phi_val, &nonconstant_value, &induction_increment)) {
         if (found_induction_increment) {
           // two non-constants in this phi. For now, this isn't a pattern we'll consider for induction.
-          return false;
+          return no_induction_var;
         }
         // we're looking for the case where we are adding or subbing a
         // constant from the same value
@@ -1751,14 +1757,15 @@ static bool isInductionVar(
       initial_val = initial_val.sextOrSelf(64);
       induction_increment = induction_increment.sextOrSelf(64);
       DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     Found an induction var, initial " << initial_val << " and induction " << induction_increment << "\n");
-      *out_initial_val = std::move(initial_val);
-      *out_induction_increment = std::move(induction_increment);
-      return true;
+      InductionVarResult ivr;
+      ivr.initial_val = std::move(initial_val);
+      ivr.induction_increment = std::move(induction_increment);
+      return ivr;
     } else {
-      return false;
+      return no_induction_var;
     }
   } else {
-    return false;
+    return no_induction_var;
   }
 }
 
