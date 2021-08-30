@@ -57,10 +57,24 @@ struct InductionVarResult {
 static InductionVarResult no_induction_var = { false, zero, zero };
 static InductionVarResult isInductionVar(const Value* val);
 
+/// Return type for `isValuePlusConstant`.
+///
+/// If the given `val` is equal to another `Value` plus a constant, then `valid`
+/// will be `true`; the given `val` is equal to `value` plus `constant`.
+///
+/// If the given `val` is not equal to another `Value` plus a constant, then
+/// `valid` will be `false`, and the other fields are undefined.
+struct ValPlusConstantResult {
+  bool valid;
+  const Value* value;
+  APInt constant;
+};
+static ValPlusConstantResult not_a_val_plus_constant = { false, NULL, zero };
+static ValPlusConstantResult isValuePlusConstant(const Value* val);
+
 template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
-static bool isValuePlusConstant(const Value* val, /* output */ const Value** out_val, /* output */ APInt* out_const);
 static bool isAllocatingCall(const CallBase &call);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str);
@@ -1648,22 +1662,23 @@ static InductionPatternResult isOffsetAnInductionPattern(
     // note that this for loop goes exactly one iteration, due to the check above.
     // `idx` will be the one index of the GEP.
     const Value* idx = idx_as_use.get();
-    const Value* val;
-    APInt constant;
     InductionVarResult ivr = isInductionVar(idx);
     if (ivr.is_induction_var) {
       DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     GEP single index is an induction var\n");
-    } else if (isValuePlusConstant(idx, &val, &constant)) {
-      // GEP index is `val` plus `constant`. Let's see if `val` is itself an
-      // induction variable. This can happen if we are, say, accessing
-      // `arr[k+1]` in a loop over `k`
-      ivr = isInductionVar(val);
-      if (ivr.is_induction_var) {
-        DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     GEP single index is an induction var plus a constant " << constant << "\n");
-        ivr.initial_val = ivr.initial_val + constant;
-        // the first iteration, it's the initial value of the induction variable
-        // plus the constant it's always modified by. but the induction increment
-        // doesn't care about the constant modification
+    } else {
+      ValPlusConstantResult vpcr = isValuePlusConstant(idx);
+      if (vpcr.valid) {
+        // GEP index is `vpcr.value` plus `vpcr.constant`. Let's see if
+        // `vpcr.value` is itself an induction variable. This can happen if we
+        // are, say, accessing `arr[k+1]` in a loop over `k`
+        ivr = isInductionVar(vpcr.value);
+        if (ivr.is_induction_var) {
+          DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     GEP single index is an induction var plus a constant " << vpcr.constant << "\n");
+          ivr.initial_val = ivr.initial_val + vpcr.constant;
+          // the first iteration, it's the initial value of the induction variable
+          // plus the constant it's always modified by. but the induction increment
+          // doesn't care about the constant modification
+        }
       }
     }
     if (!ivr.is_induction_var) return no_induction_pattern;
@@ -1731,7 +1746,6 @@ static InductionVarResult isInductionVar(const Value* val) {
     bool found_induction_increment = false;
     APInt initial_val;
     APInt induction_increment;
-    const Value* nonconstant_value;
     for (const Use& use : phi->incoming_values()) {
       const Value* phi_val = use.get();
       if (const Constant* phi_val_const = dyn_cast<Constant>(phi_val)) {
@@ -1741,15 +1755,19 @@ static InductionVarResult isInductionVar(const Value* val) {
         }
         found_initial_val = true;
         initial_val = phi_val_const->getUniqueInteger();
-      } else if (isValuePlusConstant(phi_val, &nonconstant_value, &induction_increment)) {
-        if (found_induction_increment) {
-          // two non-constants in this phi. For now, this isn't a pattern we'll consider for induction.
-          return no_induction_var;
-        }
-        // we're looking for the case where we are adding or subbing a
-        // constant from the same value
-        if (nonconstant_value == val) {
-          found_induction_increment = true;
+      } else {
+        ValPlusConstantResult vpcr = isValuePlusConstant(phi_val);
+        if (vpcr.valid) {
+          if (found_induction_increment) {
+            // two non-constants in this phi. For now, this isn't a pattern we'll consider for induction.
+            return no_induction_var;
+          }
+          // we're looking for the case where we are adding or subbing a
+          // constant from the same value
+          if (vpcr.value == val) {
+            induction_increment = vpcr.constant;
+            found_induction_increment = true;
+          }
         }
       }
     }
@@ -1770,13 +1788,7 @@ static InductionVarResult isInductionVar(const Value* val) {
 }
 
 /// Is the given `val` defined as some other `Value` plus/minus a constant?
-/// If so, returns `true`, and writes to `out_val` and `out_const`, where `val`
-/// is defined as `out_val` plus `out_const`
-static bool isValuePlusConstant(
-  const Value* val,
-  /* output */ const Value** out_val,
-  /* output */ APInt* out_const
-) {
+static ValPlusConstantResult isValuePlusConstant(const Value* val) {
   if (const BinaryOperator* bop = dyn_cast<BinaryOperator>(val)) {
     switch (bop->getOpcode()) {
       case Instruction::Add:
@@ -1790,7 +1802,7 @@ static bool isValuePlusConstant(
           if (const Constant* op_const = dyn_cast<Constant>(op)) {
             if (found_constant_operand) {
               // adding or subbing two constants. Shouldn't be valid LLVM, but we'll fail gracefully.
-              return false;
+              return not_a_val_plus_constant;
             }
             found_constant_operand = true;
             constant_val = op_const->getUniqueInteger();
@@ -1800,7 +1812,7 @@ static bool isValuePlusConstant(
           } else {
             if (found_nonconstant_operand) {
               // two nonconstant operands
-              return false;
+              return not_a_val_plus_constant;
             }
             found_nonconstant_operand = true;
             nonconstant_val = op;
@@ -1808,19 +1820,21 @@ static bool isValuePlusConstant(
         }
         if (found_constant_operand && found_nonconstant_operand) {
           constant_val = constant_val.sextOrSelf(64);
-          *out_val = std::move(nonconstant_val);
-          *out_const = std::move(constant_val);
-          return true;
+          ValPlusConstantResult vpcr;
+          vpcr.valid = true;
+          vpcr.value = std::move(nonconstant_val);
+          vpcr.constant = std::move(constant_val);
+          return vpcr;
         } else {
-          return false;
+          return not_a_val_plus_constant;
         }
       }
       default: {
-        return false;
+        return not_a_val_plus_constant;
       }
     }
   } else {
-    return false;
+    return not_a_val_plus_constant;
   }
 }
 
