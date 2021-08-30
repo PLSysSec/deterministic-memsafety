@@ -22,10 +22,27 @@ using namespace llvm;
 
 #define DEBUG_TYPE "DLIM"
 
+static const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
+
+/// Return type for `isOffsetAnInductionPattern`.
+/// If the offset of the given GEP is an induction pattern, then
+/// `is_induction_pattern` will be `true`; the GEP has effectively the offset
+/// `initial_offset` during the first loop iteration, and the offset is
+/// incremented by `induction_offset` each subsequent loop iteration.
+///
+/// If the offset is not an induction pattern, then `is_induction_pattern` will
+/// be `false`, and the other fields are undefined.
+struct InductionPatternResult {
+  bool is_induction_pattern;
+  APInt induction_offset;
+  APInt initial_offset;
+};
+static InductionPatternResult no_induction_pattern = { false, zero, zero };
+static InductionPatternResult isOffsetAnInductionPattern(const GetElementPtrInst &gep, const DataLayout &DL, const LoopInfo &loopinfo, const PostDominatorTree &pdtree);
+
 template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
-static bool isOffsetAnInductionPattern(const GetElementPtrInst &gep, const DataLayout &DL, const LoopInfo &loopinfo, const PostDominatorTree &pdtree, /* output */ APInt* out_induction_offset, /* output */ APInt* out_initial_offset);
 static bool isInductionVar(const Value* val, /* output */ APInt* out_induction_increment, /* output */ APInt* out_initial_val);
 static bool isValuePlusConstant(const Value* val, /* output */ const Value** out_val, /* output */ APInt* out_const);
 static bool isAllocatingCall(const CallBase &call);
@@ -323,8 +340,6 @@ static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K,
   // A are also in B
   return true;
 }
-
-static const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
 
 class DLIMAnalysis {
 public:
@@ -798,22 +813,20 @@ private:
           GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
           const Value* input_ptr = gep.getPointerOperand();
           PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
-          APInt induction_offset;
-          APInt initial_offset;
-          bool is_induction_pattern = false;
-          if (isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree, &induction_offset, &initial_offset)
-            && induction_offset.isNonNegative()
-            && initial_offset.isNonNegative())
+          InductionPatternResult ipr = isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree);
+          if (ipr.is_induction_pattern && ipr.induction_offset.isNonNegative() && ipr.initial_offset.isNonNegative())
           {
-            is_induction_pattern = true;
-            if (initial_offset.sge(induction_offset)) {
-              induction_offset = std::move(initial_offset);
+            if (ipr.initial_offset.sge(ipr.induction_offset)) {
+              ipr.induction_offset = std::move(ipr.initial_offset);
             }
-            LLVM_DEBUG(dbgs() << "DLIM:   found an induction GEP with offset effectively constant " << induction_offset << "\n");
+            LLVM_DEBUG(dbgs() << "DLIM:   found an induction GEP with offset effectively constant " << ipr.induction_offset << "\n");
+          } else {
+            // we don't consider it an induction pattern if it had negative initial and/or induction offsets
+            ipr.is_induction_pattern = false;
           }
           bool offsetIsConstant;
           APInt constant_offset;
-          ptr_statuses.mark_as(&gep, classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, is_induction_pattern ? &induction_offset : NULL, &offsetIsConstant, &constant_offset));
+          ptr_statuses.mark_as(&gep, classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, ipr.is_induction_pattern ? &ipr.induction_offset : NULL, &offsetIsConstant, &constant_offset));
           // if we added a nonzero constant to a pointer, count that for stats purposes
           if (offsetIsConstant && constant_offset != zero) {
             switch (input_kind) {
@@ -1606,23 +1619,15 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
 /// Is the offset of the given GEP an induction pattern?
 /// This is looking for a pretty specific pattern for GEPs inside loops, which
 /// we can optimize checks for.
-///
-/// If this function identifies an induction pattern, it returns `true` and
-/// writes to `out_induction_offset` and `out_initial_offset`.
-/// The GEP has effectively the offset `out_initial_offset` during the first
-/// loop iteration, and the offset is incremented by `out_induction_offset` each
-/// subsequent loop iteration.
-static bool isOffsetAnInductionPattern(
+static InductionPatternResult isOffsetAnInductionPattern(
   const GetElementPtrInst &gep,
   const DataLayout &DL,
   const LoopInfo& loopinfo,
-  const PostDominatorTree& pdtree,
-  /* output */ APInt* out_induction_offset,
-  /* output */ APInt* out_initial_offset
+  const PostDominatorTree& pdtree
 ) {
   DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:   Checking the following gep for induction:\n");
   DEBUG_WITH_TYPE("DLIM-loop-induction", gep.dump());
-  if (gep.getNumIndices() != 1) return false; // we only handle simple cases for now
+  if (gep.getNumIndices() != 1) return no_induction_pattern; // we only handle simple cases for now
   for (const Use& idx_as_use : gep.indices()) {
     // note that this for loop goes exactly one iteration, due to the check above.
     // `idx` will be the one index of the GEP.
@@ -1646,7 +1651,7 @@ static bool isOffsetAnInductionPattern(
         success = true;
       }
     }
-    if (!success) return false;
+    if (!success) return no_induction_pattern;
     // If we get to here, we've found an induction pattern, described by
     // `initial_val` and `induction_increment`.
     // However, we still need to ensure that the pointer produced by the GEP
@@ -1688,12 +1693,14 @@ static bool isOffsetAnInductionPattern(
       auto element_size = DL.getTypeStoreSize(gep.getSourceElementType()).getFixedSize();
       assert(element_size > 0);
       APInt ap_element_size = APInt(/* bits = */ 64, /* val = */ element_size);
-      *out_initial_offset = initial_val * ap_element_size;
-      *out_induction_offset = induction_increment * ap_element_size;
-      return true;
+      InductionPatternResult ipr;
+      ipr.is_induction_pattern = true;
+      ipr.initial_offset = initial_val * ap_element_size;
+      ipr.induction_offset = induction_increment * ap_element_size;
+      return ipr;
     } else {
       DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     but failed the dereference-inside-loop check\n");
-      return false;
+      return no_induction_pattern;
     }
   }
   llvm_unreachable("should return from inside the for loop");
