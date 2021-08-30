@@ -25,6 +25,7 @@ using namespace llvm;
 static const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
 
 /// Return type for `isOffsetAnInductionPattern`.
+///
 /// If the offset of the given GEP is an induction pattern, then
 /// `is_induction_pattern` will be `true`; the GEP has effectively the offset
 /// `initial_offset` during the first loop iteration, and the offset is
@@ -39,6 +40,9 @@ struct InductionPatternResult {
   APInt initial_offset;
 };
 static InductionPatternResult no_induction_pattern = { false, zero, zero };
+/// Is the offset of the given GEP an induction pattern?
+/// This is looking for a pretty specific pattern for GEPs inside loops, which
+/// we can optimize checks for.
 static InductionPatternResult isOffsetAnInductionPattern(const GetElementPtrInst &gep, const DataLayout &DL, const LoopInfo &loopinfo, const PostDominatorTree &pdtree);
 
 /// Return type for `isInductionVar`.
@@ -55,6 +59,10 @@ struct InductionVarResult {
   APInt initial_val;
 };
 static InductionVarResult no_induction_var = { false, zero, zero };
+/// Is the given `val` an induction variable?
+/// Here, "induction variable" is narrowly defined as:
+///     a PHI between a constant (initial value) and a variable (induction)
+///     equal to itself plus or minus a constant
 static InductionVarResult isInductionVar(const Value* val);
 
 /// Return type for `isValuePlusConstant`.
@@ -70,6 +78,7 @@ struct ValPlusConstantResult {
   APInt constant;
 };
 static ValPlusConstantResult not_a_val_plus_constant = { false, NULL, zero };
+/// Is the given `val` defined as some other `Value` plus/minus a constant?
 static ValPlusConstantResult isValuePlusConstant(const Value* val);
 
 template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
