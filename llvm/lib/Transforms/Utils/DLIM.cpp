@@ -52,15 +52,15 @@ typedef enum PointerKind {
   // this bucket, but if we can't determine which bucket it belongs in, it
   // conservatively goes here.
   BLEMISHED64,
-  // BLEMISHEDCONST means "incremented by some compile-time-constant number of
-  // bytes from a clean pointer".
+  // BLEMISHEDCONST means "incremented/decremented by some compile-time-constant
+  // number of bytes from a clean pointer".
   // We'll make some effort to keep BLEMISHED16 / BLEMISHED32 / BLEMISHED64
   // pointers out of this bucket (leaving this bucket just for constants greater
-  // than 64), but if we can't determine which bucket it belongs in, it
-  // conservatively goes here.
+  // than 64, or negative constants), but if we can't determine which bucket it
+  // belongs in, it conservatively goes here.
   BLEMISHEDCONST,
-  // DIRTY means "may have been incremented by a non-compile-time-constant
-  // amount (or decremented by any amount) since last allocated or dereferenced"
+  // DIRTY means "may have been incremented/decremented by a
+  // non-compile-time-constant amount since last allocated or dereferenced"
   DIRTY,
   // NOTDEFINEDYET means that the pointer has not been defined yet at this program
   // point (at least, to our current knowledge). All pointers are (effectively)
