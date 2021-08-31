@@ -546,7 +546,7 @@ public:
     res.changed = true;
 
     while (res.changed) {
-      res = doIteration(NULL, false);
+      res = doIteration(NULL);
     }
 
     return res.static_results;
@@ -565,7 +565,7 @@ public:
   /// analysis is complete.
   void instrument(DynamicPrintType print_type) {
     DynamicResults results = initializeDynamicResults();
-    IterationResult res = doIteration(&results, true);
+    IterationResult res = doIteration(&results);
     assert(!res.changed && "Don't run instrument() until analysis has reached fixpoint");
     addDynamicResultsPrint(results, print_type);
   }
@@ -687,17 +687,18 @@ private:
     StaticResults static_results;
   };
 
-  /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
-  /// Caller must only set this to `true` after the analysis has reached a
-  /// fixpoint.
-  IterationResult doIteration(DynamicResults* dynamic_results, bool instrument) {
+  /// `dynamic_results`: if not NULL, then insert instrumentation to collect
+  /// dynamic counts in this `DynamicResults` object.
+  /// Caller must only pass a non-NULL value for this after the analysis has
+  /// reached a fixpoint.
+  IterationResult doIteration(DynamicResults* dynamic_results) {
     StaticResults static_results = { 0 };
     bool changed = false;
 
     LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
 
     for (BasicBlock* block : RPOT) {
-      AnalyzeBlockResult res = analyze_block(*block, dynamic_results, instrument);
+      AnalyzeBlockResult res = analyze_block(*block, dynamic_results);
       changed |= res.end_of_block_statuses_changed;
       static_results += res.static_results;
     }
@@ -740,10 +741,11 @@ private:
     StaticResults static_results;
   };
 
-  /// `instrument`: if `true`, insert instrumentation to collect dynamic counts.
-  /// Caller must only set this to `true` after the analysis has reached a
-  /// fixpoint.
-  AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, bool instrument) {
+  /// `dynamic_results`: if not NULL, then insert instrumentation to collect
+  /// dynamic counts in this `DynamicResults` object.
+  /// Caller must only pass a non-NULL value for this after the analysis has
+  /// reached a fixpoint.
+  AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results) {
     PerBlockState* pbs = block_states[&block];
 
     LLVM_DEBUG(
@@ -773,10 +775,11 @@ private:
     if (!isEntryBlock) {
       // Let's check if that's any different from what we had last time
       if (ptr_statuses.isEqualTo(pbs->ptrs_beg)) {
-        // no change. Unless we're instrumenting, there's no need to actually
-        // analyze this block. Just return the `StaticResults` we got last time.
+        // no change. Unless we're adding dynamic instrumentation, there's no
+        // need to actually analyze this block. Just return the `StaticResults`
+        // we got last time.
         LLVM_DEBUG(dbgs() << "DLIM:   top-of-block statuses haven't changed\n");
-        if (!instrument) return AnalyzeBlockResult { false, pbs->static_results };
+        if (!dynamic_results) return AnalyzeBlockResult { false, pbs->static_results };
         // (you could be concerned that this check could pass on the first
         // iteration if the top-of-block statuses happen to be equal to the
         // initial state of a `PointerStatuses`; and then we wouldn't ever
@@ -795,7 +798,7 @@ private:
 
     #define COUNT_PTR(ptr, category, kind) \
       static_results.category.kind++; \
-      if (instrument) { \
+      if (dynamic_results) { \
         incrementGlobalCounter(dynamic_results->category.kind, (ptr)); \
       }
 
@@ -947,7 +950,7 @@ private:
         case Instruction::IntToPtr: {
           // count this for stats, and then mark it as `inttoptr_kind`
           static_results.inttoptrs++;
-          if (instrument) {
+          if (dynamic_results) {
             incrementGlobalCounter(dynamic_results->inttoptrs, &inst);
           }
           ptr_statuses.mark_as(&inst, inttoptr_kind);
