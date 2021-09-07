@@ -89,79 +89,100 @@ static bool shouldCountCallForStatsPurposes(const CallBase &call);
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str);
 static std::string regexSubAll(const Regex &R, const StringRef Repl, const StringRef String);
 
-typedef enum PointerKind {
-  // As of this writing, the operations producing UNKNOWN are: returning a
-  // pointer from a call; or receiving a pointer as a function parameter
-  UNKNOWN = 0,
-  // CLEAN means "not modified since last allocated or dereferenced", or for
-  // some other reason we know it is in-bounds
-  CLEAN,
-  // BLEMISHED16 means "incremented by 16 bytes or less from a clean pointer"
-  BLEMISHED16,
-  // BLEMISHED32 means "incremented by 32 bytes or less from a clean pointer".
-  // We'll make some effort to keep BLEMISHED16 pointers out of this bucket, but
-  // if we can't determine which bucket it belongs in, it conservatively goes
-  // here.
-  BLEMISHED32,
-  // BLEMISHED64 means "incremented by 64 bytes or less from a clean pointer".
-  // We'll make some effort to keep BLEMISHED16 and BLEMISHED32 pointers out of
-  // this bucket, but if we can't determine which bucket it belongs in, it
-  // conservatively goes here.
-  BLEMISHED64,
-  // BLEMISHEDCONST means "incremented/decremented by some compile-time-constant
-  // number of bytes from a clean pointer".
-  // We'll make some effort to keep BLEMISHED16 / BLEMISHED32 / BLEMISHED64
-  // pointers out of this bucket (leaving this bucket just for constants greater
-  // than 64, or negative constants), but if we can't determine which bucket it
-  // belongs in, it conservatively goes here.
-  BLEMISHEDCONST,
-  // DIRTY means "may have been incremented/decremented by a
-  // non-compile-time-constant amount since last allocated or dereferenced"
-  DIRTY,
-  // DYNAMIC means that we don't know the kind statically, but the kind is
-  // stored in an LLVM variable. Currently, the only operation producing DYNAMIC
-  // is loading a pointer from memory. See `PointerStatus`.
-  DYNAMIC,
-  // NOTDEFINEDYET means that the pointer has not been defined yet at this program
-  // point (at least, to our current knowledge). All pointers are (effectively)
-  // initialized to NOTDEFINEDYET at the beginning of the fixpoint analysis, and
-  // as we iterate we gradually refine this.
-  NOTDEFINEDYET,
-} PointerKind;
+class PointerKind {
+public:
+  enum Kind {
+    // As of this writing, the operations producing UNKNOWN are: returning a
+    // pointer from a call; or receiving a pointer as a function parameter
+    UNKNOWN = 0,
+    // CLEAN means "not modified since last allocated or dereferenced", or for
+    // some other reason we know it is in-bounds
+    CLEAN,
+    // BLEMISHED16 means "incremented by 16 bytes or less from a clean pointer"
+    BLEMISHED16,
+    // BLEMISHED32 means "incremented by 32 bytes or less from a clean pointer".
+    // We'll make some effort to keep BLEMISHED16 pointers out of this bucket, but
+    // if we can't determine which bucket it belongs in, it conservatively goes
+    // here.
+    BLEMISHED32,
+    // BLEMISHED64 means "incremented by 64 bytes or less from a clean pointer".
+    // We'll make some effort to keep BLEMISHED16 and BLEMISHED32 pointers out of
+    // this bucket, but if we can't determine which bucket it belongs in, it
+    // conservatively goes here.
+    BLEMISHED64,
+    // BLEMISHEDCONST means "incremented/decremented by some compile-time-constant
+    // number of bytes from a clean pointer".
+    // We'll make some effort to keep BLEMISHED16 / BLEMISHED32 / BLEMISHED64
+    // pointers out of this bucket (leaving this bucket just for constants greater
+    // than 64, or negative constants), but if we can't determine which bucket it
+    // belongs in, it conservatively goes here.
+    BLEMISHEDCONST,
+    // DIRTY means "may have been incremented/decremented by a
+    // non-compile-time-constant amount since last allocated or dereferenced"
+    DIRTY,
+    // DYNAMIC means that we don't know the kind statically, but the kind is
+    // stored in an LLVM variable. Currently, the only operation producing DYNAMIC
+    // is loading a pointer from memory. See `PointerStatus`.
+    DYNAMIC,
+    // NOTDEFINEDYET means that the pointer has not been defined yet at this program
+    // point (at least, to our current knowledge). All pointers are (effectively)
+    // initialized to NOTDEFINEDYET at the beginning of the fixpoint analysis, and
+    // as we iterate we gradually refine this.
+    NOTDEFINEDYET,
+  };
 
-/// Merge two `PointerKind`s.
-/// For the purposes of this function, the ordering is
-/// DIRTY < UNKNOWN < BLEMISHEDCONST < BLEMISHED64 < BLEMISHED32 < BLEMISHED16 < CLEAN,
-/// and the merge returns the least element.
-/// NOTDEFINEDYET has the property where the merger of x and NOTDEFINEDYET is x
-/// (for all x) - for instance, if we are at a join point in the CFG where the
-/// pointer is x status on one incoming branch and not defined on the other,
-/// the pointer can have x status going forward.
-static PointerKind merge(const PointerKind a, const PointerKind b) {
-  if (a == DYNAMIC || b == DYNAMIC) {
-    llvm_unreachable("Can't PointerKind::merge a DYNAMIC; use PointerStatus::merge instead");
-  } else if (a == NOTDEFINEDYET) {
-    return b;
-  } else if (b == NOTDEFINEDYET) {
-    return a;
-  } else if (a == DIRTY || b == DIRTY) {
-    return DIRTY;
-  } else if (a == UNKNOWN || b == UNKNOWN) {
-    return UNKNOWN;
-  } else if (a == BLEMISHEDCONST || b == BLEMISHEDCONST) {
-    return BLEMISHEDCONST;
-  } else if (a == BLEMISHED64 || b == BLEMISHED64) {
-    return BLEMISHED64;
-  } else if (a == BLEMISHED32 || b == BLEMISHED32) {
-    return BLEMISHED32;
-  } else if (a == BLEMISHED16 || b == BLEMISHED16) {
-    return BLEMISHED16;
-  } else if (a == CLEAN && b == CLEAN) {
-    return CLEAN;
-  } else {
-    llvm_unreachable("Missing case in merge function");
+  constexpr PointerKind(Kind kind) : kind(kind) { }
+  PointerKind() : kind(UNKNOWN) {}
+
+  bool operator==(PointerKind& other) {
+    return kind == other.kind;
   }
-}
+  bool operator!=(PointerKind& other) {
+    return kind != other.kind;
+  }
+
+  /// Enable switch() on a `PointerKind` with the expected syntax
+  operator Kind() const { return kind; }
+  /// Disable if(kind) where `kind` is a `PointerKind`
+  explicit operator bool() = delete;
+
+  /// Merge two `PointerKind`s.
+  /// For the purposes of this function, the ordering is
+  /// DIRTY < UNKNOWN < BLEMISHEDCONST < BLEMISHED64 < BLEMISHED32 < BLEMISHED16 < CLEAN,
+  /// and the merge returns the least element.
+  /// NOTDEFINEDYET has the property where the merger of x and NOTDEFINEDYET is x
+  /// (for all x) - for instance, if we are at a join point in the CFG where the
+  /// pointer is x status on one incoming branch and not defined on the other,
+  /// the pointer can have x status going forward.
+  static PointerKind merge(const PointerKind a, const PointerKind b) {
+    if (a == DYNAMIC || b == DYNAMIC) {
+      llvm_unreachable("Can't PointerKind::merge a DYNAMIC; use PointerStatus::merge instead");
+    } else if (a == NOTDEFINEDYET) {
+      return b;
+    } else if (b == NOTDEFINEDYET) {
+      return a;
+    } else if (a == DIRTY || b == DIRTY) {
+      return DIRTY;
+    } else if (a == UNKNOWN || b == UNKNOWN) {
+      return UNKNOWN;
+    } else if (a == BLEMISHEDCONST || b == BLEMISHEDCONST) {
+      return BLEMISHEDCONST;
+    } else if (a == BLEMISHED64 || b == BLEMISHED64) {
+      return BLEMISHED64;
+    } else if (a == BLEMISHED32 || b == BLEMISHED32) {
+      return BLEMISHED32;
+    } else if (a == BLEMISHED16 || b == BLEMISHED16) {
+      return BLEMISHED16;
+    } else if (a == CLEAN && b == CLEAN) {
+      return CLEAN;
+    } else {
+      llvm_unreachable("Missing case in merge function");
+    }
+  }
+
+  private:
+  Kind kind;
+};
 
 typedef enum DynamicPointerKind {
   /// Same as PointerKind::CLEAN
@@ -200,34 +221,34 @@ struct PointerStatus {
   /// During iterations where `pointer_encoding` is `true`, it must not be NULL.
   Value* dynamic_kind;
 
-  static PointerStatus unknown() { return { UNKNOWN, NULL }; }
-  static PointerStatus clean() { return { CLEAN, NULL }; }
-  static PointerStatus blemished16() { return { BLEMISHED16, NULL }; }
-  static PointerStatus blemished32() { return { BLEMISHED32, NULL }; }
-  static PointerStatus blemished64() { return { BLEMISHED64, NULL }; }
-  static PointerStatus blemishedconst() { return { BLEMISHEDCONST, NULL }; }
-  static PointerStatus dirty() { return { DIRTY, NULL }; }
-  static PointerStatus notdefinedyet() { return { NOTDEFINEDYET, NULL }; }
-  static PointerStatus dynamic(Value* dynamic_kind) { return { DYNAMIC, dynamic_kind }; }
+  static PointerStatus unknown() { return { PointerKind::UNKNOWN, NULL }; }
+  static PointerStatus clean() { return { PointerKind::CLEAN, NULL }; }
+  static PointerStatus blemished16() { return { PointerKind::BLEMISHED16, NULL }; }
+  static PointerStatus blemished32() { return { PointerKind::BLEMISHED32, NULL }; }
+  static PointerStatus blemished64() { return { PointerKind::BLEMISHED64, NULL }; }
+  static PointerStatus blemishedconst() { return { PointerKind::BLEMISHEDCONST, NULL }; }
+  static PointerStatus dirty() { return { PointerKind::DIRTY, NULL }; }
+  static PointerStatus notdefinedyet() { return { PointerKind::NOTDEFINEDYET, NULL }; }
+  static PointerStatus dynamic(Value* dynamic_kind) { return { PointerKind::DYNAMIC, dynamic_kind }; }
 
   /// Merge two `PointerStatus`es.
-  /// See comments on ::merge.
+  /// See comments on PointerKind::merge.
   static PointerStatus merge(const PointerStatus a, const PointerStatus b) {
-    if (a.kind == DYNAMIC && b.kind == DYNAMIC) {
+    if (a.kind == PointerKind::DYNAMIC && b.kind == PointerKind::DYNAMIC) {
       assert(false && "unimplemented: merge() with a dynamic pointer kind");
-    } else if (a.kind == DYNAMIC) {
+    } else if (a.kind == PointerKind::DYNAMIC) {
       assert(false && "unimplemented: merge() with a dynamic pointer kind");
-    } else if (b.kind == DYNAMIC) {
+    } else if (b.kind == PointerKind::DYNAMIC) {
       assert(false && "unimplemented: merge() with a dynamic pointer kind");
     } else {
-      return { ::merge(a.kind, b.kind), NULL };
+      return { PointerKind::merge(a.kind, b.kind), NULL };
     }
   }
 };
 
 inline bool operator==(const PointerStatus& a, const PointerStatus& b) {
   if (a.kind != b.kind) return false;
-  if (a.kind == DYNAMIC || b.kind == DYNAMIC) {
+  if (a.kind == PointerKind::DYNAMIC || b.kind == PointerKind::DYNAMIC) {
     // require dynamic_kinds to be pointer-equal
     if (a.dynamic_kind != b.dynamic_kind) return false;
   }
@@ -279,31 +300,31 @@ public:
   }
 
   void mark_clean(const Value* ptr) {
-    mark_as(ptr, CLEAN);
+    mark_as(ptr, PointerKind::CLEAN);
   }
 
   void mark_dirty(const Value* ptr) {
-    mark_as(ptr, DIRTY);
+    mark_as(ptr, PointerKind::DIRTY);
   }
 
   void mark_blemished16(const Value* ptr) {
-    mark_as(ptr, BLEMISHED16);
+    mark_as(ptr, PointerKind::BLEMISHED16);
   }
 
   void mark_blemished32(const Value* ptr) {
-    mark_as(ptr, BLEMISHED32);
+    mark_as(ptr, PointerKind::BLEMISHED32);
   }
 
   void mark_blemished64(const Value* ptr) {
-    mark_as(ptr, BLEMISHED64);
+    mark_as(ptr, PointerKind::BLEMISHED64);
   }
 
   void mark_blemishedconst(const Value* ptr) {
-    mark_as(ptr, BLEMISHEDCONST);
+    mark_as(ptr, PointerKind::BLEMISHEDCONST);
   }
 
   void mark_unknown(const Value* ptr) {
-    mark_as(ptr, UNKNOWN);
+    mark_as(ptr, PointerKind::UNKNOWN);
   }
 
   /// During non-instrumenting iterations, we don't insert new dynamic
@@ -312,17 +333,17 @@ public:
   /// NULL.
   /// During iterations where `pointer_encoding` is `true`, it must not be NULL.
   void mark_dynamic(const Value* ptr, Value* dynamic_kind) {
-    mark_as(ptr, { DYNAMIC, dynamic_kind });
+    mark_as(ptr, { PointerKind::DYNAMIC, dynamic_kind });
   }
 
   // Use this for any `kind` except NOTDEFINEDYET or DYNAMIC
   void mark_as(const Value* ptr, PointerKind kind) {
     // don't explicitly mark anything NOTDEFINEDYET - we reserve
     // "not in the map" to mean NOTDEFINEDYET
-    assert(kind != NOTDEFINEDYET);
+    assert(kind != PointerKind::NOTDEFINEDYET);
     // DYNAMIC has to be handled with `mark_dynamic` or the other overload
     // of `mark_as`
-    assert(kind != DYNAMIC);
+    assert(kind != PointerKind::DYNAMIC);
     // insert() does nothing if the key was already in the map.
     // instead, it appears we have to use operator[], which seems to
     // work whether or not `ptr` was already in the map
@@ -333,7 +354,7 @@ public:
   void mark_as(const Value* ptr, PointerStatus status) {
     // don't explicitly mark anything NOTDEFINEDYET - we reserve
     // "not in the map" to mean NOTDEFINEDYET
-    assert(status.kind != NOTDEFINEDYET);
+    assert(status.kind != PointerKind::NOTDEFINEDYET);
     map[ptr] = status;
   }
 
@@ -407,20 +428,20 @@ public:
         continue;
       }
       switch (pair.getSecond().kind) {
-        case CLEAN:
+        case PointerKind::CLEAN:
           clean_ptrs.push_back(ptr);
           break;
-        case BLEMISHED16:
-        case BLEMISHED32:
-        case BLEMISHED64:
-        case BLEMISHEDCONST:
+        case PointerKind::BLEMISHED16:
+        case PointerKind::BLEMISHED32:
+        case PointerKind::BLEMISHED64:
+        case PointerKind::BLEMISHEDCONST:
           blem_ptrs.push_back(ptr);
           break;
-        case DIRTY:
+        case PointerKind::DIRTY:
           dirty_ptrs.push_back(ptr);
           break;
-        case UNKNOWN:
-        case DYNAMIC:
+        case PointerKind::UNKNOWN:
+        case PointerKind::DYNAMIC:
           unk_ptrs.push_back(ptr);
           break;
         default:
@@ -449,13 +470,11 @@ public:
       const Value* ptr = pair.getFirst();
       const PointerStatus status_in_a = pair.getSecond();
       const auto& it = b.map.find(ptr);
-      PointerStatus status_in_b;
-      if (it == b.map.end()) {
+      PointerStatus status_in_b = (it == b.map.end()) ?
         // implicitly NOTDEFINEDYET in b
-        status_in_b = PointerStatus::notdefinedyet();
-      } else {
-        status_in_b = it->getSecond();
-      }
+        PointerStatus::notdefinedyet() :
+        // defined in b, get the status
+        it->getSecond();
       merged.mark_as(ptr, PointerStatus::merge(status_in_a, status_in_b));
     }
     // at this point we've handled all the pointers which were defined in a.
@@ -929,15 +948,15 @@ private:
     #define COUNT_PTR_AS_STATUS(ptr, category, status, doing_what) \
       PointerStatus the_status = (status); /* in case (status) is an expensive-to-compute expression, compute it once here */ \
       switch (the_status.kind) { \
-        case CLEAN: COUNT_PTR(ptr, category, clean) break; \
-        case BLEMISHED16: COUNT_PTR(ptr, category, blemished16) break; \
-        case BLEMISHED32: COUNT_PTR(ptr, category, blemished32) break; \
-        case BLEMISHED64: COUNT_PTR(ptr, category, blemished64) break; \
-        case BLEMISHEDCONST: COUNT_PTR(ptr, category, blemishedconst) break; \
-        case DIRTY: COUNT_PTR(ptr, category, dirty) break; \
-        case UNKNOWN: COUNT_PTR(ptr, category, unknown) break; \
-        case DYNAMIC: COUNT_PTR_DYN(ptr, category, the_status) break; \
-        case NOTDEFINEDYET: llvm_unreachable(doing_what " with no status"); break; \
+        case PointerKind::CLEAN: COUNT_PTR(ptr, category, clean) break; \
+        case PointerKind::BLEMISHED16: COUNT_PTR(ptr, category, blemished16) break; \
+        case PointerKind::BLEMISHED32: COUNT_PTR(ptr, category, blemished32) break; \
+        case PointerKind::BLEMISHED64: COUNT_PTR(ptr, category, blemished64) break; \
+        case PointerKind::BLEMISHEDCONST: COUNT_PTR(ptr, category, blemishedconst) break; \
+        case PointerKind::DIRTY: COUNT_PTR(ptr, category, dirty) break; \
+        case PointerKind::UNKNOWN: COUNT_PTR(ptr, category, unknown) break; \
+        case PointerKind::DYNAMIC: COUNT_PTR_DYN(ptr, category, the_status) break; \
+        case PointerKind::NOTDEFINEDYET: llvm_unreachable(doing_what " with no status"); break; \
         default: llvm_unreachable("PointerKind case not handled"); \
       }
 
@@ -971,28 +990,28 @@ private:
               IRBuilder<> Builder(&store);
               Value* mask;
               switch (storedVal_status.kind) {
-                case CLEAN:
+                case PointerKind::CLEAN:
                   mask = Builder.getInt64(clean_mask);
                   break;
-                case BLEMISHED16:
+                case PointerKind::BLEMISHED16:
                   mask = Builder.getInt64(blemished16_mask);
                   break;
-                case BLEMISHED32:
-                case BLEMISHED64:
-                case BLEMISHEDCONST:
+                case PointerKind::BLEMISHED32:
+                case PointerKind::BLEMISHED64:
+                case PointerKind::BLEMISHEDCONST:
                   mask = Builder.getInt64(blemished_other_mask);
                   break;
-                case DIRTY:
+                case PointerKind::DIRTY:
                   mask = Builder.getInt64(dirty_mask);
                   break;
-                case UNKNOWN:
+                case PointerKind::UNKNOWN:
                   // for now we just mark UNKNOWN pointers as dirty when storing them
                   mask = Builder.getInt64(dirty_mask);
                   break;
-                case DYNAMIC:
+                case PointerKind::DYNAMIC:
                   mask = storedVal_status.dynamic_kind;
                   break;
-                case NOTDEFINEDYET:
+                case PointerKind::NOTDEFINEDYET:
                   llvm_unreachable("Shouldn't be storing a NOTDEFINEDYET pointer after we've reached fixpoint");
                   break;
                 default:
@@ -1128,7 +1147,7 @@ private:
           // (This is so that we ignore `IntToPtr`s which we inserted ourselves
           // as part of `pointer_encoding`.)
           PointerStatus prev_status = ptr_statuses.getStatus(&inst);
-          if (prev_status.kind != NOTDEFINEDYET && prev_status.kind != inttoptr_kind) {
+          if (prev_status.kind != PointerKind::NOTDEFINEDYET && prev_status.kind != inttoptr_kind) {
             break;
           }
           // count this for stats, and then mark it as `inttoptr_kind`
@@ -1557,7 +1576,7 @@ private:
 };
 
 PreservedAnalyses StaticDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
-  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, CLEAN);
+  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, PointerKind::CLEAN);
   DLIMAnalysis::StaticResults static_results = analysis.run();
   analysis.reportStaticResults(static_results);
 
@@ -1567,7 +1586,7 @@ PreservedAnalyses StaticDLIMPass::run(Function &F, FunctionAnalysisManager &FAM)
 }
 
 PreservedAnalyses ParanoidStaticDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
-  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, false, DIRTY);
+  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, false, PointerKind::DIRTY);
   DLIMAnalysis::StaticResults static_results = analysis.run();
   analysis.reportStaticResults(static_results);
 
@@ -1582,7 +1601,7 @@ PreservedAnalyses DynamicDLIMPass::run(Function &F, FunctionAnalysisManager &FAM
     return PreservedAnalyses::all();
   }
 
-  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, CLEAN);
+  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, PointerKind::CLEAN);
   analysis.run();
   analysis.instrument(true, DLIMAnalysis::DynamicPrintType::TOFILE);
 
@@ -1599,7 +1618,7 @@ PreservedAnalyses DynamicStdoutDLIMPass::run(Function &F, FunctionAnalysisManage
     return PreservedAnalyses::all();
   }
 
-  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, CLEAN);
+  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, PointerKind::CLEAN);
   analysis.run();
   analysis.instrument(true, DLIMAnalysis::DynamicPrintType::STDOUT);
 
@@ -1647,7 +1666,7 @@ static GEPResultClassification classifyGEPResult(
   if (trustLLVMStructTypes && areAllIndicesTrustworthy(gep)) {
     // nonzero offset, but "trustworthy" offset.
     switch (input_status.kind) {
-      case CLEAN: {
+      case PointerKind::CLEAN: {
         GEPResultClassification grc;
         grc.classification = PointerStatus::clean();
         // we consider this a "zero" constant. For this purpose.
@@ -1655,7 +1674,7 @@ static GEPResultClassification classifyGEPResult(
         grc.constant_offset = zero;
         return grc;
       }
-      case UNKNOWN: {
+      case PointerKind::UNKNOWN: {
         GEPResultClassification grc;
         grc.classification = PointerStatus::unknown();
         // we consider this a "zero" constant. For this purpose.
@@ -1663,7 +1682,7 @@ static GEPResultClassification classifyGEPResult(
         grc.constant_offset = zero;
         return grc;
       }
-      case DIRTY: {
+      case PointerKind::DIRTY: {
         GEPResultClassification grc;
         grc.classification = PointerStatus::dirty();
         // we consider this a "zero" constant. For this purpose.
@@ -1671,19 +1690,19 @@ static GEPResultClassification classifyGEPResult(
         grc.constant_offset = zero;
         return grc;
       }
-      case BLEMISHED16:
-      case BLEMISHED32:
-      case BLEMISHED64:
-      case BLEMISHEDCONST: {
+      case PointerKind::BLEMISHED16:
+      case PointerKind::BLEMISHED32:
+      case PointerKind::BLEMISHED64:
+      case PointerKind::BLEMISHEDCONST: {
         // fall through. "Trustworthy" offset from a blemished pointer still needs
         // to increase the blemished-ness of the pointer, as handled below.
         break;
       }
-      case DYNAMIC: {
+      case PointerKind::DYNAMIC: {
         assert(false && "unimplemented: GEP on a pointer with DYNAMIC status");
         break;
       }
-      case NOTDEFINEDYET: {
+      case PointerKind::NOTDEFINEDYET: {
         llvm_unreachable("GEP on a pointer with no status");
       }
       default:
@@ -1698,7 +1717,7 @@ static GEPResultClassification classifyGEPResult(
   if (offsetIsConstant) {
     grc.constant_offset = offset;
     switch (input_status.kind) {
-      case CLEAN: {
+      case PointerKind::CLEAN: {
         // This GEP adds a constant but nonzero amount to a CLEAN
         // pointer. The result is some flavor of BLEMISHED depending
         // on how far the pointer arithmetic goes.
@@ -1718,7 +1737,7 @@ static GEPResultClassification classifyGEPResult(
         }
         break;
       }
-      case BLEMISHED16: {
+      case PointerKind::BLEMISHED16: {
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED16 pointer. The result is some flavor of BLEMISHED
         // depending on how far the pointer arithmetic goes.
@@ -1737,7 +1756,7 @@ static GEPResultClassification classifyGEPResult(
         }
         break;
       }
-      case BLEMISHED32: {
+      case PointerKind::BLEMISHED32: {
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED32 pointer. The result is some flavor of BLEMISHED
         // depending on how far the pointer arithmetic goes.
@@ -1752,7 +1771,7 @@ static GEPResultClassification classifyGEPResult(
         }
         break;
       }
-      case BLEMISHED64: {
+      case PointerKind::BLEMISHED64: {
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED64 pointer. The result is BLEMISHEDCONST, as we
         // can't prove the total constant offset remains 64 or less.
@@ -1760,7 +1779,7 @@ static GEPResultClassification classifyGEPResult(
         return grc;
         break;
       }
-      case BLEMISHEDCONST: {
+      case PointerKind::BLEMISHEDCONST: {
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHEDCONST pointer. The result is still BLEMISHEDCONST,
         // as the total offset is still a constant.
@@ -1768,21 +1787,21 @@ static GEPResultClassification classifyGEPResult(
         return grc;
         break;
       }
-      case DIRTY: {
+      case PointerKind::DIRTY: {
         // result of a GEP with any nonzero indices, on a DIRTY or
         // UNKNOWN pointer, is always DIRTY.
         grc.classification = PointerStatus::dirty();
         return grc;
         break;
       }
-      case UNKNOWN: {
+      case PointerKind::UNKNOWN: {
         // result of a GEP with any nonzero indices, on a DIRTY or
         // UNKNOWN pointer, is always DIRTY.
         grc.classification = PointerStatus::dirty();
         return grc;
         break;
       }
-      case NOTDEFINEDYET: {
+      case PointerKind::NOTDEFINEDYET: {
         llvm_unreachable("GEP on a pointer with no status");
         break;
       }
