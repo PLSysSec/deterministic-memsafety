@@ -235,14 +235,24 @@ struct PointerStatus {
   /// See comments on PointerKind::merge.
   static PointerStatus merge(const PointerStatus a, const PointerStatus b) {
     if (a.kind == PointerKind::DYNAMIC && b.kind == PointerKind::DYNAMIC) {
-      assert(false && "unimplemented: merge() with a dynamic pointer kind");
+      if (a.dynamic_kind == NULL) return b;
+      if (b.dynamic_kind == NULL) return a;
+      if (a.dynamic_kind == b.dynamic_kind) return a;
+      llvm_unreachable("unimplemented: merge() with two unequal, non-null dynamic pointer kinds");
     } else if (a.kind == PointerKind::DYNAMIC) {
-      assert(false && "unimplemented: merge() with a dynamic pointer kind");
+      return merge_static_dynamic(b.kind, a.dynamic_kind);
     } else if (b.kind == PointerKind::DYNAMIC) {
-      assert(false && "unimplemented: merge() with a dynamic pointer kind");
+      return merge_static_dynamic(a.kind, b.dynamic_kind);
     } else {
       return { PointerKind::merge(a.kind, b.kind), NULL };
     }
+  }
+
+  private:
+  /// Merge a static `PointerKind` and a `dynamic_kind`.
+  /// See comments on PointerKind::merge.
+  static PointerStatus merge_static_dynamic(const PointerKind static_kind, Value* dynamic_kind) {
+    llvm_unreachable("unimplemented: merge() a static and a dynamic pointer kind");
   }
 };
 
