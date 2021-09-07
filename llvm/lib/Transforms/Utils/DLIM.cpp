@@ -90,11 +90,11 @@ static Constant* createGlobalConstStr(Module* mod, const char* global_name, cons
 static std::string regexSubAll(const Regex &R, const StringRef Repl, const StringRef String);
 
 typedef enum PointerKind {
-  // As of this writing, the operations producing UNKNOWN are: loading a pointer
-  // from memory; returning a pointer from a call; and receiving a pointer as a
-  // function parameter
+  // As of this writing, the operations producing UNKNOWN are: returning a
+  // pointer from a call; or receiving a pointer as a function parameter
   UNKNOWN = 0,
-  // CLEAN means "not modified since last allocated or dereferenced"
+  // CLEAN means "not modified since last allocated or dereferenced", or for
+  // some other reason we know it is in-bounds
   CLEAN,
   // BLEMISHED16 means "incremented by 16 bytes or less from a clean pointer"
   BLEMISHED16,
@@ -118,6 +118,10 @@ typedef enum PointerKind {
   // DIRTY means "may have been incremented/decremented by a
   // non-compile-time-constant amount since last allocated or dereferenced"
   DIRTY,
+  // DYNAMIC means that we don't know the kind statically, but the kind is
+  // stored in an LLVM variable. Currently, the only operation producing DYNAMIC
+  // is loading a pointer from memory. See `PointerStatus`.
+  DYNAMIC,
   // NOTDEFINEDYET means that the pointer has not been defined yet at this program
   // point (at least, to our current knowledge). All pointers are (effectively)
   // initialized to NOTDEFINEDYET at the beginning of the fixpoint analysis, and
@@ -134,7 +138,9 @@ typedef enum PointerKind {
 /// pointer is x status on one incoming branch and not defined on the other,
 /// the pointer can have x status going forward.
 static PointerKind merge(const PointerKind a, const PointerKind b) {
-  if (a == NOTDEFINEDYET) {
+  if (a == DYNAMIC || b == DYNAMIC) {
+    llvm_unreachable("Can't PointerKind::merge a DYNAMIC; use PointerStatus::merge instead");
+  } else if (a == NOTDEFINEDYET) {
     return b;
   } else if (b == NOTDEFINEDYET) {
     return a;
@@ -157,10 +163,84 @@ static PointerKind merge(const PointerKind a, const PointerKind b) {
   }
 }
 
+typedef enum DynamicPointerKind {
+  /// Same as PointerKind::CLEAN
+  DYN_CLEAN = 3,
+  /// Same as PointerKind::BLEMISHED16
+  DYN_BLEMISHED16 = 1,
+  /// Any BLEMISHED other than BLEMISHED16
+  DYN_BLEMISHEDOTHER = 2,
+  /// Anything else is conservatively considered DIRTY
+  DYN_DIRTY = 0,
+} DynamicPointerKind;
+
+static const uint64_t dirty_mask = ((uint64_t)DYN_DIRTY) << 48;
+static const uint64_t blemished16_mask = ((uint64_t)DYN_BLEMISHED16) << 48;
+static const uint64_t blemished_other_mask = ((uint64_t)DYN_BLEMISHEDOTHER) << 48;
+static const uint64_t clean_mask = ((uint64_t)DYN_CLEAN) << 48;
+static const uint64_t dynamic_kind_mask = ((uint64_t)0b11) << 48;
+
+/// If C++ had ADTs, PointerKind::DYNAMIC would carry an LLVM Value*.  (And maybe
+/// BLEMISHED would carry an int indicating exactly how blemished.)  Instead,
+/// we have this.
+struct PointerStatus {
+  /// the PointerKind
+  PointerKind kind;
+  /// Only for PointerKind::DYNAMIC, this holds the dynamic kind. This will be a
+  /// Value of type i64, where all bits are zeroes except possibly bits 48 and
+  /// 49, whose value together indicate the dynamic kind according to
+  /// DynamicPointerKind (above).
+  ///
+  /// This field is undefined if `kind` is not `DYNAMIC`.
+  ///
+  /// During non-instrumenting iterations, we don't insert new dynamic
+  /// instructions and thus can't create or check `dynamic_kind`s.
+  /// During these iterations, `dynamic_kind` is allowed to be (and will be)
+  /// NULL.
+  /// During iterations where `pointer_encoding` is `true`, it must not be NULL.
+  Value* dynamic_kind;
+
+  static PointerStatus unknown() { return { UNKNOWN, NULL }; }
+  static PointerStatus clean() { return { CLEAN, NULL }; }
+  static PointerStatus blemished16() { return { BLEMISHED16, NULL }; }
+  static PointerStatus blemished32() { return { BLEMISHED32, NULL }; }
+  static PointerStatus blemished64() { return { BLEMISHED64, NULL }; }
+  static PointerStatus blemishedconst() { return { BLEMISHEDCONST, NULL }; }
+  static PointerStatus dirty() { return { DIRTY, NULL }; }
+  static PointerStatus notdefinedyet() { return { NOTDEFINEDYET, NULL }; }
+  static PointerStatus dynamic(Value* dynamic_kind) { return { DYNAMIC, dynamic_kind }; }
+
+  /// Merge two `PointerStatus`es.
+  /// See comments on ::merge.
+  static PointerStatus merge(const PointerStatus a, const PointerStatus b) {
+    if (a.kind == DYNAMIC && b.kind == DYNAMIC) {
+      assert(false && "unimplemented: merge() with a dynamic pointer kind");
+    } else if (a.kind == DYNAMIC) {
+      assert(false && "unimplemented: merge() with a dynamic pointer kind");
+    } else if (b.kind == DYNAMIC) {
+      assert(false && "unimplemented: merge() with a dynamic pointer kind");
+    } else {
+      return { ::merge(a.kind, b.kind), NULL };
+    }
+  }
+};
+
+inline bool operator==(const PointerStatus& a, const PointerStatus& b) {
+  if (a.kind != b.kind) return false;
+  if (a.kind == DYNAMIC || b.kind == DYNAMIC) {
+    // require dynamic_kinds to be pointer-equal
+    if (a.dynamic_kind != b.dynamic_kind) return false;
+  }
+  return true;
+}
+inline bool operator!=(const PointerStatus& a, const PointerStatus& b) {
+  return !(a == b);
+}
+
 /// Return type for `classifyGEPResult`.
 struct GEPResultClassification {
   /// Classification of the result of the given `gep`.
-  PointerKind classification;
+  PointerStatus classification;
   /// Was the total offset of the GEP considered a constant?
   /// (If `override_constant_offset` is non-NULL, this will always be `true`, of
   /// course.)
@@ -171,15 +251,15 @@ struct GEPResultClassification {
   /// copy that value to `constant_offset`.)
   APInt constant_offset;
 };
-/// Classify the `PointerKind` of the result of the given `gep`, assuming that its
-/// input pointer is `input_kind`.
+/// Classify the `PointerStatus` of the result of the given `gep`, assuming that its
+/// input pointer is `input_status`.
 /// This looks only at the `GetElementPtrInst` itself, and thus does not try to
 /// do any loop induction reasoning etc (that is done elsewhere).
 /// Think of this as giving the raw/default result for the `gep`.
 ///
 /// `override_constant_offset`: if this is not NULL, then ignore the GEP's indices
 /// and classify it as if the offset were the given compile-time constant.
-static GEPResultClassification classifyGEPResult(const GetElementPtrInst &gep, const PointerKind input_kind, const DataLayout &DL, const bool trustLLVMStructTypes, const APInt* override_constant_offset);
+static GEPResultClassification classifyGEPResult(const GetElementPtrInst &gep, const PointerStatus input_status, const DataLayout &DL, const bool trustLLVMStructTypes, const APInt* override_constant_offset);
 
 /// Conceptually stores the PointerKind of all currently valid pointers at a
 /// particular program point.
@@ -226,17 +306,38 @@ public:
     mark_as(ptr, UNKNOWN);
   }
 
+  /// During non-instrumenting iterations, we don't insert new dynamic
+  /// instructions and thus can't create or check `dynamic_kind`s.
+  /// During these iterations, `dynamic_kind` is allowed to be (and will be)
+  /// NULL.
+  /// During iterations where `pointer_encoding` is `true`, it must not be NULL.
+  void mark_dynamic(const Value* ptr, Value* dynamic_kind) {
+    mark_as(ptr, { DYNAMIC, dynamic_kind });
+  }
+
+  // Use this for any `kind` except NOTDEFINEDYET or DYNAMIC
   void mark_as(const Value* ptr, PointerKind kind) {
     // don't explicitly mark anything NOTDEFINEDYET - we reserve
     // "not in the map" to mean NOTDEFINEDYET
     assert(kind != NOTDEFINEDYET);
+    // DYNAMIC has to be handled with `mark_dynamic` or the other overload
+    // of `mark_as`
+    assert(kind != DYNAMIC);
     // insert() does nothing if the key was already in the map.
     // instead, it appears we have to use operator[], which seems to
     // work whether or not `ptr` was already in the map
-    map[ptr] = kind;
+    map[ptr] = { kind, NULL };
   }
 
-  PointerKind getStatus(const Value* ptr) const {
+  // Use this for any `kind` except NOTDEFINEDYET
+  void mark_as(const Value* ptr, PointerStatus status) {
+    // don't explicitly mark anything NOTDEFINEDYET - we reserve
+    // "not in the map" to mean NOTDEFINEDYET
+    assert(status.kind != NOTDEFINEDYET);
+    map[ptr] = status;
+  }
+
+  PointerStatus getStatus(const Value* ptr) const {
     auto it = map.find(ptr);
     if (it != map.end()) {
       // found it in the map
@@ -246,17 +347,17 @@ public:
     if (const Constant* constant = dyn_cast<Constant>(ptr)) {
       if (constant->isNullValue()) {
         // the null pointer can be considered CLEAN
-        return CLEAN;
+        return PointerStatus::clean();
       } else if (isa<UndefValue>(constant)) {
         // undef values, which includes poison values, can be considered CLEAN
-        return CLEAN;
+        return PointerStatus::clean();
       } else if (const ConstantExpr* expr = dyn_cast<ConstantExpr>(constant)) {
         // it's a pointer created by a compile-time constant expression
         if (expr->isGEPWithNoNotionalOverIndexing()) {
           // this seems sufficient to consider the pointer clean, based on docs
           // of this method. GEP on a constant pointer, with constant indices,
           // that LLVM thinks are all in-bounds
-          return CLEAN;
+          return PointerStatus::clean();
         }
         switch (expr->getOpcode()) {
           case Instruction::BitCast: {
@@ -283,7 +384,7 @@ public:
       }
     } else {
       // not found in map, and not a constant.
-      return NOTDEFINEDYET;
+      return PointerStatus::notdefinedyet();
     }
   }
 
@@ -305,7 +406,7 @@ public:
         // name starts with __DLIM, skip it
         continue;
       }
-      switch (pair.getSecond()) {
+      switch (pair.getSecond().kind) {
         case CLEAN:
           clean_ptrs.push_back(ptr);
           break;
@@ -319,6 +420,7 @@ public:
           dirty_ptrs.push_back(ptr);
           break;
         case UNKNOWN:
+        case DYNAMIC:
           unk_ptrs.push_back(ptr);
           break;
         default:
@@ -337,7 +439,7 @@ public:
   }
 
   /// Merge the two given PointerStatuses. If they disagree on any pointer,
-  /// use the `PointerKind` `merge` function to combine the two results.
+  /// use the `PointerStatus` `merge` function to combine the two results.
   /// Recall that any pointer not appearing in the `map` is considered NOTDEFINEDYET.
   static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b) {
     assert(a.DL == b.DL);
@@ -345,26 +447,26 @@ public:
     PointerStatuses merged(a.DL, a.trustLLVMStructTypes);
     for (const auto& pair : a.map) {
       const Value* ptr = pair.getFirst();
-      const PointerKind kind_in_a = pair.getSecond();
+      const PointerStatus status_in_a = pair.getSecond();
       const auto& it = b.map.find(ptr);
-      PointerKind kind_in_b;
+      PointerStatus status_in_b;
       if (it == b.map.end()) {
         // implicitly NOTDEFINEDYET in b
-        kind_in_b = NOTDEFINEDYET;
+        status_in_b = PointerStatus::notdefinedyet();
       } else {
-        kind_in_b = it->getSecond();
+        status_in_b = it->getSecond();
       }
-      merged.mark_as(ptr, ::merge(kind_in_a, kind_in_b));
+      merged.mark_as(ptr, PointerStatus::merge(status_in_a, status_in_b));
     }
     // at this point we've handled all the pointers which were defined in a.
     // what's left is the pointers which were defined in b and NOTDEFINEDYET in a
     for (const auto& pair : b.map) {
       const Value* ptr = pair.getFirst();
-      const PointerKind kind_in_b = pair.getSecond();
+      const PointerStatus status_in_b = pair.getSecond();
       const auto& it = a.map.find(ptr);
       if (it == a.map.end()) {
         // implicitly NOTDEFINEDYET in a
-        merged.mark_as(ptr, ::merge(NOTDEFINEDYET, kind_in_b));
+        merged.mark_as(ptr, PointerStatus::merge(PointerStatus::notdefinedyet(), status_in_b));
       }
     }
     return merged;
@@ -377,7 +479,7 @@ private:
   /// Pointers not appearing in this map are considered NOTDEFINEDYET.
   /// As a corollary, hopefully all pointers which are currently live do appear
   /// in this map.
-  SmallDenseMap<const Value*, PointerKind, 8> map;
+  SmallDenseMap<const Value*, PointerStatus, 8> map;
 };
 
 template<typename K, typename V, unsigned N>
@@ -437,7 +539,7 @@ public:
     unsigned blemished64;
     unsigned blemishedconst;
     unsigned dirty;
-    unsigned unknown;
+    unsigned unknown; // the static "unknown" category includes all pointers with dynamic status
 
     StaticCounts operator+(const StaticCounts& other) const {
       return StaticCounts {
@@ -546,7 +648,7 @@ public:
     res.changed = true;
 
     while (res.changed) {
-      res = doIteration(NULL);
+      res = doIteration(NULL, false);
     }
 
     return res.static_results;
@@ -563,10 +665,15 @@ public:
   /// Instruments the code for dynamic counts.
   /// You _must_ run() the analysis first -- instrument() assumes that the
   /// analysis is complete.
-  void instrument(DynamicPrintType print_type) {
+  ///
+  /// `pointer_encoding`: If `true`, modify the in-memory representation of
+  /// pointers so that bits 48 and 49 give information about the pointer status.
+  /// This informs dynamic counts.
+  void instrument(const bool pointer_encoding, DynamicPrintType print_type) {
     DynamicResults results = initializeDynamicResults();
-    IterationResult res = doIteration(&results);
+    IterationResult res = doIteration(NULL, false);
     assert(!res.changed && "Don't run instrument() until analysis has reached fixpoint");
+    doIteration(&results, pointer_encoding);
     addDynamicResultsPrint(results, print_type);
   }
 
@@ -691,14 +798,18 @@ private:
   /// dynamic counts in this `DynamicResults` object.
   /// Caller must only pass a non-NULL value for this after the analysis has
   /// reached a fixpoint.
-  IterationResult doIteration(DynamicResults* dynamic_results) {
+  ///
+  /// `pointer_encoding`: If `true` (and `dynamic_results` is not NULL), modify
+  /// the in-memory representation of pointers so that bits 48 and 49 give
+  /// information about the pointer status.  This informs dynamic counts.
+  IterationResult doIteration(DynamicResults* dynamic_results, const bool pointer_encoding) {
     StaticResults static_results = { 0 };
     bool changed = false;
 
     LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
 
     for (BasicBlock* block : RPOT) {
-      AnalyzeBlockResult res = analyze_block(*block, dynamic_results);
+      AnalyzeBlockResult res = analyze_block(*block, dynamic_results, pointer_encoding);
       changed |= res.end_of_block_statuses_changed;
       static_results += res.static_results;
     }
@@ -745,7 +856,11 @@ private:
   /// dynamic counts in this `DynamicResults` object.
   /// Caller must only pass a non-NULL value for this after the analysis has
   /// reached a fixpoint.
-  AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results) {
+  ///
+  /// `pointer_encoding`: If `true` (and `dynamic_results` is not NULL), modify
+  /// the in-memory representation of pointers so that bits 48 and 49 give
+  /// information about the pointer status.  This informs dynamic counts.
+  AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, const bool pointer_encoding) {
     PerBlockState* pbs = block_states[&block];
 
     LLVM_DEBUG(
@@ -802,6 +917,30 @@ private:
         incrementGlobalCounter(dynamic_results->category.kind, (ptr)); \
       }
 
+    // same as COUNT_PTR, but for a dynamic kind.
+    // This is counted as UNKNOWN statically, but has an actual kind
+    // dynamically.
+    #define COUNT_PTR_DYN(ptr, category, status) \
+      static_results.category.unknown++; \
+      if (dynamic_results) { \
+        incrementGlobalCounterForDynKind(dynamic_results->category, (status), (ptr)); \
+      }
+
+    #define COUNT_PTR_AS_STATUS(ptr, category, status, doing_what) \
+      PointerStatus the_status = (status); /* in case (status) is an expensive-to-compute expression, compute it once here */ \
+      switch (the_status.kind) { \
+        case CLEAN: COUNT_PTR(ptr, category, clean) break; \
+        case BLEMISHED16: COUNT_PTR(ptr, category, blemished16) break; \
+        case BLEMISHED32: COUNT_PTR(ptr, category, blemished32) break; \
+        case BLEMISHED64: COUNT_PTR(ptr, category, blemished64) break; \
+        case BLEMISHEDCONST: COUNT_PTR(ptr, category, blemishedconst) break; \
+        case DIRTY: COUNT_PTR(ptr, category, dirty) break; \
+        case UNKNOWN: COUNT_PTR(ptr, category, unknown) break; \
+        case DYNAMIC: COUNT_PTR_DYN(ptr, category, the_status) break; \
+        case NOTDEFINEDYET: llvm_unreachable(doing_what " with no status"); break; \
+        default: llvm_unreachable("PointerKind case not handled"); \
+      }
+
     // now: process each instruction
     // we only need to worry about pointer dereferences, and instructions which
     // produce pointers
@@ -809,62 +948,108 @@ private:
     for (Instruction &inst : block) {
       switch (inst.getOpcode()) {
         case Instruction::Store: {
-          const StoreInst& store = cast<StoreInst>(inst);
-          // first count the stored value (if it's a pointer)
-          const Value* storedVal = store.getValueOperand();
+          StoreInst& store = cast<StoreInst>(inst);
+          // first, if we're storing a pointer we have some extra work to do.
+          Value* storedVal = store.getValueOperand();
           if (storedVal->getType()->isPointerTy()) {
-            switch (ptr_statuses.getStatus(storedVal)) {
-              case CLEAN: COUNT_PTR(&inst, store_vals, clean) break;
-              case BLEMISHED16: COUNT_PTR(&inst, store_vals, blemished16) break;
-              case BLEMISHED32: COUNT_PTR(&inst, store_vals, blemished32) break;
-              case BLEMISHED64: COUNT_PTR(&inst, store_vals, blemished64) break;
-              case BLEMISHEDCONST: COUNT_PTR(&inst, store_vals, blemishedconst) break;
-              case DIRTY: COUNT_PTR(&inst, store_vals, dirty) break;
-              case UNKNOWN: COUNT_PTR(&inst, store_vals, unknown) break;
-              case NOTDEFINEDYET: llvm_unreachable("Storing a pointer with no status"); break;
-              default: llvm_unreachable("PointerKind case not handled");
+            // we count the stored pointer for stats purposes
+            PointerStatus storedVal_status = ptr_statuses.getStatus(storedVal);
+            COUNT_PTR_AS_STATUS(&inst, store_vals, storedVal_status, "Storing a pointer");
+            // then, if `pointer_encoding`, we modify the store instruction to
+            // store the encoded pointer instead.
+            // Specifically, when we store the pointer to memory, we use bits
+            // 48-49 to indicate its PointerKind. 00 indicates DIRTY, 01
+            // indicates BLEMISHED16, 10 indicates any other BLEMISHED kind, 11
+            // indicates CLEAN.
+            // When we later load this pointer from memory, we'll check bits
+            // 48-49 to learn the pointer type, then clear them so the pointer
+            // is valid for use.
+            // (We assume all pointers are userspace pointers, so 48-49 should
+            // be 0 for valid pointers.)
+            if (pointer_encoding) {
+              assert(dynamic_results && "Shouldn't have pointer_encoding true if dynamic_results is NULL");
+              IRBuilder<> Builder(&store);
+              Value* mask;
+              switch (storedVal_status.kind) {
+                case CLEAN:
+                  mask = Builder.getInt64(clean_mask);
+                  break;
+                case BLEMISHED16:
+                  mask = Builder.getInt64(blemished16_mask);
+                  break;
+                case BLEMISHED32:
+                case BLEMISHED64:
+                case BLEMISHEDCONST:
+                  mask = Builder.getInt64(blemished_other_mask);
+                  break;
+                case DIRTY:
+                  mask = Builder.getInt64(dirty_mask);
+                  break;
+                case UNKNOWN:
+                  // for now we just mark UNKNOWN pointers as dirty when storing them
+                  mask = Builder.getInt64(dirty_mask);
+                  break;
+                case DYNAMIC:
+                  mask = storedVal_status.dynamic_kind;
+                  break;
+                case NOTDEFINEDYET:
+                  llvm_unreachable("Shouldn't be storing a NOTDEFINEDYET pointer after we've reached fixpoint");
+                  break;
+                default:
+                  llvm_unreachable("PointerKind case not handled");
+              }
+              // create `new_storedVal` which has the appropriate bits set
+              Value* storedVal_as_int = Builder.CreatePtrToInt(storedVal, Builder.getInt64Ty());
+              Value* new_storedVal = Builder.CreateOr(storedVal_as_int, mask);
+              Value* new_storedVal_as_ptr = Builder.CreateIntToPtr(new_storedVal, storedVal->getType());
+              // store the new (encoded) value instead of the old one
+              store.setOperand(0, new_storedVal_as_ptr);
+              LLVM_DEBUG(dbgs() << "DLIM:   encoded a stored pointer\n");
             }
           }
           // next count the address
           const Value* addr = store.getPointerOperand();
-          switch (ptr_statuses.getStatus(addr)) {
-            case CLEAN: COUNT_PTR(&inst, store_addrs, clean) break;
-            case BLEMISHED16: COUNT_PTR(&inst, store_addrs, blemished16) break;
-            case BLEMISHED32: COUNT_PTR(&inst, store_addrs, blemished32) break;
-            case BLEMISHED64: COUNT_PTR(&inst, store_addrs, blemished64) break;
-            case BLEMISHEDCONST: COUNT_PTR(&inst, store_addrs, blemishedconst) break;
-            case DIRTY: COUNT_PTR(&inst, store_addrs, dirty) break;
-            case UNKNOWN: COUNT_PTR(&inst, store_addrs, unknown) break;
-            case NOTDEFINEDYET: llvm_unreachable("Storing to pointer with no status"); break;
-            default: llvm_unreachable("PointerKind case not handled");
-          }
+          COUNT_PTR_AS_STATUS(&inst, store_addrs, ptr_statuses.getStatus(addr), "Storing to pointer");
           // now, the pointer used as an address becomes clean
           ptr_statuses.mark_clean(addr);
           break;
         }
         case Instruction::Load: {
-          const LoadInst& load = cast<LoadInst>(inst);
+          LoadInst& load = cast<LoadInst>(inst);
           const Value* ptr = load.getPointerOperand();
           // first count this for static stats
-          switch (ptr_statuses.getStatus(ptr)) {
-            case CLEAN: COUNT_PTR(&inst, load_addrs, clean) break;
-            case BLEMISHED16: COUNT_PTR(&inst, load_addrs, blemished16) break;
-            case BLEMISHED32: COUNT_PTR(&inst, load_addrs, blemished32) break;
-            case BLEMISHED64: COUNT_PTR(&inst, load_addrs, blemished64) break;
-            case BLEMISHEDCONST: COUNT_PTR(&inst, load_addrs, blemishedconst) break;
-            case DIRTY: COUNT_PTR(&inst, load_addrs, dirty) break;
-            case UNKNOWN: COUNT_PTR(&inst, load_addrs, unknown) break;
-            case NOTDEFINEDYET: llvm_unreachable("Loading from pointer with no status"); break;
-            default: llvm_unreachable("PointerKind case not handled");
-          }
+          COUNT_PTR_AS_STATUS(&inst, load_addrs, ptr_statuses.getStatus(ptr), "Loading from pointer");
           // now, the pointer becomes clean
           ptr_statuses.mark_clean(ptr);
 
           if (load.getType()->isPointerTy()) {
-            // in this case, we loaded a pointer from memory, and have to
-            // worry about whether it's clean or not.
-            // For now, we mark it UNKNOWN.
-            ptr_statuses.mark_unknown(&load);
+            // in this case, we loaded a pointer from memory, so we
+            // only know its status dynamically, not statically.
+            // See notes above on the Store case.
+            if (pointer_encoding) {
+              IRBuilder<> BeforeLoad(&load);
+              // but we want to insert _after_ the load, not before it
+              BasicBlock* bb = BeforeLoad.GetInsertBlock();
+              auto ip = BeforeLoad.GetInsertPoint();
+              ip++;
+              IRBuilder<> AfterLoad(bb, ip);
+              Value* val_as_int = AfterLoad.CreatePtrToInt(&load, AfterLoad.getInt64Ty());
+              Value* dynamic_kind = AfterLoad.CreateAnd(val_as_int, dynamic_kind_mask);
+              Value* new_val = AfterLoad.CreateAnd(val_as_int, ~dynamic_kind_mask);
+              Value* new_val_as_ptr = AfterLoad.CreateIntToPtr(new_val, load.getType());
+              // replace all uses of `load` with the modified loaded ptr, except
+              // of course the use which we just inserted (which generates
+              // `val_as_int`)
+              load.replaceUsesWithIf(
+                new_val_as_ptr,
+                [val_as_int](Use &U){ return U.getUser() != val_as_int; }
+              );
+              ptr_statuses.mark_dynamic(new_val_as_ptr, dynamic_kind);
+            } else {
+              // when not `pointer_encoding`, we're allowed to pass NULL here.
+              // see notes on `mark_dynamic`
+              ptr_statuses.mark_dynamic(&load, NULL);
+            }
           }
           break;
         }
@@ -876,7 +1061,7 @@ private:
         case Instruction::GetElementPtr: {
           GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
           const Value* input_ptr = gep.getPointerOperand();
-          PointerKind input_kind = ptr_statuses.getStatus(input_ptr);
+          PointerStatus input_status = ptr_statuses.getStatus(input_ptr);
           InductionPatternResult ipr = isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree);
           if (ipr.is_induction_pattern && ipr.induction_offset.isNonNegative() && ipr.initial_offset.isNonNegative())
           {
@@ -888,21 +1073,11 @@ private:
             // we don't consider it an induction pattern if it had negative initial and/or induction offsets
             ipr.is_induction_pattern = false;
           }
-          GEPResultClassification grc = classifyGEPResult(gep, input_kind, DL, trustLLVMStructTypes, ipr.is_induction_pattern ? &ipr.induction_offset : NULL);
+          GEPResultClassification grc = classifyGEPResult(gep, input_status, DL, trustLLVMStructTypes, ipr.is_induction_pattern ? &ipr.induction_offset : NULL);
           ptr_statuses.mark_as(&gep, grc.classification);
           // if we added a nonzero constant to a pointer, count that for stats purposes
           if (grc.offset_is_constant && grc.constant_offset != zero) {
-            switch (input_kind) {
-              case CLEAN: COUNT_PTR(&gep, pointer_arith_const, clean) break;
-              case BLEMISHED16: COUNT_PTR(&gep, pointer_arith_const, blemished16) break;
-              case BLEMISHED32: COUNT_PTR(&gep, pointer_arith_const, blemished32) break;
-              case BLEMISHED64: COUNT_PTR(&gep, pointer_arith_const, blemished64) break;
-              case BLEMISHEDCONST: COUNT_PTR(&gep, pointer_arith_const, blemishedconst) break;
-              case DIRTY: COUNT_PTR(&gep, pointer_arith_const, dirty) break;
-              case UNKNOWN: COUNT_PTR(&gep, pointer_arith_const, unknown) break;
-              case NOTDEFINEDYET: llvm_unreachable("GEP on a pointer with no status"); break;
-              default: llvm_unreachable("PointerKind case not handled");
-            }
+            COUNT_PTR_AS_STATUS(&gep, pointer_arith_const, input_status, "GEP on a pointer");
           }
           break;
         }
@@ -925,29 +1100,37 @@ private:
             // output is clean if both inputs are clean; etc
             const Value* true_input = select.getTrueValue();
             const Value* false_input = select.getFalseValue();
-            const PointerKind true_kind = ptr_statuses.getStatus(true_input);
-            const PointerKind false_kind = ptr_statuses.getStatus(false_input);
-            ptr_statuses.mark_as(&select, merge(true_kind, false_kind));
+            const PointerStatus true_status = ptr_statuses.getStatus(true_input);
+            const PointerStatus false_status = ptr_statuses.getStatus(false_input);
+            ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status));
           }
           break;
         }
         case Instruction::PHI: {
           const PHINode& phi = cast<PHINode>(inst);
           if (phi.getType()->isPointerTy()) {
-            // phi: result kind is the merger of the kinds of all the inputs
+            // phi: result status is the merger of the statuses of all the inputs
             // in their corresponding blocks
-            PointerKind merged_kind = CLEAN;
+            PointerStatus merged_status = PointerStatus::clean();
             for (const Use& use : phi.incoming_values()) {
               const BasicBlock* bb = phi.getIncomingBlock(use);
               auto& ptr_statuses_end_of_bb = block_states[bb]->ptrs_end;
               const Value* value = use.get();
-              merged_kind = merge(merged_kind, ptr_statuses_end_of_bb.getStatus(value));
+              merged_status = PointerStatus::merge(merged_status, ptr_statuses_end_of_bb.getStatus(value));
             }
-            ptr_statuses.mark_as(&phi, merged_kind);
+            ptr_statuses.mark_as(&phi, merged_status);
           }
           break;
         }
         case Instruction::IntToPtr: {
+          // if it's already in the map with a kind other than `inttoptr_kind`,
+          // then ignore this for stats purposes and don't override the status.
+          // (This is so that we ignore `IntToPtr`s which we inserted ourselves
+          // as part of `pointer_encoding`.)
+          PointerStatus prev_status = ptr_statuses.getStatus(&inst);
+          if (prev_status.kind != NOTDEFINEDYET && prev_status.kind != inttoptr_kind) {
+            break;
+          }
           // count this for stats, and then mark it as `inttoptr_kind`
           static_results.inttoptrs++;
           if (dynamic_results) {
@@ -968,17 +1151,7 @@ private:
             for (const Use& arg : call.args()) {
               const Value* value = arg.get();
               if (value->getType()->isPointerTy()) {
-                switch (ptr_statuses.getStatus(value)) {
-                  case CLEAN: COUNT_PTR(&inst, passed_ptrs, clean) break;
-                  case BLEMISHED16: COUNT_PTR(&inst, passed_ptrs, blemished16) break;
-                  case BLEMISHED32: COUNT_PTR(&inst, passed_ptrs, blemished32) break;
-                  case BLEMISHED64: COUNT_PTR(&inst, passed_ptrs, blemished64) break;
-                  case BLEMISHEDCONST: COUNT_PTR(&inst, passed_ptrs, blemishedconst) break;
-                  case DIRTY: COUNT_PTR(&inst, passed_ptrs, dirty) break;
-                  case UNKNOWN: COUNT_PTR(&inst, passed_ptrs, unknown) break;
-                  case NOTDEFINEDYET: llvm_unreachable("Call argument is a pointer with no status"); break;
-                  default: llvm_unreachable("PointerKind case not handled");
-                }
+                COUNT_PTR_AS_STATUS(&inst, passed_ptrs, ptr_statuses.getStatus(value), "Call argument is a pointer");
               }
             }
           }
@@ -1018,17 +1191,7 @@ private:
           const ReturnInst& ret = cast<ReturnInst>(inst);
           const Value* retval = ret.getReturnValue();
           if (retval && retval->getType()->isPointerTy()) {
-            switch (ptr_statuses.getStatus(retval)) {
-              case CLEAN: COUNT_PTR(&inst, returned_ptrs, clean) break;
-              case BLEMISHED16: COUNT_PTR(&inst, returned_ptrs, blemished16) break;
-              case BLEMISHED32: COUNT_PTR(&inst, returned_ptrs, blemished32) break;
-              case BLEMISHED64: COUNT_PTR(&inst, returned_ptrs, blemished64) break;
-              case BLEMISHEDCONST: COUNT_PTR(&inst, returned_ptrs, blemishedconst) break;
-              case DIRTY: COUNT_PTR(&inst, returned_ptrs, dirty) break;
-              case UNKNOWN: COUNT_PTR(&inst, returned_ptrs, unknown) break;
-              case NOTDEFINEDYET: llvm_unreachable("Returning a pointer with no status"); break;
-              default: llvm_unreachable("PointerKind case not handled");
-            }
+            COUNT_PTR_AS_STATUS(&inst, returned_ptrs, ptr_statuses.getStatus(retval), "Returning a pointer");
           }
           break;
         }
@@ -1097,6 +1260,34 @@ private:
   void incrementGlobalCounter(Constant* GlobalCounter, Instruction* BeforeInst) {
     IRBuilder<> Builder(BeforeInst);
     Type* i64ty = Builder.getInt64Ty();
+    LoadInst* loaded = Builder.CreateLoad(i64ty, GlobalCounter);
+    Value* incremented = Builder.CreateAdd(Builder.getInt64(1), loaded);
+    Builder.CreateStore(incremented, GlobalCounter);
+  }
+
+  // Inject an instruction sequence to increment the appropriate global counter
+  // based on the `PointerStatus`. This is to be used when (and only when) the
+  // kind is `DYNAMIC`.
+  void incrementGlobalCounterForDynKind(DynamicCounts& dyn_counts, PointerStatus& status, Instruction* BeforeInst) {
+    IRBuilder<> Builder(BeforeInst);
+    Type* i64ty = Builder.getInt64Ty();
+    Constant* null = Constant::getNullValue(dyn_counts.clean->getType());
+    Value* GlobalCounter = Builder.CreateSelect(
+      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(clean_mask)),
+      dyn_counts.clean,
+      null);
+    GlobalCounter = Builder.CreateSelect(
+      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(blemished16_mask)),
+      dyn_counts.blemished16,
+      GlobalCounter);
+    GlobalCounter = Builder.CreateSelect(
+      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(blemished_other_mask)),
+      dyn_counts.blemishedconst,  // conservative, as we don't know which BLEMISHED category to use
+      GlobalCounter);
+    GlobalCounter = Builder.CreateSelect(
+      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(dirty_mask)),
+      dyn_counts.dirty,
+      GlobalCounter);
     LoadInst* loaded = Builder.CreateLoad(i64ty, GlobalCounter);
     Value* incremented = Builder.CreateAdd(Builder.getInt64(1), loaded);
     Builder.CreateStore(incremented, GlobalCounter);
@@ -1393,7 +1584,7 @@ PreservedAnalyses DynamicDLIMPass::run(Function &F, FunctionAnalysisManager &FAM
 
   DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, CLEAN);
   analysis.run();
-  analysis.instrument(DLIMAnalysis::DynamicPrintType::TOFILE);
+  analysis.instrument(true, DLIMAnalysis::DynamicPrintType::TOFILE);
 
   // For now we conservatively just tell LLVM that no analyses are preserved.
   // It seems that many existing LLVM passes also just use
@@ -1410,7 +1601,7 @@ PreservedAnalyses DynamicStdoutDLIMPass::run(Function &F, FunctionAnalysisManage
 
   DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, CLEAN);
   analysis.run();
-  analysis.instrument(DLIMAnalysis::DynamicPrintType::STDOUT);
+  analysis.instrument(true, DLIMAnalysis::DynamicPrintType::STDOUT);
 
   // For now we conservatively just tell LLVM that no analyses are preserved.
   // It seems that many existing LLVM passes also just use
@@ -1429,7 +1620,7 @@ PreservedAnalyses DynamicStdoutDLIMPass::run(Function &F, FunctionAnalysisManage
 /// and classify it as if the offset were the given compile-time constant.
 static GEPResultClassification classifyGEPResult(
   const GetElementPtrInst &gep,
-  const PointerKind input_kind,
+  const PointerStatus input_status,
   const DataLayout &DL,
   const bool trustLLVMStructTypes,
   const APInt* override_constant_offset
@@ -1448,17 +1639,17 @@ static GEPResultClassification classifyGEPResult(
     // result of a GEP with all zeroes as indices, is the same as the input pointer.
     assert(offsetIsConstant && offset == zero && "If all indices are constant 0, then the total offset should be constant 0");
     GEPResultClassification grc;
-    grc.classification = input_kind;
+    grc.classification = input_status;
     grc.offset_is_constant = true; // it's a zero constant
     grc.constant_offset = offset;
     return grc;
   }
   if (trustLLVMStructTypes && areAllIndicesTrustworthy(gep)) {
     // nonzero offset, but "trustworthy" offset.
-    switch (input_kind) {
+    switch (input_status.kind) {
       case CLEAN: {
         GEPResultClassification grc;
-        grc.classification = CLEAN;
+        grc.classification = PointerStatus::clean();
         // we consider this a "zero" constant. For this purpose.
         grc.offset_is_constant = true;
         grc.constant_offset = zero;
@@ -1466,7 +1657,7 @@ static GEPResultClassification classifyGEPResult(
       }
       case UNKNOWN: {
         GEPResultClassification grc;
-        grc.classification = UNKNOWN;
+        grc.classification = PointerStatus::unknown();
         // we consider this a "zero" constant. For this purpose.
         grc.offset_is_constant = true;
         grc.constant_offset = zero;
@@ -1474,7 +1665,7 @@ static GEPResultClassification classifyGEPResult(
       }
       case DIRTY: {
         GEPResultClassification grc;
-        grc.classification = DIRTY;
+        grc.classification = PointerStatus::dirty();
         // we consider this a "zero" constant. For this purpose.
         grc.offset_is_constant = true;
         grc.constant_offset = zero;
@@ -1486,6 +1677,10 @@ static GEPResultClassification classifyGEPResult(
       case BLEMISHEDCONST: {
         // fall through. "Trustworthy" offset from a blemished pointer still needs
         // to increase the blemished-ness of the pointer, as handled below.
+        break;
+      }
+      case DYNAMIC: {
+        assert(false && "unimplemented: GEP on a pointer with DYNAMIC status");
         break;
       }
       case NOTDEFINEDYET: {
@@ -1502,23 +1697,23 @@ static GEPResultClassification classifyGEPResult(
   grc.offset_is_constant = offsetIsConstant;
   if (offsetIsConstant) {
     grc.constant_offset = offset;
-    switch (input_kind) {
+    switch (input_status.kind) {
       case CLEAN: {
         // This GEP adds a constant but nonzero amount to a CLEAN
         // pointer. The result is some flavor of BLEMISHED depending
         // on how far the pointer arithmetic goes.
         if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
-          grc.classification = BLEMISHED16;
+          grc.classification = PointerStatus::blemished16();
           return grc;
         } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
-          grc.classification = BLEMISHED32;
+          grc.classification = PointerStatus::blemished32();
           return grc;
         } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 64))) {
-          grc.classification = BLEMISHED64;
+          grc.classification = PointerStatus::blemished64();
           return grc;
         } else {
           // offset is constant, but larger than 64 bytes
-          grc.classification = BLEMISHEDCONST;
+          grc.classification = PointerStatus::blemishedconst();
           return grc;
         }
         break;
@@ -1529,15 +1724,15 @@ static GEPResultClassification classifyGEPResult(
         // depending on how far the pointer arithmetic goes.
         if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
           // Conservatively, the total offset can't exceed 32
-          grc.classification = BLEMISHED32;
+          grc.classification = PointerStatus::blemished32();
           return grc;
         } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 48))) {
           // Conservatively, the total offset can't exceed 64
-          grc.classification = BLEMISHED64;
+          grc.classification = PointerStatus::blemished64();
           return grc;
         } else {
           // offset is constant, but may be larger than 64 bytes
-          grc.classification = BLEMISHEDCONST;
+          grc.classification = PointerStatus::blemishedconst();
           return grc;
         }
         break;
@@ -1548,11 +1743,11 @@ static GEPResultClassification classifyGEPResult(
         // depending on how far the pointer arithmetic goes.
         if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
           // Conservatively, the total offset can't exceed 64
-          grc.classification = BLEMISHED64;
+          grc.classification = PointerStatus::blemished64();
           return grc;
         } else {
           // offset is constant, but may be larger than 64 bytes
-          grc.classification = BLEMISHEDCONST;
+          grc.classification = PointerStatus::blemishedconst();
           return grc;
         }
         break;
@@ -1561,7 +1756,7 @@ static GEPResultClassification classifyGEPResult(
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED64 pointer. The result is BLEMISHEDCONST, as we
         // can't prove the total constant offset remains 64 or less.
-        grc.classification = BLEMISHEDCONST;
+        grc.classification = PointerStatus::blemishedconst();
         return grc;
         break;
       }
@@ -1569,21 +1764,21 @@ static GEPResultClassification classifyGEPResult(
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHEDCONST pointer. The result is still BLEMISHEDCONST,
         // as the total offset is still a constant.
-        grc.classification = BLEMISHEDCONST;
+        grc.classification = PointerStatus::blemishedconst();
         return grc;
         break;
       }
       case DIRTY: {
         // result of a GEP with any nonzero indices, on a DIRTY or
         // UNKNOWN pointer, is always DIRTY.
-        grc.classification = DIRTY;
+        grc.classification = PointerStatus::dirty();
         return grc;
         break;
       }
       case UNKNOWN: {
         // result of a GEP with any nonzero indices, on a DIRTY or
         // UNKNOWN pointer, is always DIRTY.
-        grc.classification = DIRTY;
+        grc.classification = PointerStatus::dirty();
         return grc;
         break;
       }
@@ -1598,7 +1793,7 @@ static GEPResultClassification classifyGEPResult(
     }
   } else {
     // offset is not constant; so, result is dirty
-    grc.classification = DIRTY;
+    grc.classification = PointerStatus::dirty();
     return grc;
   }
 }
@@ -1723,7 +1918,10 @@ static InductionPatternResult isOffsetAnInductionPattern(
         }
       }
     }
-    if (!ivr.is_induction_var) return no_induction_pattern;
+    if (!ivr.is_induction_var) {
+      DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     not an induction pattern\n");
+      return no_induction_pattern;
+    }
     // If we get to here, we've found an induction pattern, described by
     // `ivr.initial_val` and `ivr.induction_increment`.
     // However, we still need to ensure that the pointer produced by the GEP

@@ -4,21 +4,21 @@
 ; totals are for this entire file.
 ; CHECK-LABEL: DLIM dynamic counts
 ; CHECK-NEXT: =====
-; CHECK-NEXT: Loads with clean addr: 1
+; CHECK-NEXT: Loads with clean addr: 3
 ; CHECK-NEXT: Loads with blemished16 addr: 0
 ; CHECK-NEXT: Loads with blemished32 addr: 0
 ; CHECK-NEXT: Loads with blemished64 addr: 1
 ; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
-; CHECK-NEXT: Stores with clean addr: 1
+; CHECK-NEXT: Stores with clean addr: 2
 ; CHECK-NEXT: Stores with blemished16 addr: 1
 ; CHECK-NEXT: Stores with blemished32 addr: 0
 ; CHECK-NEXT: Stores with blemished64 addr: 0
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 0
 ; CHECK-NEXT: Stores with unknown addr: 143
-; CHECK-NEXT: Storing a clean ptr to mem: 0
+; CHECK-NEXT: Storing a clean ptr to mem: 1
 ; CHECK-NEXT: Storing a blemished16 ptr to mem: 0
 ; CHECK-NEXT: Storing a blemished32 ptr to mem: 0
 ; CHECK-NEXT: Storing a blemished64 ptr to mem: 0
@@ -55,6 +55,7 @@ define i32 @main() {
   %blemptr = getelementptr i32, i32* %castedptr, i32 1 ; blemished16 pointer
   store volatile i32 9, i32* %blemptr, align 4 ; blemished16 store
   %call = call i32 @foo(i32* nonnull %castedptr)
+  %call2 = call i32 @bar()
   %loaded = load volatile i32, i32* %castedptr, align 4 ; clean load
   %blem64ptr = getelementptr i32, i32* %castedptr, i32 10 ; blemished64 pointer
   %loaded2 = load volatile i32, i32* %blem64ptr, align 4 ; blemished64 load
@@ -75,4 +76,15 @@ for.body:
   %inc = add nuw nsw i32 %index, 1
   %exitcond = icmp eq i32 %inc, 143
   br i1 %exitcond, label %exit, label %for.body
+}
+
+; check that storing and loading pointers works, and that we correctly determine
+; that the loaded pointer is dynamically clean
+define i32 @bar() {
+  %ptr = alloca i32, align 4
+  %ptrptr = alloca i32*, align 4
+  store i32* %ptr, i32** %ptrptr, align 4 ; storing a clean ptr to clean address
+  %loadedptr = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr will have DYN_CLEAN status
+  %loaded2 = load i32, i32* %loadedptr ; loading from DYN_CLEAN ptr
+  ret i32 %loaded2
 }
