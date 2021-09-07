@@ -1769,6 +1769,7 @@ static InductionPatternResult isOffsetAnInductionPattern(
       ipr.is_induction_pattern = true;
       ipr.initial_offset = ivr.initial_val * ap_element_size;
       ipr.induction_offset = ivr.induction_increment * ap_element_size;
+      DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     induction pattern with initial " << ipr.initial_offset << " and induction " << ipr.induction_offset << "\n");
       return ipr;
     } else {
       DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     but failed the dereference-inside-loop check\n");
@@ -1807,8 +1808,8 @@ static InductionVarResult isInductionVar(const Value* val) {
           // we're looking for the case where we are adding or subbing a
           // constant from the same value
           if (vpcr.value == val) {
-            induction_increment = vpcr.constant;
             found_induction_increment = true;
+            induction_increment = vpcr.constant;
           }
         }
       }
@@ -1818,6 +1819,7 @@ static InductionVarResult isInductionVar(const Value* val) {
       induction_increment = induction_increment.sextOrSelf(64);
       DEBUG_WITH_TYPE("DLIM-loop-induction", dbgs() << "DLIM:     Found an induction var, initial " << initial_val << " and induction " << induction_increment << "\n");
       InductionVarResult ivr;
+      ivr.is_induction_var = true;
       ivr.initial_val = std::move(initial_val);
       ivr.induction_increment = std::move(induction_increment);
       return ivr;
