@@ -930,32 +930,38 @@ private:
 
     StaticResults static_results = { 0 };
 
-    #define COUNT_PTR(ptr, category, kind) \
+    // Count an operation occurring in the given `category` with the given `kind`.
+    // `ip` is the insert point: if dynamic instructions must be inserted (to do
+    // dynamic counting), they will be inserted before the Instruction `ip`
+    #define COUNT_OP_KIND(category, kind, ip) \
       static_results.category.kind++; \
       if (dynamic_results) { \
-        incrementGlobalCounter(dynamic_results->category.kind, (ptr)); \
+        incrementGlobalCounter(dynamic_results->category.kind, (ip)); \
       }
 
-    // same as COUNT_PTR, but for a dynamic kind.
+    // same as COUNT_OP_KIND, but for a dynamic kind.
     // This is counted as UNKNOWN statically, but has an actual kind
     // dynamically.
-    #define COUNT_PTR_DYN(ptr, category, status) \
+    #define COUNT_OP_DYN(category, status, ip) \
       static_results.category.unknown++; \
       if (dynamic_results) { \
-        incrementGlobalCounterForDynKind(dynamic_results->category, (status), (ptr)); \
+        incrementGlobalCounterForDynKind(dynamic_results->category, (status), (ip)); \
       }
 
-    #define COUNT_PTR_AS_STATUS(ptr, category, status, doing_what) \
+    // Count an operation occurring in the given `category` with the given `status`.
+    // `ip` is the insert point: if dynamic instructions must be inserted (to do
+    // dynamic counting), they will be inserted before the Instruction `ip`
+    #define COUNT_OP_AS_STATUS(category, status, ip, doing_what) \
       PointerStatus the_status = (status); /* in case (status) is an expensive-to-compute expression, compute it once here */ \
       switch (the_status.kind) { \
-        case PointerKind::CLEAN: COUNT_PTR(ptr, category, clean) break; \
-        case PointerKind::BLEMISHED16: COUNT_PTR(ptr, category, blemished16) break; \
-        case PointerKind::BLEMISHED32: COUNT_PTR(ptr, category, blemished32) break; \
-        case PointerKind::BLEMISHED64: COUNT_PTR(ptr, category, blemished64) break; \
-        case PointerKind::BLEMISHEDCONST: COUNT_PTR(ptr, category, blemishedconst) break; \
-        case PointerKind::DIRTY: COUNT_PTR(ptr, category, dirty) break; \
-        case PointerKind::UNKNOWN: COUNT_PTR(ptr, category, unknown) break; \
-        case PointerKind::DYNAMIC: COUNT_PTR_DYN(ptr, category, the_status) break; \
+        case PointerKind::CLEAN: COUNT_OP_KIND(category, clean, ip) break; \
+        case PointerKind::BLEMISHED16: COUNT_OP_KIND(category, blemished16, ip) break; \
+        case PointerKind::BLEMISHED32: COUNT_OP_KIND(category, blemished32, ip) break; \
+        case PointerKind::BLEMISHED64: COUNT_OP_KIND(category, blemished64, ip) break; \
+        case PointerKind::BLEMISHEDCONST: COUNT_OP_KIND(category, blemishedconst, ip) break; \
+        case PointerKind::DIRTY: COUNT_OP_KIND(category, dirty, ip) break; \
+        case PointerKind::UNKNOWN: COUNT_OP_KIND(category, unknown, ip) break; \
+        case PointerKind::DYNAMIC: COUNT_OP_DYN(category, the_status, ip) break; \
         case PointerKind::NOTDEFINEDYET: llvm_unreachable(doing_what " with no status"); break; \
         default: llvm_unreachable("PointerKind case not handled"); \
       }
@@ -973,7 +979,7 @@ private:
           if (storedVal->getType()->isPointerTy()) {
             // we count the stored pointer for stats purposes
             PointerStatus storedVal_status = ptr_statuses.getStatus(storedVal);
-            COUNT_PTR_AS_STATUS(&inst, store_vals, storedVal_status, "Storing a pointer");
+            COUNT_OP_AS_STATUS(store_vals, storedVal_status, &inst, "Storing a pointer");
             // then, if `pointer_encoding`, we modify the store instruction to
             // store the encoded pointer instead.
             // Specifically, when we store the pointer to memory, we use bits
@@ -1028,7 +1034,7 @@ private:
           }
           // next count the address
           const Value* addr = store.getPointerOperand();
-          COUNT_PTR_AS_STATUS(&inst, store_addrs, ptr_statuses.getStatus(addr), "Storing to pointer");
+          COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
           // now, the pointer used as an address becomes clean
           ptr_statuses.mark_clean(addr);
           break;
@@ -1037,7 +1043,7 @@ private:
           LoadInst& load = cast<LoadInst>(inst);
           const Value* ptr = load.getPointerOperand();
           // first count this for static stats
-          COUNT_PTR_AS_STATUS(&inst, load_addrs, ptr_statuses.getStatus(ptr), "Loading from pointer");
+          COUNT_OP_AS_STATUS(load_addrs, ptr_statuses.getStatus(ptr), &inst, "Loading from pointer");
           // now, the pointer becomes clean
           ptr_statuses.mark_clean(ptr);
 
@@ -1096,7 +1102,7 @@ private:
           ptr_statuses.mark_as(&gep, grc.classification);
           // if we added a nonzero constant to a pointer, count that for stats purposes
           if (grc.offset_is_constant && grc.constant_offset != zero) {
-            COUNT_PTR_AS_STATUS(&gep, pointer_arith_const, input_status, "GEP on a pointer");
+            COUNT_OP_AS_STATUS(pointer_arith_const, input_status, &gep, "GEP on a pointer");
           }
           break;
         }
@@ -1170,7 +1176,7 @@ private:
             for (const Use& arg : call.args()) {
               const Value* value = arg.get();
               if (value->getType()->isPointerTy()) {
-                COUNT_PTR_AS_STATUS(&inst, passed_ptrs, ptr_statuses.getStatus(value), "Call argument is a pointer");
+                COUNT_OP_AS_STATUS(passed_ptrs, ptr_statuses.getStatus(value), &inst, "Call argument is a pointer");
               }
             }
           }
@@ -1210,7 +1216,7 @@ private:
           const ReturnInst& ret = cast<ReturnInst>(inst);
           const Value* retval = ret.getReturnValue();
           if (retval && retval->getType()->isPointerTy()) {
-            COUNT_PTR_AS_STATUS(&inst, returned_ptrs, ptr_statuses.getStatus(retval), "Returning a pointer");
+            COUNT_OP_AS_STATUS(returned_ptrs, ptr_statuses.getStatus(retval), &inst, "Returning a pointer");
           }
           break;
         }
