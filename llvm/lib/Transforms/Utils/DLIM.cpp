@@ -1705,8 +1705,25 @@ static GEPResultClassification classifyGEPResult(
         break;
       }
       case PointerKind::DYNAMIC: {
-        assert(false && "unimplemented: GEP on a pointer with DYNAMIC status");
-        break;
+        GEPResultClassification grc;
+        if (input_status.dynamic_kind == NULL) {
+          grc.classification = PointerStatus::dynamic(NULL);
+        } else {
+          // "trustworthy" offset from clean is clean, from dirty is dirty,
+          // from BLEMISHED16 is arbitrarily blemished, and from arbitrarily
+          // blemished is still arbitrarily blemished.
+          IRBuilder<> Builder((GetElementPtrInst*)&gep); // cast to discard const. We should be able to insert stuff before a const instruction.
+          Value* dynamic_kind = Builder.CreateSelect(
+            Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(blemished16_mask)),
+            Builder.getInt64(blemished_other_mask),
+            input_status.dynamic_kind
+          );
+          grc.classification = PointerStatus::dynamic(dynamic_kind);
+        }
+        // we consider this a "zero" constant. For this purpose.
+        grc.offset_is_constant = true;
+        grc.constant_offset = zero;
+        return grc;
       }
       case PointerKind::NOTDEFINEDYET: {
         llvm_unreachable("GEP on a pointer with no status");
@@ -1804,6 +1821,38 @@ static GEPResultClassification classifyGEPResult(
         // result of a GEP with any nonzero indices, on a DIRTY or
         // UNKNOWN pointer, is always DIRTY.
         grc.classification = PointerStatus::dirty();
+        return grc;
+        break;
+      }
+      case PointerKind::DYNAMIC: {
+        // This GEP adds a constant but nonzero amount to a DYNAMIC pointer.
+        if (input_status.dynamic_kind == NULL) {
+          grc.classification = PointerStatus::dynamic(NULL);
+        } else {
+          // We need to dynamically check the kind in order to classify the
+          // result.
+          IRBuilder<> Builder((GetElementPtrInst*)&gep); // cast to discard const. We should be able to insert stuff before a const instruction.
+          Value* is_clean = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(clean_mask));
+          Value* is_blem16 = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(blemished16_mask));
+          Value* is_blemother = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(blemished_other_mask));
+          Value* dynamic_kind = Builder.getInt64(dirty_mask);
+          dynamic_kind = Builder.CreateSelect(
+            is_clean,
+            (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) ?
+              Builder.getInt64(blemished16_mask) : // offset <= 16 from a dynamically clean pointer
+              Builder.getInt64(blemished_other_mask), // offset >16 from a dynamically clean pointer
+            dynamic_kind
+          );
+          dynamic_kind = Builder.CreateSelect(
+            Builder.CreateLogicalOr(is_blem16, is_blemother),
+            Builder.getInt64(blemished_other_mask), // any offset from any blemished has to be blemished_other, as we can't prove it stays within blemished16
+            dynamic_kind
+          );
+          // the case where the kind was DYN_DIRTY is implicitly handled by the
+          // default value of `dynamic_kind`. Result is still DYN_DIRTY in that
+          // case.
+          grc.classification = PointerStatus::dynamic(dynamic_kind);
+        }
         return grc;
         break;
       }
