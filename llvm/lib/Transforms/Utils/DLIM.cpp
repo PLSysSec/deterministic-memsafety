@@ -216,8 +216,7 @@ struct PointerStatus {
   ///
   /// During non-instrumenting iterations, we don't insert new dynamic
   /// instructions and thus can't create or check `dynamic_kind`s.
-  /// During these iterations, `dynamic_kind` is allowed to be (and will be)
-  /// NULL.
+  /// During these iterations, `dynamic_kind` must be NULL.
   /// During iterations where `pointer_encoding` is `true`, it must not be NULL.
   Value* dynamic_kind;
 
@@ -233,16 +232,20 @@ struct PointerStatus {
 
   /// Merge two `PointerStatus`es.
   /// See comments on PointerKind::merge.
-  static PointerStatus merge(const PointerStatus a, const PointerStatus b) {
+  ///
+  /// `insertion_pt`: If we need to insert new dynamic instructions to handle
+  /// a dynamic merge, insert them before this Instruction.
+  /// We will only potentially need to do this if at least one of the statuses
+  /// is DYNAMIC with a non-null `dynamic_kind`. If neither of the statuses is
+  /// DYNAMIC with a non-null `dynamic_kind`, then this parameter is ignored
+  /// (and may be NULL).
+  static PointerStatus merge(const PointerStatus a, const PointerStatus b, Instruction* insertion_pt) {
     if (a.kind == PointerKind::DYNAMIC && b.kind == PointerKind::DYNAMIC) {
-      if (a.dynamic_kind == NULL) return b;
-      if (b.dynamic_kind == NULL) return a;
-      if (a.dynamic_kind == b.dynamic_kind) return a;
-      llvm_unreachable("unimplemented: merge() with two unequal, non-null dynamic pointer kinds");
+      return { PointerKind::DYNAMIC, merge_two_dynamic(a.dynamic_kind, b.dynamic_kind, insertion_pt) };
     } else if (a.kind == PointerKind::DYNAMIC) {
-      return merge_static_dynamic(b.kind, a.dynamic_kind);
+      return merge_static_dynamic(b.kind, a.dynamic_kind, insertion_pt);
     } else if (b.kind == PointerKind::DYNAMIC) {
-      return merge_static_dynamic(a.kind, b.dynamic_kind);
+      return merge_static_dynamic(a.kind, b.dynamic_kind, insertion_pt);
     } else {
       return { PointerKind::merge(a.kind, b.kind), NULL };
     }
@@ -250,9 +253,97 @@ struct PointerStatus {
 
   private:
   /// Merge a static `PointerKind` and a `dynamic_kind`.
-  /// See comments on PointerKind::merge.
-  static PointerStatus merge_static_dynamic(const PointerKind static_kind, Value* dynamic_kind) {
-    llvm_unreachable("unimplemented: merge() a static and a dynamic pointer kind");
+  /// See comments on PointerStatus::merge.
+  static PointerStatus merge_static_dynamic(const PointerKind static_kind, Value* dynamic_kind, Instruction* insertion_pt) {
+    if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
+    assert(insertion_pt && "To merge with a non-null `dynamic_kind`, insertion_pt must not be NULL");
+    IRBuilder<> Builder(insertion_pt);
+    Value* merged_dynamic_kind;
+    switch (static_kind) {
+      case PointerKind::NOTDEFINEDYET:
+        // As in PointerKind::merge, merging x with NOTDEFINEDYET is always x
+        merged_dynamic_kind = dynamic_kind;
+        break;
+      case PointerKind::CLEAN:
+        // For all x, merging CLEAN with x results in x
+        merged_dynamic_kind = dynamic_kind;
+        break;
+      case PointerKind::BLEMISHED16:
+        // merging BLEMISHED16 with DYN_CLEAN is DYN_BLEMISHED16.
+        // merging BLEMISHED16 with any other x results in x.
+        merged_dynamic_kind = Builder.CreateSelect(
+          Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(clean_mask)),
+          Builder.getInt64(blemished16_mask),
+          dynamic_kind
+        );
+        break;
+      case PointerKind::BLEMISHED32:
+      case PointerKind::BLEMISHED64:
+      case PointerKind::BLEMISHEDCONST:
+        // merging any of these with DYN_CLEAN, DYN_BLEMISHED16, or
+        // DYN_BLEMISHEDOTHER results in DYN_BLEMISHEDOTHER.
+        // merging any of these with DYN_DIRTY results in DYN_DIRTY.
+        merged_dynamic_kind = Builder.CreateSelect(
+          Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(dirty_mask)),
+          Builder.getInt64(dirty_mask),
+          Builder.getInt64(blemished_other_mask)
+        );
+        break;
+      case PointerKind::DIRTY:
+      case PointerKind::UNKNOWN:
+        // merging anything with DIRTY or UNKNOWN results in DYN_DIRTY
+        merged_dynamic_kind = Builder.getInt64(dirty_mask);
+        break;
+      case PointerKind::DYNAMIC:
+        llvm_unreachable("merge_static_dynamic: expected a static PointerKind");
+      default:
+        llvm_unreachable("Missing PointerKind case");
+    }
+    return PointerStatus::dynamic(merged_dynamic_kind);
+  }
+
+  /// Merge two `dynamic_kind`s.
+  /// See comments on PointerStatus::merge.
+  static Value* merge_two_dynamic(Value* dynamic_kind_a, Value* dynamic_kind_b, Instruction* insertion_pt) {
+    if (dynamic_kind_a == NULL) return dynamic_kind_b;
+    if (dynamic_kind_b == NULL) return dynamic_kind_a;
+    if (dynamic_kind_a == dynamic_kind_b) return dynamic_kind_a;
+    // at this point we'll have to do a true dynamic merge.
+    // we'll insert dynamic instructions intended to do this (pseudocode):
+    //   if (a is dirty or b is dirty) merged_dynamic_kind = dirty
+    //   else if (a is blemother or b is blemother) merged_dynamic_kind = blemother
+    //   else if (a is blem16 or b is blem16) merged_dynamic_kind = blem16
+    //     else merged_dynamic_kind = clean
+    // in terms of selects this is:
+    //   merged_dynamic_kind =
+    //     (a is dirty or b is dirty) ? dirty :
+    //     (a is blemother or b is blemother) ? blemother :
+    //     (a is blem16 or b is blem16) ? blem16 :
+    //     clean
+    assert(insertion_pt && "To merge with a non-null `dynamic_kind`, insertion_pt must not be NULL");
+    IRBuilder<> Builder(insertion_pt);
+    Value* dirty = Builder.getInt64(dirty_mask);
+    Value* blemother = Builder.getInt64(blemished_other_mask);
+    Value* blem16 = Builder.getInt64(blemished16_mask);
+    Value* clean = Builder.getInt64(clean_mask);
+    Value* either_is_dirty = Builder.CreateLogicalOr(
+      Builder.CreateICmpEQ(dynamic_kind_a, dirty),
+      Builder.CreateICmpEQ(dynamic_kind_b, dirty)
+    );
+    Value* either_is_blemother = Builder.CreateLogicalOr(
+      Builder.CreateICmpEQ(dynamic_kind_a, blemother),
+      Builder.CreateICmpEQ(dynamic_kind_b, blemother)
+    );
+    Value* either_is_blem16 = Builder.CreateLogicalOr(
+      Builder.CreateICmpEQ(dynamic_kind_a, blem16),
+      Builder.CreateICmpEQ(dynamic_kind_b, blem16)
+    );
+    Value* merged_dynamic_kind =
+      Builder.CreateSelect(either_is_dirty, dirty,
+      Builder.CreateSelect(either_is_blemother, blemother,
+      Builder.CreateSelect(either_is_blem16, blem16,
+      clean)));
+    return merged_dynamic_kind;
   }
 };
 
@@ -339,8 +430,7 @@ public:
 
   /// During non-instrumenting iterations, we don't insert new dynamic
   /// instructions and thus can't create or check `dynamic_kind`s.
-  /// During these iterations, `dynamic_kind` is allowed to be (and will be)
-  /// NULL.
+  /// During these iterations, `dynamic_kind` must be NULL.
   /// During iterations where `pointer_encoding` is `true`, it must not be NULL.
   void mark_dynamic(const Value* ptr, Value* dynamic_kind) {
     mark_as(ptr, { PointerKind::DYNAMIC, dynamic_kind });
@@ -472,7 +562,14 @@ public:
   /// Merge the two given PointerStatuses. If they disagree on any pointer,
   /// use the `PointerStatus` `merge` function to combine the two results.
   /// Recall that any pointer not appearing in the `map` is considered NOTDEFINEDYET.
-  static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b) {
+  ///
+  /// `insertion_pt`: If we need to insert new dynamic instructions to handle
+  /// a dynamic merge, insert them before this Instruction.
+  /// We will only potentially need to do this if at least one of the statuses
+  /// is DYNAMIC with a non-null `dynamic_kind`. If none of the statuses is
+  /// DYNAMIC with a non-null `dynamic_kind`, then this parameter is ignored
+  /// (and may be NULL).
+  static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b, Instruction* insertion_pt) {
     assert(a.DL == b.DL);
     assert(a.trustLLVMStructTypes == b.trustLLVMStructTypes);
     PointerStatuses merged(a.DL, a.trustLLVMStructTypes);
@@ -485,7 +582,7 @@ public:
         PointerStatus::notdefinedyet() :
         // defined in b, get the status
         it->getSecond();
-      merged.mark_as(ptr, PointerStatus::merge(status_in_a, status_in_b));
+      merged.mark_as(ptr, PointerStatus::merge(status_in_a, status_in_b, insertion_pt));
     }
     // at this point we've handled all the pointers which were defined in a.
     // what's left is the pointers which were defined in b and NOTDEFINEDYET in a
@@ -495,7 +592,7 @@ public:
       const auto& it = a.map.find(ptr);
       if (it == a.map.end()) {
         // implicitly NOTDEFINEDYET in a
-        merged.mark_as(ptr, PointerStatus::merge(PointerStatus::notdefinedyet(), status_in_b));
+        merged.mark_as(ptr, PointerStatus::merge(PointerStatus::notdefinedyet(), status_in_b, insertion_pt));
       }
     }
     return merged;
@@ -866,7 +963,7 @@ private:
       const BasicBlock* otherPred = *it;
       const PerBlockState* otherPred_pbs = block_states[otherPred];
       DEBUG_WITH_TYPE("DLIM-block-stats", dbgs() << "DLIM:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
-      ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end);
+      ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end, &block.front());
     }
     return ptr_statuses;
   }
@@ -1081,7 +1178,8 @@ private:
               );
               ptr_statuses.mark_dynamic(new_val_as_ptr, dynamic_kind);
             } else {
-              // when not `pointer_encoding`, we're allowed to pass NULL here.
+              // when not `pointer_encoding`, we're allowed (and required) to
+              // pass NULL here.
               // see notes on `mark_dynamic`
               ptr_statuses.mark_dynamic(&load, NULL);
             }
@@ -1137,23 +1235,56 @@ private:
             const Value* false_input = select.getFalseValue();
             const PointerStatus true_status = ptr_statuses.getStatus(true_input);
             const PointerStatus false_status = ptr_statuses.getStatus(false_input);
-            ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status));
+            ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status, &inst));
           }
           break;
         }
         case Instruction::PHI: {
           const PHINode& phi = cast<PHINode>(inst);
           if (phi.getType()->isPointerTy()) {
-            // phi: result status is the merger of the statuses of all the inputs
-            // in their corresponding blocks
-            PointerStatus merged_status = PointerStatus::clean();
+            SmallVector<std::pair<PointerStatus, BasicBlock*>, 4> incoming_statuses;
             for (const Use& use : phi.incoming_values()) {
-              const BasicBlock* bb = phi.getIncomingBlock(use);
+              BasicBlock* bb = phi.getIncomingBlock(use);
               auto& ptr_statuses_end_of_bb = block_states[bb]->ptrs_end;
               const Value* value = use.get();
-              merged_status = PointerStatus::merge(merged_status, ptr_statuses_end_of_bb.getStatus(value));
+              incoming_statuses.push_back(std::make_pair(
+                ptr_statuses_end_of_bb.getStatus(value),
+                bb
+              ));
             }
-            ptr_statuses.mark_as(&phi, merged_status);
+            assert(incoming_statuses.size() >= 1);
+            // phi: result status is the merger of the statuses of all the inputs
+            // in their corresponding blocks
+            // or if `pointer_encoding` and all status are dynamic, then we
+            // can just add a new PHI to select the correct status
+            bool all_incoming_status_are_dynamic = true;
+            for (auto& pair : incoming_statuses) {
+              PointerStatus& incoming_status = pair.first;
+              if (incoming_status.kind != PointerKind::DYNAMIC) {
+                all_incoming_status_are_dynamic = false;
+                break;
+              }
+            }
+            if (pointer_encoding && all_incoming_status_are_dynamic) {
+              IRBuilder<> Builder(&inst);
+              PHINode* status_phi = Builder.CreatePHI(Builder.getInt64Ty(), phi.getNumIncomingValues());
+              for (auto& pair : incoming_statuses) {
+                PointerStatus& incoming_status = pair.first;
+                BasicBlock* incoming_bb = pair.second;
+                assert(incoming_status.kind == PointerKind::DYNAMIC && "We should only be here if all_incoming_status_are_dynamic");
+                assert(incoming_status.dynamic_kind && "when pointer_encoding is true, we shouldn't have dynamic_kind == NULL");
+                status_phi->addIncoming(incoming_status.dynamic_kind, incoming_bb);
+              }
+              assert(status_phi->isComplete());
+              ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
+            } else {
+              PointerStatus merged_status = PointerStatus::clean();
+              for (auto& pair : incoming_statuses) {
+                PointerStatus& incoming_status = pair.first;
+                merged_status = PointerStatus::merge(merged_status, incoming_status, &inst);
+              }
+              ptr_statuses.mark_as(&phi, merged_status);
+            }
           }
           break;
         }
