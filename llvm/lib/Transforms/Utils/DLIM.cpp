@@ -251,6 +251,39 @@ struct PointerStatus {
     }
   }
 
+  /// `Builder`: the `IRBuilder` to use to insert dynamic instructions/values as
+  /// necessary
+  Value* to_dynamic_kind_mask(IRBuilder<>& Builder) const {
+    switch (kind) {
+      case PointerKind::CLEAN:
+        return Builder.getInt64(clean_mask);
+        break;
+      case PointerKind::BLEMISHED16:
+        return Builder.getInt64(blemished16_mask);
+        break;
+      case PointerKind::BLEMISHED32:
+      case PointerKind::BLEMISHED64:
+      case PointerKind::BLEMISHEDCONST:
+        return Builder.getInt64(blemished_other_mask);
+        break;
+      case PointerKind::DIRTY:
+        return Builder.getInt64(dirty_mask);
+        break;
+      case PointerKind::UNKNOWN:
+        // for now we just mark UNKNOWN pointers as dirty when storing them
+        return Builder.getInt64(dirty_mask);
+        break;
+      case PointerKind::DYNAMIC:
+        return dynamic_kind;
+        break;
+      case PointerKind::NOTDEFINEDYET:
+        llvm_unreachable("Shouldn't call to_dynamic_kind_mask on a NOTDEFINEDYET");
+        break;
+      default:
+        llvm_unreachable("PointerKind case not handled");
+    }
+  }
+
   private:
   /// Merge a static `PointerKind` and a `dynamic_kind`.
   /// See comments on PointerStatus::merge.
@@ -983,9 +1016,9 @@ private:
   /// Caller must only pass a non-NULL value for this after the analysis has
   /// reached a fixpoint.
   ///
-  /// `pointer_encoding`: If `true` (and `dynamic_results` is not NULL), modify
-  /// the in-memory representation of pointers so that bits 48 and 49 give
-  /// information about the pointer status.  This informs dynamic counts.
+  /// `pointer_encoding`: If `true`, modify the in-memory representation of
+  /// pointers so that bits 48 and 49 give information about the pointer status.
+  /// This informs dynamic counts.
   AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results, const bool pointer_encoding) {
     PerBlockState* pbs = block_states[&block];
 
@@ -1090,47 +1123,17 @@ private:
             // then, if `pointer_encoding`, we modify the store instruction to
             // store the encoded pointer instead.
             // Specifically, when we store the pointer to memory, we use bits
-            // 48-49 to indicate its PointerKind. 00 indicates DIRTY, 01
-            // indicates BLEMISHED16, 10 indicates any other BLEMISHED kind, 11
-            // indicates CLEAN.
+            // 48-49 to indicate its PointerKind, interpreted per the
+            // DynamicPointerKind enum.
             // When we later load this pointer from memory, we'll check bits
             // 48-49 to learn the pointer type, then clear them so the pointer
             // is valid for use.
             // (We assume all pointers are userspace pointers, so 48-49 should
             // be 0 for valid pointers.)
             if (pointer_encoding) {
-              assert(dynamic_results && "Shouldn't have pointer_encoding true if dynamic_results is NULL");
-              IRBuilder<> Builder(&store);
-              Value* mask;
-              switch (storedVal_status.kind) {
-                case PointerKind::CLEAN:
-                  mask = Builder.getInt64(clean_mask);
-                  break;
-                case PointerKind::BLEMISHED16:
-                  mask = Builder.getInt64(blemished16_mask);
-                  break;
-                case PointerKind::BLEMISHED32:
-                case PointerKind::BLEMISHED64:
-                case PointerKind::BLEMISHEDCONST:
-                  mask = Builder.getInt64(blemished_other_mask);
-                  break;
-                case PointerKind::DIRTY:
-                  mask = Builder.getInt64(dirty_mask);
-                  break;
-                case PointerKind::UNKNOWN:
-                  // for now we just mark UNKNOWN pointers as dirty when storing them
-                  mask = Builder.getInt64(dirty_mask);
-                  break;
-                case PointerKind::DYNAMIC:
-                  mask = storedVal_status.dynamic_kind;
-                  break;
-                case PointerKind::NOTDEFINEDYET:
-                  llvm_unreachable("Shouldn't be storing a NOTDEFINEDYET pointer after we've reached fixpoint");
-                  break;
-                default:
-                  llvm_unreachable("PointerKind case not handled");
-              }
               // create `new_storedVal` which has the appropriate bits set
+              IRBuilder<> Builder(&store);
+              Value* mask = storedVal_status.to_dynamic_kind_mask(Builder);
               Value* storedVal_as_int = Builder.CreatePtrToInt(storedVal, Builder.getInt64Ty());
               Value* new_storedVal = Builder.CreateOr(storedVal_as_int, mask);
               Value* new_storedVal_as_ptr = Builder.CreateIntToPtr(new_storedVal, storedVal->getType());
