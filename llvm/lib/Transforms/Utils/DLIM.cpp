@@ -1347,6 +1347,7 @@ private:
         }
         case Instruction::PHI: {
           const PHINode& phi = cast<PHINode>(inst);
+          IRBuilder<> Builder(&inst);
           if (phi.getType()->isPointerTy()) {
             SmallVector<std::pair<PointerStatus, BasicBlock*>, 4> incoming_statuses;
             for (const Use& use : phi.incoming_values()) {
@@ -1364,57 +1365,79 @@ private:
               // there's a previously created PHI of the pointer statuses.
               // We need to check if it's still valid -- or if it needs updating
               // because some incoming pointer statuses have changed.
-              bool needs_updating = false;
               PHINode* status_phi = it->getSecond();
               assert(incoming_statuses.size() == status_phi->getNumIncomingValues());
               for (auto& pair : incoming_statuses) {
                 const PointerStatus& incoming_status = pair.first;
                 const BasicBlock* incoming_bb = pair.second;
-                const Value* incoming_kind = status_phi->getIncomingValueForBlock(incoming_bb);
-                assert(incoming_kind && "status_phi should have the same incoming blocks as the main phi");
-                if (incoming_status.kind != PointerKind::DYNAMIC) {
-                  needs_updating = true;
-                  break;
-                }
-                if (incoming_status.dynamic_kind != incoming_kind) {
-                  // a different dynamic status than we had previously. Just
-                  // change the status_phi in place.  We don't need to set
-                  // `needs_updating = true` because the `status_phi` remains
-                  // valid after this change
-                  status_phi->setIncomingValueForBlock(incoming_bb, incoming_status.dynamic_kind);
+                const Value* old_incoming_kind = status_phi->getIncomingValueForBlock(incoming_bb);
+                assert(old_incoming_kind && "status_phi should have the same incoming blocks as the main phi");
+                if (incoming_status.kind == PointerKind::DYNAMIC) {
+                  if (incoming_status.dynamic_kind == old_incoming_kind) {
+                    // up to date, nothing to do
+                  } else {
+                    // a different dynamic status than we had previously.
+                    // (or maybe we previously had a constant mask here.)
+                    // Just change the status_phi in place.
+                    status_phi->setIncomingValueForBlock(incoming_bb, incoming_status.dynamic_kind);
+                  }
+                } else {
+                  Value* new_dynamic_kind = incoming_status.to_dynamic_kind_mask(Builder);
+                  assert(new_dynamic_kind && "when pointer_encoding_is_complete, we shouldn't have dynamic_kind == NULL");
+                  // since incoming_status.kind isn't DYNAMIC, new_dynamic_kind
+                  // should be a ConstantInt
+                  ConstantInt* new_mask = cast<ConstantInt>(new_dynamic_kind);
+                  if (const ConstantInt* old_mask = cast<const ConstantInt>(old_incoming_kind)) {
+                    if (new_mask->getValue() == old_mask->getValue()) {
+                      // up to date, nothing to do
+                    } else {
+                      // a different constant mask than we had previously.
+                      // Just change the status_phi in place.
+                      status_phi->setIncomingValueForBlock(incoming_bb, new_mask);
+                    }
+                  } else {
+                    // a constant mask, where previously we had a dynamic mask.
+                    // Just change the status_phi in place.
+                    status_phi->setIncomingValueForBlock(incoming_bb, new_mask);
+                  }
                 }
               }
-              if (!needs_updating) {
-                // we're done
-                ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
-                break;
-              }
+              // now we're done
+              ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
+              break;
             }
             // ok, compute the result status fresh.
-            // In most cases, the result status is the merger of the statuses of
-            // all the inputs in their corresponding blocks.
-            // In the special case where `pointer_encoding_is_complete` (which
-            // guarantees that all `dynamic_kind`s are filled-in, i.e.,
-            // non-NULL), _AND_ all status are dynamic, then we can just add a
-            // new PHI to select the correct status.
+            // If all incoming status are statically known (i.e. not dynamic),
+            // then the result status is just the merger of the statuses of all
+            // the inputs in their corresponding blocks.
+            // But if some incoming status are dynamic, and if
+            // `pointer_encoding_is_complete` (which guarantees that all
+            // `dynamic_kind`s are filled-in, i.e., non-NULL), then we'll just
+            // add a new PHI to select the correct dynamic status.
+            // (We could theoretically use a PHI even for the all-static case.
+            // This would have the advantage of path-sensitive status, but the
+            // disadvantage of having a dynamic status when the merger approach
+            // gives a statically-known status, albeit a more conservative one.
+            // Currently we don't insert a PHI in the all-static case. But, if
+            // we insert one, and then in a later iteration it becomes
+            // all-static somehow, we still leave the PHI.)
             assert(incoming_statuses.size() >= 1);
-            bool all_incoming_status_are_dynamic = true;
+            bool all_incoming_status_are_static = true;
             for (auto& pair : incoming_statuses) {
               PointerStatus& incoming_status = pair.first;
-              if (incoming_status.kind != PointerKind::DYNAMIC) {
-                all_incoming_status_are_dynamic = false;
+              if (incoming_status.kind == PointerKind::DYNAMIC) {
+                all_incoming_status_are_static = false;
                 break;
               }
             }
-            if (pointer_encoding_is_complete && all_incoming_status_are_dynamic) {
-              IRBuilder<> Builder(&inst);
+            if (pointer_encoding_is_complete && !all_incoming_status_are_static) {
               PHINode* status_phi = Builder.CreatePHI(Builder.getInt64Ty(), phi.getNumIncomingValues());
               for (auto& pair : incoming_statuses) {
                 PointerStatus& incoming_status = pair.first;
                 BasicBlock* incoming_bb = pair.second;
-                assert(incoming_status.kind == PointerKind::DYNAMIC && "We should only be here if all_incoming_status_are_dynamic");
-                assert(incoming_status.dynamic_kind && "when pointer_encoding_is_complete, we shouldn't have dynamic_kind == NULL");
-                status_phi->addIncoming(incoming_status.dynamic_kind, incoming_bb);
+                Value* dynamic_kind = incoming_status.to_dynamic_kind_mask(Builder);
+                assert(dynamic_kind && "when pointer_encoding_is_complete, we shouldn't have dynamic_kind == NULL");
+                status_phi->addIncoming(dynamic_kind, incoming_bb);
               }
               assert(status_phi->isComplete());
               ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
