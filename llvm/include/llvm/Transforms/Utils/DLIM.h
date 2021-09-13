@@ -50,6 +50,16 @@ public:
   static bool isRequired() { return true; }
 };
 
+/// Pass which adds SW bounds checks for all dereferences of pointers that
+/// aren't CLEAN or BLEMISHED16. This uses the "non-paranoid" pointer statuses.
+class BoundsChecksDLIMPass : public PassInfoMixin<BoundsChecksDLIMPass> {
+public:
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
+
+  // This pass must run even on -O0
+  static bool isRequired() { return true; }
+};
+
 } // namespace llvm
 
 #endif // LLVM_TRANSFORMS_UTILS_DLIM_H

@@ -406,6 +406,9 @@ struct GEPResultClassification {
   /// (If `override_constant_offset` is non-NULL, `classifyGEPResult` will
   /// copy that value to `constant_offset`.)
   APInt constant_offset;
+  /// If `constant_offset` is nonzero, do we consider it as zero anyways because
+  /// it is a "trustworthy" struct offset?
+  bool trustworthy_struct_offset;
 };
 /// Classify the `PointerStatus` of the result of the given `gep`, assuming that its
 /// input pointer is `input_status`.
@@ -812,7 +815,7 @@ public:
     res.changed = true;
 
     while (res.changed) {
-      res = doIteration(NULL);
+      res = doIteration(NULL, false);
     }
 
     return res.static_results;
@@ -831,10 +834,18 @@ public:
   /// analysis is complete.
   void instrument(DynamicPrintType print_type) {
     DynamicResults results = initializeDynamicResults();
-    IterationResult res = doIteration(NULL);
+    IterationResult res = doIteration(NULL, false);
     assert(!res.changed && "Don't run instrument() until analysis has reached fixpoint");
-    doIteration(&results);
+    doIteration(&results, false);
     addDynamicResultsPrint(results, print_type);
+  }
+
+  /// Adds SW spatial safety checks where necessary.
+  /// You _must_ run() the analysis first -- addSpatialSafetySWChecks() assumes
+  /// that the analysis is complete.
+  void addSpatialSafetySWChecks() {
+    IterationResult res = doIteration(NULL, true);
+    assert(!res.changed && "Don't run addSpatialSafetyChecks() until analysis has reached fixpoint");
   }
 
   void reportStaticResults(StaticResults& results) {
@@ -971,6 +982,75 @@ private:
   /// pointer encoding/decoding.
   DenseMap<const IntToPtrInst*, const Value*> inttoptr_status_overrides;
 
+  /// Holds the bounds information for a single pointer, if it is known.
+  /// Unlike the PointerStatus, which can be different at different program
+  /// points for the same pointer, the BoundsInfo is the same at all program
+  /// points for a given pointer.
+  ///
+  /// Suppose the pointer value is P. If the `low_offset` is L and the
+  /// `high_offset` is H, that means we know that the allocation extends at
+  /// least from (P - L) to (P + H), inclusive.
+  /// Notes:
+  ///   - `low_offset` and `high_offset` are in bytes.
+  ///   - In the common case (where we know P is inbounds) `low_offset` and
+  ///     `high_offset` will both be nonnegative. `low_offset` is implicitly
+  ///     subtracted, as noted above.
+  ///   - Values of 0 in both fields indicates a pointer valid for exactly the
+  ///     single byte it points to.
+  ///   - Greater values in either of these fields lead to more permissive
+  ///     (larger) bounds.
+  class BoundsInfo final {
+  public:
+    APInt low_offset;
+    APInt high_offset;
+
+    /// Construct a BoundsInfo with the given low_offset and high_offset
+    explicit BoundsInfo(APInt low_offset, APInt high_offset) :
+      low_offset(low_offset), high_offset(high_offset), is_valid(true), is_unsafe_permissive(false) {}
+
+    /// Construct a special BoundsInfo with infinite bounds in both directions
+    static BoundsInfo unsafe_permissive() {
+      return BoundsInfo(zero, zero, true);
+    }
+
+    /// Construct an invalid BoundsInfo. A zero-argument constructor seems
+    /// to be required for value types of DenseMap
+    explicit BoundsInfo() : is_valid(false) {}
+
+    bool isValid() const {
+      return is_valid;
+    }
+
+    bool isUnsafePermissive() const {
+      return is_unsafe_permissive;
+    }
+
+    static BoundsInfo merge(const BoundsInfo& A, const BoundsInfo& B) {
+      if (!A.is_valid) return A;
+      if (!B.is_valid) return B;
+      if (A.is_unsafe_permissive) return B;
+      if (B.is_unsafe_permissive) return A;
+      return BoundsInfo(
+        A.low_offset.slt(B.low_offset) ? A.low_offset : B.low_offset,
+        A.high_offset.slt(B.high_offset) ? A.high_offset : B.high_offset
+      );
+    }
+
+  private:
+    bool is_valid;
+    bool is_unsafe_permissive;
+
+    // This constructor only for internal use
+    explicit BoundsInfo(APInt low_offset, APInt high_offset, bool is_unsafe_permissive)
+      : low_offset(low_offset), high_offset(high_offset), is_valid(true), is_unsafe_permissive(is_unsafe_permissive) {}
+  };
+
+  /// Maps a pointer to its bounds info, if we know anything about its bounds
+  /// info.
+  /// For pointers not appearing in this map, we don't know anything about their
+  /// bounds.
+  DenseMap<const Value*, BoundsInfo> bounds_info;
+
   /// Return value for `doIteration`.
   struct IterationResult {
     /// This indicates if any change was made to the pointer statuses in _any_
@@ -984,14 +1064,21 @@ private:
   /// dynamic counts in this `DynamicResults` object.
   /// Caller must only pass a non-NULL value for this after the analysis has
   /// reached a fixpoint.
-  IterationResult doIteration(DynamicResults* dynamic_results) {
+  ///
+  /// `add_spatial_sw_checks`: if `true`, then insert SW spatial safety checks
+  /// where necessary.
+  /// Caller must only set this to `true` after the analysis has reached a
+  /// fixpoint.
+  /// Currently this assumes that dereferencing BLEMISHED16 pointers does not
+  /// need a SW check, but all other BLEMISHED pointers need checks.
+  IterationResult doIteration(DynamicResults* dynamic_results, const bool add_spatial_sw_checks) {
     StaticResults static_results = { 0 };
     bool changed = false;
 
     LLVM_DEBUG(dbgs() << "DLIM: starting an iteration through function " << F.getName() << "\n");
 
     for (BasicBlock* block : RPOT) {
-      AnalyzeBlockResult res = analyze_block(*block, dynamic_results);
+      AnalyzeBlockResult res = analyze_block(*block, dynamic_results, add_spatial_sw_checks);
       changed |= res.end_of_block_statuses_changed;
       static_results += res.static_results;
     }
@@ -1040,7 +1127,18 @@ private:
   /// dynamic counts in this `DynamicResults` object.
   /// Caller must only pass a non-NULL value for this after the analysis has
   /// reached a fixpoint.
-  AnalyzeBlockResult analyze_block(BasicBlock &block, DynamicResults* dynamic_results) {
+  ///
+  /// `add_spatial_sw_checks`: if `true`, then insert SW spatial safety checks
+  /// where necessary.
+  /// Caller must only set this to `true` after the analysis has reached a
+  /// fixpoint.
+  /// Currently this assumes that dereferencing BLEMISHED16 pointers does not
+  /// need a SW check, but all other BLEMISHED pointers need checks.
+  AnalyzeBlockResult analyze_block(
+    BasicBlock &block,
+    DynamicResults* dynamic_results,
+    const bool add_spatial_sw_checks
+  ) {
     PerBlockState* pbs = block_states[&block];
 
     LLVM_DEBUG(
@@ -1074,7 +1172,7 @@ private:
         // need to actually analyze this block. Just return the `StaticResults`
         // we got last time.
         LLVM_DEBUG(dbgs() << "DLIM:   top-of-block statuses haven't changed\n");
-        if (!dynamic_results) return AnalyzeBlockResult { false, pbs->static_results };
+        if (!dynamic_results && !add_spatial_sw_checks) return AnalyzeBlockResult { false, pbs->static_results };
         // (you could be concerned that this check could pass on the first
         // iteration if the top-of-block statuses happen to be equal to the
         // initial state of a `PointerStatuses`; and then we wouldn't ever
@@ -1233,6 +1331,11 @@ private:
           // next count the address
           const Value* addr = store.getPointerOperand();
           COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
+          // insert a bounds check before the store, if necessary
+          if (add_spatial_sw_checks) {
+            IRBuilder<> BeforeStore(&store);
+            maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore);
+          }
           // now, the pointer used as an address becomes clean
           ptr_statuses.mark_clean(addr);
           break;
@@ -1242,6 +1345,11 @@ private:
           const Value* ptr = load.getPointerOperand();
           // first count this for static stats
           COUNT_OP_AS_STATUS(load_addrs, ptr_statuses.getStatus(ptr), &inst, "Loading from pointer");
+          // insert a bounds check before the load, if necessary
+          if (add_spatial_sw_checks) {
+            IRBuilder<> BeforeLoad(&load);
+            maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), BeforeLoad);
+          }
           // now, the pointer becomes clean
           ptr_statuses.mark_clean(ptr);
 
@@ -1295,6 +1403,10 @@ private:
         case Instruction::Alloca: {
           // result of an alloca is a clean pointer
           ptr_statuses.mark_clean(&inst);
+          // we know the bounds of the allocation statically
+          PointerType* resultType = cast<PointerType>(inst.getType());
+          auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
+          bounds_info[&inst] = BoundsInfo(zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1));
           break;
         }
         case Instruction::GetElementPtr: {
@@ -1315,8 +1427,24 @@ private:
           GEPResultClassification grc = classifyGEPResult(gep, input_status, DL, trustLLVMStructTypes, ipr.is_induction_pattern ? &ipr.induction_offset : NULL);
           ptr_statuses.mark_as(&gep, grc.classification);
           // if we added a nonzero constant to a pointer, count that for stats purposes
-          if (grc.offset_is_constant && grc.constant_offset != zero) {
+          if (grc.offset_is_constant && !grc.trustworthy_struct_offset && grc.constant_offset != zero) {
             COUNT_OP_AS_STATUS(pointer_arith_const, input_status, &gep, "GEP on a pointer");
+          }
+          // if the input pointer had bounds, propagate those bounds to the new
+          // pointer.  We let the new pointer still have access to the whole
+          // allocation
+          auto it = bounds_info.find(input_ptr);
+          if (it != bounds_info.end()) {
+            BoundsInfo& binfo = it->getSecond();
+            if (!binfo.isValid()) {
+              bounds_info[&gep] = binfo;
+            } else if (binfo.isUnsafePermissive()) {
+              bounds_info[&gep] = binfo;
+            } else if (grc.offset_is_constant) {
+              bounds_info[&gep] = BoundsInfo(binfo.low_offset + grc.constant_offset, binfo.high_offset - grc.constant_offset);
+            } else {
+              // bounds of the new pointer aren't known statically
+            }
           }
           break;
         }
@@ -1325,12 +1453,24 @@ private:
           if (bitcast.getType()->isPointerTy()) {
             const Value* input_ptr = bitcast.getOperand(0);
             ptr_statuses.mark_as(&bitcast, ptr_statuses.getStatus(input_ptr));
+            // also propagate bounds info, if it exists
+            auto it = bounds_info.find(input_ptr);
+            if (it != bounds_info.end()) {
+              BoundsInfo& binfo = it->getSecond();
+              bounds_info[&bitcast] = binfo;
+            }
           }
           break;
         }
         case Instruction::AddrSpaceCast: {
           const Value* input_ptr = inst.getOperand(0);
           ptr_statuses.mark_as(&inst, ptr_statuses.getStatus(input_ptr));
+          // also propagate bounds info, if it exists
+          auto it = bounds_info.find(input_ptr);
+          if (it != bounds_info.end()) {
+            BoundsInfo& binfo = it->getSecond();
+            bounds_info[&inst] = binfo;
+          }
           break;
         }
         case Instruction::Select: {
@@ -1342,6 +1482,14 @@ private:
             const PointerStatus true_status = ptr_statuses.getStatus(true_input);
             const PointerStatus false_status = ptr_statuses.getStatus(false_input);
             ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status, &inst));
+            // also propagate bounds info, if it exists
+            auto it1 = bounds_info.find(true_input);
+            auto it2 = bounds_info.find(false_input);
+            if (it1 != bounds_info.end() && it2 != bounds_info.end()) {
+              BoundsInfo& binfo1 = it1->getSecond();
+              BoundsInfo& binfo2 = it2->getSecond();
+              bounds_info[&select] = BoundsInfo::merge(binfo1, binfo2);
+            }
           }
           break;
         }
@@ -1449,6 +1597,25 @@ private:
                 merged_status = PointerStatus::merge(merged_status, incoming_status, &inst);
               }
               ptr_statuses.mark_as(&phi, merged_status);
+              // also propagate bounds info, if all incoming pointers have
+              // bounds info
+              BoundsInfo merged_binfo = BoundsInfo::unsafe_permissive(); // just the initial value we start the merge with
+              bool all_have_bounds_info = false;
+              assert(phi.getNumIncomingValues() >= 1);
+              for (const Use& use : phi.incoming_values()) {
+                const Value* value = use.get();
+                auto it = bounds_info.find(value);
+                if (it == bounds_info.end()) {
+                  all_have_bounds_info = false;
+                  break;
+                } else {
+                  BoundsInfo& binfo = it->getSecond();
+                  merged_binfo = BoundsInfo::merge(merged_binfo, binfo);
+                }
+              }
+              if (all_have_bounds_info) {
+                bounds_info[&phi] = merged_binfo;
+              }
             }
           }
           break;
@@ -1472,6 +1639,14 @@ private:
               incrementGlobalCounter(dynamic_results->inttoptrs, &inst);
             }
             ptr_statuses.mark_as(&inttoptr, inttoptr_kind);
+            // if we're considering it a clean ptr, then also assume it
+            // is valid for the entire size of the data its type claims it
+            // points to
+            if (inttoptr_kind == PointerKind::CLEAN) {
+              PointerType* resultType = cast<PointerType>(inttoptr.getType());
+              auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
+              bounds_info[&inttoptr] = BoundsInfo(zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1));
+            }
           }
           break;
         }
@@ -1497,6 +1672,12 @@ private:
             // returned pointer is CLEAN
             if (isAllocatingCall(call)) {
               ptr_statuses.mark_clean(&call);
+              // we know the bounds of the allocation statically
+              assert(call.getNumArgOperands() == 1);
+              Value* allocationBytes = call.getArgOperand(0);
+              if (ConstantInt* allocationBytes_const = dyn_cast<ConstantInt>(allocationBytes)) {
+                bounds_info[&inst] = BoundsInfo(zero, allocationBytes_const->getValue() - 1);
+              }
             } else {
               // For now, mark pointers returned from other calls as UNKNOWN
               ptr_statuses.mark_unknown(&call);
@@ -1550,6 +1731,66 @@ private:
     pbs->ptrs_end = std::move(ptr_statuses);
     pbs->static_results = static_results;
     return AnalyzeBlockResult { changed, static_results };
+  }
+
+  /// If necessary, add a dynamic spatial safety check for the dereference of
+  /// `addr`, assuming `addr` has status `status`.
+  /// If dynamic instructions need to be inserted, use `Builder`.
+  ///
+  /// Currently this assumes that dereferencing BLEMISHED16 pointers does not
+  /// need a SW check, but all other BLEMISHED pointers need checks.
+  void maybeAddSpatialSWCheck(const Value* addr, PointerStatus status, IRBuilder<>& Builder) {
+    switch (status.kind) {
+      case PointerKind::CLEAN:
+        // no check required
+        return;
+      case PointerKind::BLEMISHED16:
+        // no check required
+        return;
+      case PointerKind::BLEMISHED32:
+      case PointerKind::BLEMISHED64:
+      case PointerKind::BLEMISHEDCONST:
+      case PointerKind::DIRTY: {
+        auto it = bounds_info.find(addr);
+        if (it == bounds_info.end()) {
+          dbgs() << "warning: no bounds info found for " << addr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
+          return;
+        }
+        const BoundsInfo& binfo = it->getSecond();
+        if (!binfo.isValid()) {
+          dbgs() << "warning: bounds info invalid for " << addr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
+          return;
+        }
+        if (binfo.isUnsafePermissive()) {
+          // no check required
+          return;
+        }
+        if (binfo.low_offset.isStrictlyPositive()) {
+          // invalid pointer: too low
+          Module* mod = F.getParent();
+          FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
+          FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
+          Builder.CreateCall(Abort);
+          Builder.CreateUnreachable();
+        } else if (binfo.high_offset.isNegative()) {
+          // invalid pointer: too high
+          Module* mod = F.getParent();
+          FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
+          FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
+          Builder.CreateCall(Abort);
+          Builder.CreateUnreachable();
+        }
+        break;
+      }
+      case PointerKind::DYNAMIC:
+        llvm_unreachable("unimplemented: bounds check on dynamic-status pointer");
+      case PointerKind::UNKNOWN:
+        llvm_unreachable("unimplemented: bounds check on unknown-status pointer");
+      case PointerKind::NOTDEFINEDYET:
+        llvm_unreachable("trying to bounds check on pointer with NOTDEFINEDYET status");
+      default:
+        llvm_unreachable("Missing PointerKind case");
+    }
   }
 
   DynamicResults initializeDynamicResults() {
@@ -1946,6 +2187,18 @@ PreservedAnalyses DynamicStdoutDLIMPass::run(Function &F, FunctionAnalysisManage
   return PreservedAnalyses::none();
 }
 
+PreservedAnalyses BoundsChecksDLIMPass::run(Function &F, FunctionAnalysisManager &FAM) {
+  DLIMAnalysis analysis = DLIMAnalysis(F, FAM, true, PointerKind::CLEAN, true);
+  analysis.run();
+  analysis.addSpatialSafetySWChecks();
+
+  // For now we conservatively just tell LLVM that no analyses are preserved.
+  // It seems that many existing LLVM passes also just use
+  // PreservedAnalyses::none() when they make any change, so we assume this is
+  // reasonable.
+  return PreservedAnalyses::none();
+}
+
 /// Classify the `PointerKind` of the result of the given `gep`, assuming that its
 /// input pointer is `input_kind`.
 /// This looks only at the `GetElementPtrInst` itself, and thus does not try to
@@ -1961,50 +2214,38 @@ static GEPResultClassification classifyGEPResult(
   const bool trustLLVMStructTypes,
   const APInt* override_constant_offset
 ) {
-  bool offsetIsConstant = false;
-  // `offset` is only valid if `offsetIsConstant`
-  APInt offset = zero;
+  GEPResultClassification grc;
+  grc.offset_is_constant = false;
+  grc.constant_offset = zero; // `constant_offset` is only valid if `offset_is_constant`
   if (override_constant_offset == NULL) {
-    offsetIsConstant = gep.accumulateConstantOffset(DL, offset);
+    grc.offset_is_constant = gep.accumulateConstantOffset(DL, grc.constant_offset);
   } else {
-    offsetIsConstant = true;
-    offset = *override_constant_offset;
+    grc.offset_is_constant = true;
+    grc.constant_offset = *override_constant_offset;
   }
 
   if (gep.hasAllZeroIndices()) {
     // result of a GEP with all zeroes as indices, is the same as the input pointer.
-    assert(offsetIsConstant && offset == zero && "If all indices are constant 0, then the total offset should be constant 0");
-    GEPResultClassification grc;
+    assert(grc.offset_is_constant && grc.constant_offset == zero && "If all indices are constant 0, then the total offset should be constant 0");
     grc.classification = input_status;
-    grc.offset_is_constant = true; // it's a zero constant
-    grc.constant_offset = offset;
+    grc.trustworthy_struct_offset = false;
     return grc;
   }
   if (trustLLVMStructTypes && areAllIndicesTrustworthy(gep)) {
     // nonzero offset, but "trustworthy" offset.
+    assert(grc.offset_is_constant);
+    grc.trustworthy_struct_offset = true;
     switch (input_status.kind) {
       case PointerKind::CLEAN: {
-        GEPResultClassification grc;
         grc.classification = PointerStatus::clean();
-        // we consider this a "zero" constant. For this purpose.
-        grc.offset_is_constant = true;
-        grc.constant_offset = zero;
         return grc;
       }
       case PointerKind::UNKNOWN: {
-        GEPResultClassification grc;
         grc.classification = PointerStatus::unknown();
-        // we consider this a "zero" constant. For this purpose.
-        grc.offset_is_constant = true;
-        grc.constant_offset = zero;
         return grc;
       }
       case PointerKind::DIRTY: {
-        GEPResultClassification grc;
         grc.classification = PointerStatus::dirty();
-        // we consider this a "zero" constant. For this purpose.
-        grc.offset_is_constant = true;
-        grc.constant_offset = zero;
         return grc;
       }
       case PointerKind::BLEMISHED16:
@@ -2016,7 +2257,6 @@ static GEPResultClassification classifyGEPResult(
         break;
       }
       case PointerKind::DYNAMIC: {
-        GEPResultClassification grc;
         if (input_status.dynamic_kind == NULL) {
           grc.classification = PointerStatus::dynamic(NULL);
         } else {
@@ -2031,9 +2271,6 @@ static GEPResultClassification classifyGEPResult(
           );
           grc.classification = PointerStatus::dynamic(dynamic_kind);
         }
-        // we consider this a "zero" constant. For this purpose.
-        grc.offset_is_constant = true;
-        grc.constant_offset = zero;
         return grc;
       }
       case PointerKind::NOTDEFINEDYET: {
@@ -2046,22 +2283,19 @@ static GEPResultClassification classifyGEPResult(
 
   // if we get here, we don't have a zero constant offset. Either it's a nonzero constant,
   // or a nonconstant.
-  GEPResultClassification grc;
-  grc.offset_is_constant = offsetIsConstant;
-  if (offsetIsConstant) {
-    grc.constant_offset = offset;
+  if (grc.offset_is_constant) {
     switch (input_status.kind) {
       case PointerKind::CLEAN: {
         // This GEP adds a constant but nonzero amount to a CLEAN
         // pointer. The result is some flavor of BLEMISHED depending
         // on how far the pointer arithmetic goes.
-        if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
+        if (grc.constant_offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
           grc.classification = PointerStatus::blemished16();
           return grc;
-        } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
+        } else if (grc.constant_offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
           grc.classification = PointerStatus::blemished32();
           return grc;
-        } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 64))) {
+        } else if (grc.constant_offset.ule(APInt(/* bits = */ 64, /* val = */ 64))) {
           grc.classification = PointerStatus::blemished64();
           return grc;
         } else {
@@ -2075,11 +2309,11 @@ static GEPResultClassification classifyGEPResult(
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED16 pointer. The result is some flavor of BLEMISHED
         // depending on how far the pointer arithmetic goes.
-        if (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
+        if (grc.constant_offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) {
           // Conservatively, the total offset can't exceed 32
           grc.classification = PointerStatus::blemished32();
           return grc;
-        } else if (offset.ule(APInt(/* bits = */ 64, /* val = */ 48))) {
+        } else if (grc.constant_offset.ule(APInt(/* bits = */ 64, /* val = */ 48))) {
           // Conservatively, the total offset can't exceed 64
           grc.classification = PointerStatus::blemished64();
           return grc;
@@ -2094,7 +2328,7 @@ static GEPResultClassification classifyGEPResult(
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED32 pointer. The result is some flavor of BLEMISHED
         // depending on how far the pointer arithmetic goes.
-        if (offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
+        if (grc.constant_offset.ule(APInt(/* bits = */ 64, /* val = */ 32))) {
           // Conservatively, the total offset can't exceed 64
           grc.classification = PointerStatus::blemished64();
           return grc;
@@ -2149,7 +2383,7 @@ static GEPResultClassification classifyGEPResult(
           Value* dynamic_kind = Builder.getInt64(dirty_mask);
           dynamic_kind = Builder.CreateSelect(
             is_clean,
-            (offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) ?
+            (grc.constant_offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) ?
               Builder.getInt64(blemished16_mask) : // offset <= 16 from a dynamically clean pointer
               Builder.getInt64(blemished_other_mask), // offset >16 from a dynamically clean pointer
             dynamic_kind
