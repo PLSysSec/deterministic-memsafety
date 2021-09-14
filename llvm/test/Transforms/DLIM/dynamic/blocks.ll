@@ -4,12 +4,12 @@
 ; totals are for this entire file.
 ; CHECK-LABEL: DLIM dynamic counts
 ; CHECK-NEXT: =====
-; CHECK-NEXT: Loads with clean addr: 220
+; CHECK-NEXT: Loads with clean addr: 271
 ; CHECK-NEXT: Loads with blemished16 addr: 0
 ; CHECK-NEXT: Loads with blemished32 addr: 0
 ; CHECK-NEXT: Loads with blemished64 addr: 0
 ; CHECK-NEXT: Loads with blemishedconst addr: 0
-; CHECK-NEXT: Loads with dirty addr: 104
+; CHECK-NEXT: Loads with dirty addr: 53
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 10
 ; CHECK-NEXT: Stores with blemished16 addr: 102
@@ -326,10 +326,11 @@ end:
 }
 
 ; This checks that loading from a PHI'd pointer, where one possibility is
-; statically CLEAN and the other is DYN_DIRTY, is a dirty load.
+; statically CLEAN and the other is DYN_DIRTY, is clean or dirty depending
+; on the actual dynamic PHI source each iteration.
 ; (Dynamic) totals for this function (arg <= 4):
-; Loads with clean addr: 1
-; Loads with dirty addr: 52
+; Loads with clean addr: 1 + 51 = 52
+; Loads with dirty addr: 1
 ; Stores with clean addr: 1
 ; Stores with blemished16 addr: 51
 ; Storing a dirty ptr to mem: 1
