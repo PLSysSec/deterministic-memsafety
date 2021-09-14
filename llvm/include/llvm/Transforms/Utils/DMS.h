@@ -1,5 +1,5 @@
-#ifndef LLVM_TRANSFORMS_UTILS_DLIM_H
-#define LLVM_TRANSFORMS_UTILS_DLIM_H
+#ifndef LLVM_TRANSFORMS_UTILS_DMS_H
+#define LLVM_TRANSFORMS_UTILS_DMS_H
 
 #include "llvm/IR/PassManager.h"
 
@@ -7,7 +7,7 @@ namespace llvm {
 
 /// Pass which prints static counts of clean/dirty pointers and some other
 /// statistics
-class StaticDLIMPass : public PassInfoMixin<StaticDLIMPass> {
+class StaticDMSPass : public PassInfoMixin<StaticDMSPass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 
@@ -15,13 +15,13 @@ public:
   static bool isRequired() { return true; }
 };
 
-/// As of this writing, the differences between `ParanoidStaticDLIMPass` and
-/// `StaticDLIMPass` are:
-///   - `ParanoidStaticDLIMPass` doesn't trust LLVM struct types (i.e., doesn't
+/// As of this writing, the differences between `ParanoidStaticDMSPass` and
+/// `StaticDMSPass` are:
+///   - `ParanoidStaticDMSPass` doesn't trust LLVM struct types (i.e., doesn't
 ///   trust that the target code's pointer-type casts were done correctly)
-///   - `ParanoidStaticDLIMPass` treats `inttoptr` results (integer-to-pointer
-///   casts) as DIRTY, while `StaticDLIMPass` assumes they are CLEAN
-class ParanoidStaticDLIMPass : public PassInfoMixin<ParanoidStaticDLIMPass> {
+///   - `ParanoidStaticDMSPass` treats `inttoptr` results (integer-to-pointer
+///   casts) as DIRTY, while `StaticDMSPass` assumes they are CLEAN
+class ParanoidStaticDMSPass : public PassInfoMixin<ParanoidStaticDMSPass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 
@@ -31,8 +31,8 @@ public:
 
 /// Pass which instruments code so that it tracks dynamic counts of clean/dirty
 /// pointers and some other statistics; then logs them to a file in
-/// `./dlim_dynamic_counts` in the runtime current directory.
-class DynamicDLIMPass : public PassInfoMixin<DynamicDLIMPass> {
+/// `./dms_dynamic_counts` in the runtime current directory.
+class DynamicDMSPass : public PassInfoMixin<DynamicDMSPass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 
@@ -40,9 +40,9 @@ public:
   static bool isRequired() { return true; }
 };
 
-/// Like `DynamicDLIMPass`, but the dynamic statistics are printed to stdout
+/// Like `DynamicDMSPass`, but the dynamic statistics are printed to stdout
 /// when the program is run, rather than being logged to a file.
-class DynamicStdoutDLIMPass : public PassInfoMixin<DynamicStdoutDLIMPass> {
+class DynamicStdoutDMSPass : public PassInfoMixin<DynamicStdoutDMSPass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 
@@ -52,7 +52,7 @@ public:
 
 /// Pass which adds SW bounds checks for all dereferences of pointers that
 /// aren't CLEAN or BLEMISHED16. This uses the "non-paranoid" pointer statuses.
-class BoundsChecksDLIMPass : public PassInfoMixin<BoundsChecksDLIMPass> {
+class BoundsChecksDMSPass : public PassInfoMixin<BoundsChecksDMSPass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 
@@ -62,4 +62,4 @@ public:
 
 } // namespace llvm
 
-#endif // LLVM_TRANSFORMS_UTILS_DLIM_H
+#endif // LLVM_TRANSFORMS_UTILS_DMS_H

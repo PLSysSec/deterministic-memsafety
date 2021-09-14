@@ -1,11 +1,11 @@
-# DLIM LLVM fork
+# DMS LLVM fork
 
-DLIM implementation is at `llvm/lib/Transforms/Utils/DLIM.cpp`, and DLIM tests
-are at `llvm/test/Transforms/DLIM`.
+DMS implementation is at `llvm/lib/Transforms/Utils/DMS.cpp`, and DMS tests
+are at `llvm/test/Transforms/DMS`.
 
 There is also a script `summarize_dynamic_counts.sh` in the root of this repo
 which is useful for collecting results from running dynamically instrumented
-programs -- i.e., the data in the dynamically generated `dlim_dynamic_counts`
+programs -- i.e., the data in the dynamically generated `dms_dynamic_counts`
 directories.
 
 ## Building
@@ -30,45 +30,45 @@ you don't have to run `cmake` again---just use `ninja`.
 
 To run all LLVM regression tests, run `ninja check-llvm` from the `llvm/build` directory.
 
-To run only the DLIM regression tests, run `./build/bin/llvm-lit -v ./test/Transforms/DLIM` from the `llvm` directory.
+To run only the DMS regression tests, run `./build/bin/llvm-lit ./test/Transforms/DMS` from the `llvm` directory. You can add `-v` for more verbose output.
 
-## Compiling with DLIM passes
+## Compiling with DMS passes
 
 We've integrated our passes into Clang, so this is now really easy.
-Just use the Clang in `./build/bin`, and add the flag `-fdlim=<option>` to your
+Just use the Clang in `./build/bin`, and add the flag `-fdms=<option>` to your
 command, where `<option>` is one of:
-* `static`: this runs the static DLIM pass, which doesn't modify the code
+* `static`: this runs the static DMS pass, which doesn't modify the code
   but just reports static statistics about clean/dirty pointers etc.
 * `paranoid-static`: same as `static`, but doesn't trust LLVM struct types --
-  see comments in `DLIM.h`.
-* `dynamic`: this runs the dynamic DLIM pass, which instruments the code so
+  see comments in `DMS.h`.
+* `dynamic`: this runs the dynamic DMS pass, which instruments the code so
   that at runtime it will count dynamic statistics about clean/dirty pointers
   etc, and print those counts when the program finishes.
 
 You can also specify more than one of these options, comma-separated: e.g.,
-`-fdlim=static,dynamic`.
+`-fdms=static,dynamic`.
 
-## Running the DLIM passes on individual bitcode files
+## Running the DMS passes on individual bitcode files
 
-### Static DLIM passes:
+### Static DMS passes:
 
 From the `llvm` directory: `./build/bin/opt -passes=<pass> -disable-output file.ll`
-where `<pass>` is either `static-dlim` or `paranoid-static-dlim`.
+where `<pass>` is either `static-dms` or `paranoid-static-dms`.
 (The `-disable-output` flag avoids writing the "transformed" bitcode, which is
 uninteresting for these static passes which don't do any transformations.)
 You can use either a `.ll` (text-format) or `.bc` (binary-format bitcode) file
 as input.
 To get detailed debugging information, add the `-debug` flag.
 
-### Dynamic DLIM pass:
+### Dynamic DMS pass:
 
-From the `llvm` directory: `./build/bin/opt -passes=dynamic-dlim file.ll -o=file_instrumented.bc`
+From the `llvm` directory: `./build/bin/opt -passes=dynamic-dms file.ll -o=file_instrumented.bc`
 (again, you can use either a `.ll` or `.bc` file as input).
 To get `.ll` _output_ instead of `.bc`, add the `-S` flag (and, to avoid
 confusion, change the extension of the output filename).
 To get detailed debugging information, add the `-debug` flag.
 
-## Compiling with DLIM passes -- the old way
+## Compiling with DMS passes -- the old way
 
 These instructions are probably not useful or needed anymore, because you can
 just use the Clang flags described above (much easier), but just in case,
@@ -80,10 +80,10 @@ here's the instructions.
    To get `.ll` text format instead of `.bc` bitcode format (for debugging),
    use `-S` instead of `-c`.
 
-2. Run whichever DLIM pass(es) you want using the instructions above for
+2. Run whichever DMS pass(es) you want using the instructions above for
    individual bitcode files.
 
-3. For static DLIM passes, you're already done. For dynamic DLIM passes, to
+3. For static DMS passes, you're already done. For dynamic DMS passes, to
    actually finish compiling the code so you can run it, just use `clang`,
    e.g. `clang file_instrumented.bc -o file`. This can again be done with any
   `clang` you want.

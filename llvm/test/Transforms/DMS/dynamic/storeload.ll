@@ -1,15 +1,15 @@
-; RUN: opt %s -passes=dynamic-stdout-dlim -o=%t.instrumented.bc && clang %t.instrumented.bc -o %t && %t | FileCheck %s
+; RUN: opt %s -passes=dynamic-stdout-dms -o=%t.instrumented.bc && clang %t.instrumented.bc -o %t && %t | FileCheck %s
 
 ; Since we currently print dynamic counts on a per-module basis, the following
 ; totals are for this entire file.
-; CHECK-LABEL: DLIM dynamic counts
+; CHECK-LABEL: DMS dynamic counts
 ; CHECK-NEXT: =====
 ; CHECK-NEXT: Loads with clean addr: 3
-; CHECK-NEXT: Loads with blemished16 addr: 1
+; CHECK-NEXT: Loads with blemished16 addr: 0
 ; CHECK-NEXT: Loads with blemished32 addr: 0
 ; CHECK-NEXT: Loads with blemished64 addr: 0
-; CHECK-NEXT: Loads with blemishedconst addr: 1
-; CHECK-NEXT: Loads with dirty addr: 5
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
 ; CHECK-NEXT: Loads with unknown addr: 0
 ; CHECK-NEXT: Stores with clean addr: 2
 ; CHECK-NEXT: Stores with blemished16 addr: 0
@@ -39,54 +39,40 @@
 ; CHECK-NEXT: Returning a blemishedconst ptr from a func: 0
 ; CHECK-NEXT: Returning a dirty ptr from a func: 0
 ; CHECK-NEXT: Returning an unknown ptr from a func: 0
-; CHECK-NEXT: Nonzero constant pointer arithmetic on a clean ptr: 2
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a clean ptr: 0
 ; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished16 ptr: 0
 ; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished32 ptr: 0
 ; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemished64 ptr: 0
 ; CHECK-NEXT: Nonzero constant pointer arithmetic on a blemishedconst ptr: 0
-; CHECK-NEXT: Nonzero constant pointer arithmetic on a dirty ptr: 2
+; CHECK-NEXT: Nonzero constant pointer arithmetic on a dirty ptr: 0
 ; CHECK-NEXT: Nonzero constant pointer arithmetic on an unknown ptr: 0
 ; CHECK-NEXT: Producing a ptr from inttoptr: 0
 
 define i32 @main() {
-  %call = call i32 @dynclean(i32 2)
+  %call = call i32 @dynclean()
   %call2 = call i32 @dyndirty(i32 2)
   ret i32 0
 }
 
-; pointer arithmetic on a dynamically clean pointer
-define i32 @dynclean(i32 %arg) {
-  %allocated = alloca [64 x i32], align 4
-  %arr = bitcast [64 x i32]* %allocated to i32*
+; check that storing and loading pointers works, and that we correctly determine
+; that the loaded pointer is dynamically clean
+define i32 @dynclean() {
+  %ptr = alloca i32, align 4
   %ptrptr = alloca i32*, align 4
-  store i32* %arr, i32** %ptrptr, align 4 ; storing a clean ptr to clean address
+  store i32* %ptr, i32** %ptrptr, align 4 ; storing a clean ptr to clean address
   %loadedptr = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr will have DYN_CLEAN status
-  %added0 = getelementptr i32, i32* %loadedptr, i32 0 ; added 0 to DYN_CLEAN ptr, should still be DYN_CLEAN
-  %loaded1 = load i32, i32* %added0 ; loading from DYN_CLEAN ptr
-  %added2 = getelementptr i32, i32* %loadedptr, i32 2 ; added 8 bytes to DYN_CLEAN ptr, should be DYN_BLEMISHED16
-  %loaded2 = load i32, i32* %added2 ; loading from DYN_BLEMISHED16 ptr
-  %added64 = getelementptr i32, i32* %loadedptr, i32 16 ; added 64 bytes to DYN_CLEAN ptr, should be DYN_BLEMISHED_OTHER
-  %loaded3 = load i32, i32* %added64 ; loading from DYN_BLEMISHED_OTHER ptr
-  %addednonconst = getelementptr i32, i32* %loadedptr, i32 %arg ; added non-constant offset to DYN_CLEAN ptr, should be DYN_DIRTY
-  %loaded4 = load i32, i32* %addednonconst ; loading from DYN_DIRTY ptr
-  ret i32 %loaded4
+  %loaded2 = load i32, i32* %loadedptr ; loading from DYN_CLEAN ptr
+  ret i32 %loaded2
 }
 
-; pointer arithmetic on a dynamically dirty pointer
+; now store and load a dirty pointer
 define i32 @dyndirty(i32 %arg) {
   %allocated = alloca [64 x i32], align 4
   %arr = bitcast [64 x i32]* %allocated to i32*
   %dirtyptr = getelementptr i32, i32* %arr, i32 %arg ; dirty because the offset is not a compile-time constant
   %ptrptr = alloca i32*, align 4
-  store i32* %dirtyptr, i32** %ptrptr, align 4 ; storing a dirty ptr to clean address
+  store i32* %dirtyptr, i32** %ptrptr, align 4 ; storing dirty ptr to clean address
   %loadedptr = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr will have DYN_DIRTY status
-  %added0 = getelementptr i32, i32* %loadedptr, i32 0 ; added 0 to DYN_DIRTY ptr, should still be DYN_DIRTY
-  %loaded1 = load i32, i32* %added0 ; loading from DYN_DIRTY ptr
-  %added2 = getelementptr i32, i32* %loadedptr, i32 2 ; added 8 bytes to DYN_DIRTY ptr, should be DYN_DIRTY
-  %loaded2 = load i32, i32* %added2 ; loading from DYN_DIRTY ptr
-  %added64 = getelementptr i32, i32* %loadedptr, i32 16 ; added 64 bytes to DYN_DIRTY ptr, should be DYN_DIRTY
-  %loaded3 = load i32, i32* %added64 ; loading from DYN_DIRTY ptr
-  %addednonconst = getelementptr i32, i32* %loadedptr, i32 %arg ; added non-constant offset to DYN_DIRTY ptr, should be DYN_DIRTY
-  %loaded4 = load i32, i32* %addednonconst ; loading from DYN_DIRTY ptr
-  ret i32 %loaded4
+  %loaded2 = load i32, i32* %loadedptr ; loading from DYN_DIRTY ptr
+  ret i32 %loaded2
 }

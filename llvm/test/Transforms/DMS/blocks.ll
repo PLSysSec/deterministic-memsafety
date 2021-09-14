@@ -1,4 +1,4 @@
-; RUN: opt -passes=static-dlim -disable-output < %s 2>&1 | FileCheck %s
+; RUN: opt -passes=static-dms -disable-output < %s 2>&1 | FileCheck %s
 
 ; This checks that the load is still clean even when the alloca was in a
 ; different block.

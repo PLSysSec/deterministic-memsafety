@@ -1,4 +1,4 @@
-; RUN: opt -passes=static-dlim -disable-output < %s 2>&1 | FileCheck %s
+; RUN: opt -passes=static-dms -disable-output < %s 2>&1 | FileCheck %s
 
 ; This very basic loop has a clean load in every iteration.
 ; CHECK-LABEL: basic_loop

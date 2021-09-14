@@ -83,7 +83,7 @@
 #include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/CanonicalizeAliases.h"
 #include "llvm/Transforms/Utils/Debugify.h"
-#include "llvm/Transforms/Utils/DLIM.h"
+#include "llvm/Transforms/Utils/DMS.h"
 #include "llvm/Transforms/Utils/EntryExitInstrumenter.h"
 #include "llvm/Transforms/Utils/NameAnonGlobals.h"
 #include "llvm/Transforms/Utils/SymbolRewriter.h"
@@ -388,12 +388,12 @@ addPostInlineEntryExitInstrumentationPass(const PassManagerBuilder &Builder,
   PM.add(createPostInlineEntryExitInstrumenterPass());
 }
 
-// we would need something like this, if our dynamic DLIM pass used the legacy
+// we would need something like this, if our dynamic DMS pass used the legacy
 // pass manager
 /*
-static void addDynamicDLIMPass(const PassManagerBuilder &Builder,
+static void addDynamicDMSPass(const PassManagerBuilder &Builder,
                                legacy::PassManagerBase &PM) {
-  PM.add(createDynamicDLIMInstrumentationPass());
+  PM.add(createDynamicDMSInstrumentationPass());
 }
 */
 
@@ -839,13 +839,13 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   }
 
 // this would be something like the code we'd want, if our dynamic
-// DLIM pass used the legacy pass manager
+// DMS pass used the legacy pass manager
 /*
-  if (CodeGenOpts.DLIMInstrumentation) {
+  if (CodeGenOpts.DMSInstrumentation) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
-                           addDynamicDLIMPass);
+                           addDynamicDMSPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
-                           addDynamicDLIMPass);
+                           addDynamicDMSPass);
   }
 */
 
@@ -1419,29 +1419,29 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
     }
 
     bool have_dynamic = false;
-    for (const std::string& opt : CodeGenOpts.DLIM) {
+    for (const std::string& opt : CodeGenOpts.DMS) {
       if (opt == "static") {
         PB.registerOptimizerLastEPCallback(
-          [](ModulePassManager &MPM, PassBuilder::OptimizationLevel Level) {
+          [](ModulePassManager &MPM, OptimizationLevel Level) {
             MPM.addPass(createModuleToFunctionPassAdaptor(
-              StaticDLIMPass()));
+              StaticDMSPass()));
           });
       } else if (opt == "paranoid-static") {
         PB.registerOptimizerLastEPCallback(
-          [](ModulePassManager &MPM, PassBuilder::OptimizationLevel Level) {
+          [](ModulePassManager &MPM, OptimizationLevel Level) {
             MPM.addPass(createModuleToFunctionPassAdaptor(
-              ParanoidStaticDLIMPass()));
+              ParanoidStaticDMSPass()));
           });
       } else if (opt == "dynamic") {
-        assert(!have_dynamic && "DLIM: can't specify more than one dynamic option");
+        assert(!have_dynamic && "DMS: can't specify more than one dynamic option");
         have_dynamic = true;
         PB.registerOptimizerLastEPCallback(
-          [](ModulePassManager &MPM, PassBuilder::OptimizationLevel Level) {
+          [](ModulePassManager &MPM, OptimizationLevel Level) {
             MPM.addPass(createModuleToFunctionPassAdaptor(
-              DynamicDLIMPass()));
+              DynamicDMSPass()));
           });
       } else {
-        assert(false && "DLIM: unrecognized option");
+        assert(false && "DMS: unrecognized option");
       }
     }
 

@@ -1,8 +1,8 @@
-; RUN: opt %s -passes=dynamic-stdout-dlim -o=%t.instrumented.bc && clang %t.instrumented.bc -o %t && %t | FileCheck %s
+; RUN: opt %s -passes=dynamic-stdout-dms -o=%t.instrumented.bc && clang %t.instrumented.bc -o %t && %t | FileCheck %s
 
 ; Since we currently print dynamic counts on a per-module basis, the following
 ; totals are for this entire file.
-; CHECK-LABEL: DLIM dynamic counts
+; CHECK-LABEL: DMS dynamic counts
 ; CHECK-NEXT: =====
 ; CHECK-NEXT: Loads with clean addr: 271
 ; CHECK-NEXT: Loads with blemished16 addr: 0

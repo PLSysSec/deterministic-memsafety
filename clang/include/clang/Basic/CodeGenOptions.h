@@ -387,8 +387,8 @@ public:
   /// passed on the command line.
   std::string StackUsageOutput;
 
-  /// DLIM options: static, dynamic, and/or paranoid-static
-  std::vector<std::string> DLIM;
+  /// DMS options: static, dynamic, and/or paranoid-static
+  std::vector<std::string> DMS;
 
   /// Executable and command-line used to create a given CompilerInvocation.
   /// Most of the time this will be the full -cc1 command.
