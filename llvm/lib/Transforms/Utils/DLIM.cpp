@@ -23,6 +23,7 @@ using namespace llvm;
 #define DEBUG_TYPE "DLIM"
 
 static const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
+static const APInt minusone = APInt(/* bits = */ 64, /* val = */ -1);
 
 /// Return type for `isOffsetAnInductionPattern`.
 ///
@@ -669,7 +670,7 @@ static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K,
   return true;
 }
 
-class DLIMAnalysis {
+class DLIMAnalysis final {
 public:
   /// Creates and initializes the Analysis but doesn't actually run the analysis.
   ///
@@ -922,7 +923,7 @@ private:
   bool pointer_encoding_is_complete;
 
   /// This holds the per-block state for the analysis
-  class PerBlockState {
+  class PerBlockState final {
   public:
     PerBlockState(const DataLayout &DL, const bool trustLLVMStructTypes)
       : ptrs_beg(PointerStatuses(DL, trustLLVMStructTypes)),
@@ -982,67 +983,432 @@ private:
   /// pointer encoding/decoding.
   DenseMap<const IntToPtrInst*, const Value*> inttoptr_status_overrides;
 
+  /// For the Instructions in this set, don't count them for stats or do any
+  /// other operations with them. They aren't from the original program, they
+  /// were inserted by us to facilitate tracking bounds. The results of these
+  /// instructions will be used only in bounds checks, if ever; if they are
+  /// pointers, they will never be dereferenced.
+  ///
+  /// We don't necessarily add all the instructions we insert for bounds
+  /// purposes to this set. But, the intent is that we at minimum add all the
+  /// pointer-producing instructions inserted for bounds purposes.
+  DenseSet<const Instruction*> bounds_insts;
+
   /// Holds the bounds information for a single pointer, if it is known.
   /// Unlike the PointerStatus, which can be different at different program
   /// points for the same pointer, the BoundsInfo is the same at all program
   /// points for a given pointer.
-  ///
-  /// Suppose the pointer value is P. If the `low_offset` is L and the
-  /// `high_offset` is H, that means we know that the allocation extends at
-  /// least from (P - L) to (P + H), inclusive.
-  /// Notes:
-  ///   - `low_offset` and `high_offset` are in bytes.
-  ///   - In the common case (where we know P is inbounds) `low_offset` and
-  ///     `high_offset` will both be nonnegative. `low_offset` is implicitly
-  ///     subtracted, as noted above.
-  ///   - Values of 0 in both fields indicates a pointer valid for exactly the
-  ///     single byte it points to.
-  ///   - Greater values in either of these fields lead to more permissive
-  ///     (larger) bounds.
   class BoundsInfo final {
   public:
-    APInt low_offset;
-    APInt high_offset;
+    enum Kind {
+      /// Bounds info is not known for this pointer. Dereferencing this
+      /// pointer is a compile-time error - we should know bounds info for
+      /// all pointers which are ever dereferenced.
+      UNKNOWN = 0,
+      /// Bounds info is known statically. Look in `.static_info`
+      STATIC,
+      /// Bounds info is known dynamically. Look in `.dynamic_info`
+      DYNAMIC,
+      /// Bounds info is known dynamically, and is derived as the merger of the
+      /// bounds infos in `.merge_inputs`. Look in `.dynamic_info`
+      DYNAMIC_MERGED,
+      /// This pointer should be considered to have infinite bounds in both
+      /// directions
+      INFINITE,
+    };
 
-    /// Construct a BoundsInfo with the given low_offset and high_offset
-    explicit BoundsInfo(APInt low_offset, APInt high_offset) :
-      low_offset(low_offset), high_offset(high_offset), is_valid(true), is_unsafe_permissive(false) {}
+    /// Statically known bounds info.
+    ///
+    /// Suppose the pointer value is P. If the `low_offset` is L and the
+    /// `high_offset` is H, that means we know that the allocation extends at
+    /// least from (P - L) to (P + H), inclusive.
+    /// Notes:
+    ///   - `low_offset` and `high_offset` are in bytes.
+    ///   - In the common case (where we know P is inbounds) `low_offset` and
+    ///     `high_offset` will both be nonnegative. `low_offset` is implicitly
+    ///     subtracted, as noted above.
+    ///   - Values of 0 in both fields indicates a pointer valid for exactly the
+    ///     single byte it points to.
+    ///   - Greater values in either of these fields lead to more permissive
+    ///     (larger) bounds.
+    class StaticBoundsInfo final {
+    public:
+      APInt low_offset;
+      APInt high_offset;
 
-    /// Construct a special BoundsInfo with infinite bounds in both directions
-    static BoundsInfo unsafe_permissive() {
-      return BoundsInfo(zero, zero, true);
+      explicit StaticBoundsInfo(APInt low_offset, APInt high_offset)
+        : low_offset(low_offset), high_offset(high_offset) {}
+      StaticBoundsInfo() : low_offset(zero), high_offset(minusone) {}
+
+      bool operator==(const StaticBoundsInfo& other) const {
+        return (low_offset == other.low_offset && high_offset == other.high_offset);
+      }
+      bool operator!=(const StaticBoundsInfo& other) const {
+        return !(*this == other);
+      }
+
+      /// `cur_ptr`: the pointer value for which these static bounds apply.
+      ///
+      /// `Builder`: the IRBuilder to use to insert dynamic instructions.
+      ///
+      /// `bounds_insts`: If we insert any instructions into the program, we'll
+      /// also add them to `bounds_insts`, see notes there
+      ///
+      /// Returns the "base" (minimum inbounds pointer value) of the allocation,
+      /// as an LLVM `Value` of type `i8*`.
+      Value* base_as_llvm_value(
+        Value* cur_ptr,
+        IRBuilder<>& Builder,
+        DenseSet<const Instruction*>& bounds_insts
+      ) const {
+        return add_offset_to_ptr(cur_ptr, -low_offset, Builder, bounds_insts);
+      }
+
+      /// `cur_ptr`: the pointer value for which these static bounds apply.
+      ///
+      /// `Builder`: the IRBuilder to use to insert dynamic instructions.
+      ///
+      /// `bounds_insts`: If we insert any instructions into the program, we'll
+      /// also add them to `bounds_insts`, see notes there
+      ///
+      /// Returns the "max" (maximum inbounds pointer value) of the allocation,
+      /// as an LLVM `Value` of type `i8*`.
+      Value* max_as_llvm_value(
+        Value* cur_ptr,
+        IRBuilder<>& Builder,
+        DenseSet<const Instruction*>& bounds_insts
+      ) const {
+        return add_offset_to_ptr(cur_ptr, high_offset, Builder, bounds_insts);
+      }
+    };
+
+    /// Represents a pointer value as an LLVM pointer, with an optional
+    /// constant offset.
+    ///
+    /// The reason we represent it this way, rather than directly as a
+    /// LLVM Value (eg an LLVM GEP on a cast of `ptr`), is that this
+    /// representation is easier to compare for equality.
+    struct PointerWithOffset {
+      /// Pointer value itself.
+      /// This can be a `Value` of any pointer type.
+      Value* ptr;
+      /// Offset, in bytes.
+      /// This can be positive, negative, or zero.
+      APInt offset;
+
+      /// Get the pointer value as an LLVM `Value` of type `i8*`.
+      ///
+      /// `bounds_insts`: If we insert any instructions into the program, we'll
+      /// also add them to `bounds_insts`, see notes there
+      Value* as_llvm_value(IRBuilder<>& Builder, DenseSet<const Instruction*>& bounds_insts) const {
+        return add_offset_to_ptr(ptr, offset, Builder, bounds_insts);
+      }
+
+      PointerWithOffset() : ptr(NULL), offset(zero) {}
+      PointerWithOffset(Value* ptr) : ptr(ptr), offset(zero) {}
+      PointerWithOffset(Value* ptr, APInt offset) : ptr(ptr), offset(offset) {}
+      PointerWithOffset(Value* ptr, uint64_t offset) : ptr(ptr), offset(APInt(/* bits = */ 64, /* val = */ offset)) {}
+
+      bool operator==(const PointerWithOffset& other) const {
+        return (ptr == other.ptr && offset == other.offset);
+      }
+      bool operator!=(const PointerWithOffset& other) const {
+        return !(*this == other);
+      }
+    };
+
+    /// Dynamically known bounds info
+    struct DynamicBoundsInfo {
+      /// Pointer value representing the beginning of the allocation
+      /// (i.e., the minimum valid pointer value)
+      PointerWithOffset base;
+      /// Pointer value representing the end of the allocation
+      /// (i.e., the maximum valid pointer value)
+      PointerWithOffset max;
+
+      explicit DynamicBoundsInfo(Value* base, Value* max)
+        : base(PointerWithOffset(base)), max(PointerWithOffset(max)) {}
+      explicit DynamicBoundsInfo(PointerWithOffset base, PointerWithOffset max)
+        : base(base), max(max) {}
+      DynamicBoundsInfo() : base(PointerWithOffset()), max(PointerWithOffset()) {}
+
+      bool operator==(const DynamicBoundsInfo& other) const {
+        return (base == other.base && max == other.max);
+      }
+      bool operator!=(const DynamicBoundsInfo& other) const {
+        return !(*this == other);
+      }
+    };
+
+    /// This should really be a union.  But C++ complains hard about implicitly
+    /// deleted copy constructors, implicitly deleted assignment operators, etc
+    /// and I'm not C++ enough to be able to fix it
+    struct StaticOrDynamic {
+      StaticBoundsInfo static_info;
+      DynamicBoundsInfo dynamic_info;
+
+      StaticOrDynamic(StaticBoundsInfo static_info) : static_info(static_info) {}
+      StaticOrDynamic(DynamicBoundsInfo dynamic_info) : dynamic_info(dynamic_info) {}
+    };
+
+    Kind kind;
+    StaticOrDynamic info;
+
+    /// Only valid if kind is `DYNAMIC_MERGED`.
+    /// Elements in this are new()'d - they must be delete()'d.
+    /// Elements in this will never be of kind `DYNAMIC_MERGED` themselves.
+    SmallVector<BoundsInfo*, 4> merge_inputs;
+
+    /// Helper, returns `true` if the kind is `DYNAMIC` or `DYNAMIC_MERGED`.
+    /// In either case, if this returns `true`, `.dynamic_info` is valid
+    bool is_dynamic() const {
+      return (kind == DYNAMIC || kind == DYNAMIC_MERGED);
     }
 
-    /// Construct an invalid BoundsInfo. A zero-argument constructor seems
-    /// to be required for value types of DenseMap
-    explicit BoundsInfo() : is_valid(false) {}
+    /// Construct a BoundsInfo with the given `StaticBoundsInfo`
+    explicit BoundsInfo(StaticBoundsInfo static_info) :
+      kind(STATIC), info(static_info) {}
 
-    bool isValid() const {
-      return is_valid;
+    /// Construct a BoundsInfo with the given static `low_offset` and
+    /// `high_offset`
+    static BoundsInfo static_bounds(APInt low_offset, APInt high_offset) {
+      return BoundsInfo(StaticBoundsInfo(low_offset, high_offset));
     }
 
-    bool isUnsafePermissive() const {
-      return is_unsafe_permissive;
+    /// Construct a BoundsInfo with the given `DynamicBoundsInfo`
+    explicit BoundsInfo(DynamicBoundsInfo dynamic_info) :
+      kind(DYNAMIC), info(dynamic_info) {}
+
+    /// Construct a BoundsInfo with the given dynamic `base` and `max`
+    static BoundsInfo dynamic_bounds(Value* base, Value* max) {
+      return BoundsInfo(DynamicBoundsInfo(base, max));
     }
 
-    static BoundsInfo merge(const BoundsInfo& A, const BoundsInfo& B) {
-      if (!A.is_valid) return A;
-      if (!B.is_valid) return B;
-      if (A.is_unsafe_permissive) return B;
-      if (B.is_unsafe_permissive) return A;
-      return BoundsInfo(
-        A.low_offset.slt(B.low_offset) ? A.low_offset : B.low_offset,
-        A.high_offset.slt(B.high_offset) ? A.high_offset : B.high_offset
-      );
+    /// Construct a BoundsInfo with the given dynamic `base` and `max`
+    static BoundsInfo dynamic_bounds(PointerWithOffset base, PointerWithOffset max) {
+      return BoundsInfo(DynamicBoundsInfo(base, max));
+    }
+
+    /// Construct a BoundsInfo with infinite bounds in both directions
+    static BoundsInfo infinite() {
+      BoundsInfo ret;
+      ret.kind = INFINITE;
+      return ret;
+    }
+
+    /// Construct a BoundsInfo with unknown bounds. This is the default when
+    /// constructing a BoundsInfo. A zero-argument constructor seems to be
+    /// required for value types of DenseMap
+    explicit BoundsInfo() : kind(UNKNOWN), info(StaticBoundsInfo()) {}
+
+    /// Construct a BoundsInfo with unknown bounds (alias for `BoundsInfo()`)
+    static BoundsInfo unknown_bounds() {
+      return BoundsInfo();
+    }
+
+    BoundsInfo(const BoundsInfo& other) :
+      kind(other.kind), info(other.info) {
+      // separately new() for each BoundsInfo in merge_inputs.
+      // That way, if `other` is destructed before this new copy,
+      // it doesn't delete() the merge_inputs we're using
+      for (BoundsInfo* binfo : other.merge_inputs) {
+        merge_inputs.push_back(new BoundsInfo(*binfo));
+      }
+    }
+    // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
+    // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
+    friend void swap(BoundsInfo& A, BoundsInfo& B) noexcept {
+      std::swap(A.kind, B.kind);
+      std::swap(A.info, B.info);
+      std::swap(A.merge_inputs, B.merge_inputs);
+    }
+    BoundsInfo(BoundsInfo&& other) noexcept : BoundsInfo() {
+      swap(*this, other);
+    }
+    BoundsInfo& operator=(BoundsInfo rhs) noexcept {
+      swap(*this, rhs);
+      return *this;
+    }
+    ~BoundsInfo() {
+      for (BoundsInfo* binfo : merge_inputs) {
+        delete binfo;
+      }
+    }
+
+    // operator== and operator!= intentionally ignore the .merge_inputs field
+    // here
+    bool operator==(const BoundsInfo& other) const {
+      if (kind != other.kind) return false;
+      switch (kind) {
+        case UNKNOWN:
+        case INFINITE:
+          return true;
+        case STATIC:
+          return (info.static_info == other.info.static_info);
+        case DYNAMIC:
+        case DYNAMIC_MERGED:
+          return (info.dynamic_info == other.info.dynamic_info);
+        default:
+          llvm_unreachable("Missing BoundsInfo.kind case");
+      }
+    }
+    bool operator!=(const BoundsInfo& other) const {
+      return !(*this == other);
+    }
+
+    /// `cur_ptr` is the pointer which these bounds are for.
+    ///
+    /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+    /// that is necessary.
+    ///
+    /// `bounds_insts`: If we insert any instructions into the program, we'll
+    /// also add them to `bounds_insts`, see notes there
+    static BoundsInfo merge(
+      const BoundsInfo& A,
+      const BoundsInfo& B,
+      Value* cur_ptr,
+      IRBuilder<>& Builder,
+      DenseSet<const Instruction*>& bounds_insts
+    ) {
+      if (A.kind == UNKNOWN) return A;
+      if (B.kind == UNKNOWN) return B;
+      if (A.kind == INFINITE) return B;
+      if (B.kind == INFINITE) return A;
+
+      if (A.kind == STATIC && B.kind == STATIC) {
+        const StaticBoundsInfo &a_info = A.info.static_info;
+        const StaticBoundsInfo &b_info = B.info.static_info;
+        return BoundsInfo::static_bounds(
+          a_info.low_offset.slt(b_info.low_offset) ? a_info.low_offset : b_info.low_offset,
+          a_info.high_offset.slt(b_info.high_offset) ? a_info.high_offset : b_info.high_offset
+        );
+      }
+
+      if (A.is_dynamic() && B.is_dynamic()) {
+        return merge_dynamic_dynamic(
+          A.info.dynamic_info, B.info.dynamic_info, Builder, bounds_insts
+        );
+      }
+
+      if (A.kind == STATIC && B.is_dynamic()) {
+        return merge_static_dynamic(
+          A.info.static_info, B.info.dynamic_info, cur_ptr, Builder, bounds_insts
+        );
+      }
+      if (A.is_dynamic() && B.kind == STATIC) {
+        return merge_static_dynamic(
+          B.info.static_info, A.info.dynamic_info, cur_ptr, Builder, bounds_insts
+        );
+      }
+
+      llvm_unreachable("Missing case in BoundsInfo::merge");
     }
 
   private:
-    bool is_valid;
-    bool is_unsafe_permissive;
+    /// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
+    /// the resulting pointer.
+    /// The input pointer can be any pointer type, the output pointer will
+    /// have type `i8*`.
+    ///
+    /// `Builder`: the IRBuilder to use to insert dynamic instructions.
+    ///
+    /// `bounds_insts`: If we insert any instructions into the program, we'll
+    /// also add them to `bounds_insts`, see notes there
+    static Value* add_offset_to_ptr(Value* ptr, APInt offset, IRBuilder<>& Builder, DenseSet<const Instruction*>& bounds_insts) {
+      Value* casted = Builder.CreatePointerCast(ptr, Builder.getInt8PtrTy());
+      if (Instruction* cast_inst = dyn_cast<Instruction>(casted)) {
+        bounds_insts.insert(cast_inst);
+      }
+      Value* GEP = Builder.CreateGEP(casted, Builder.getInt(offset));
+      if (Instruction* gep_inst = dyn_cast<Instruction>(GEP)) {
+        bounds_insts.insert(gep_inst);
+      }
+      return GEP;
+    }
 
-    // This constructor only for internal use
-    explicit BoundsInfo(APInt low_offset, APInt high_offset, bool is_unsafe_permissive)
-      : low_offset(low_offset), high_offset(high_offset), is_valid(true), is_unsafe_permissive(is_unsafe_permissive) {}
+    /// `cur_ptr` is the pointer which these bounds are for.
+    ///
+    /// `Builder` is the IRBuilder to use to insert dynamic instructions.
+    ///
+    /// `bounds_insts`: If we insert any instructions into the program, we'll
+    /// also add them to `bounds_insts`, see notes there
+    static BoundsInfo merge_static_dynamic(
+      const StaticBoundsInfo& static_info,
+      const DynamicBoundsInfo& dynamic_info,
+      Value* cur_ptr,
+      IRBuilder<>& Builder,
+      DenseSet<const Instruction*>& bounds_insts
+    ) {
+      // these are the base and max from the dynamic side
+      Value* incoming_base = dynamic_info.base.as_llvm_value(Builder, bounds_insts);
+      Value* incoming_max = dynamic_info.max.as_llvm_value(Builder, bounds_insts);
+      // these are the base and max from the static side
+      Value* static_base = static_info.base_as_llvm_value(cur_ptr, Builder, bounds_insts);
+      Value* static_max = static_info.max_as_llvm_value(cur_ptr, Builder, bounds_insts);
+
+      return merge_dynamic_dynamic(
+        DynamicBoundsInfo(incoming_base, incoming_max),
+        DynamicBoundsInfo(static_base, static_max),
+        Builder,
+        bounds_insts
+      );
+    }
+
+    /// `Builder` is the IRBuilder to use to insert dynamic instructions.
+    ///
+    /// `bounds_insts`: If we insert any instructions into the program, we'll
+    /// also add them to `bounds_insts`, see notes there
+    static BoundsInfo merge_dynamic_dynamic(
+      const DynamicBoundsInfo& a_info,
+      const DynamicBoundsInfo& b_info,
+      IRBuilder<>& Builder,
+      DenseSet<const Instruction*>& bounds_insts
+    ) {
+      PointerWithOffset base;
+      PointerWithOffset max;
+      if (a_info.base.ptr == b_info.base.ptr) {
+        base = PointerWithOffset(
+          a_info.base.ptr,
+          a_info.base.offset.slt(b_info.base.offset) ? b_info.base.offset : a_info.base.offset
+        );
+      } else {
+        Value* a_base = a_info.base.as_llvm_value(Builder, bounds_insts);
+        Value* b_base = b_info.base.as_llvm_value(Builder, bounds_insts);
+        Value* merged_base = Builder.CreateSelect(
+          Builder.CreateICmpULT(a_base, b_base),
+          b_base,
+          a_base
+        );
+        if (Instruction* select_inst = dyn_cast<Instruction>(merged_base)) {
+          bounds_insts.insert(select_inst);
+        }
+        base = PointerWithOffset(merged_base);
+      }
+      if (a_info.max.ptr == b_info.max.ptr) {
+        max = PointerWithOffset(
+          a_info.max.ptr,
+          a_info.max.offset.slt(b_info.max.offset) ? a_info.max.offset : b_info.max.offset
+        );
+      } else {
+        Value* a_max = a_info.max.as_llvm_value(Builder, bounds_insts);
+        Value* b_max = b_info.max.as_llvm_value(Builder, bounds_insts);
+        Value* merged_max = Builder.CreateSelect(
+          Builder.CreateICmpULT(a_max, b_max),
+          a_max,
+          b_max
+        );
+        if (Instruction* select_inst = dyn_cast<Instruction>(merged_max)) {
+          bounds_insts.insert(select_inst);
+        }
+        max = PointerWithOffset(merged_max);
+      }
+      BoundsInfo merged = BoundsInfo::dynamic_bounds(base, max);
+      merged.kind = DYNAMIC_MERGED;
+      merged.merge_inputs.clear();
+      merged.merge_inputs.push_back(new BoundsInfo(a_info));
+      merged.merge_inputs.push_back(new BoundsInfo(b_info));
+      return merged;
+    }
   };
 
   /// Maps a pointer to its bounds info, if we know anything about its bounds
@@ -1230,6 +1596,10 @@ private:
     // produce pointers
     // (and of course we want to statically count a few other kinds of events)
     for (Instruction &inst : block) {
+      if (bounds_insts.count(&inst)) {
+        // see notes on bounds_insts
+        continue;
+      }
       switch (inst.getOpcode()) {
         case Instruction::Store: {
           StoreInst& store = cast<StoreInst>(inst);
@@ -1406,12 +1776,14 @@ private:
           // we know the bounds of the allocation statically
           PointerType* resultType = cast<PointerType>(inst.getType());
           auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
-          bounds_info[&inst] = BoundsInfo(zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1));
+          bounds_info[&inst] = BoundsInfo::static_bounds(
+            zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
+          );
           break;
         }
         case Instruction::GetElementPtr: {
           GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
-          const Value* input_ptr = gep.getPointerOperand();
+          Value* input_ptr = gep.getPointerOperand();
           PointerStatus input_status = ptr_statuses.getStatus(input_ptr);
           InductionPatternResult ipr = isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree);
           if (ipr.is_induction_pattern && ipr.induction_offset.isNonNegative() && ipr.initial_offset.isNonNegative())
@@ -1430,21 +1802,45 @@ private:
           if (grc.offset_is_constant && !grc.trustworthy_struct_offset && grc.constant_offset != zero) {
             COUNT_OP_AS_STATUS(pointer_arith_const, input_status, &gep, "GEP on a pointer");
           }
-          // if the input pointer had bounds, propagate those bounds to the new
-          // pointer.  We let the new pointer still have access to the whole
-          // allocation
-          auto it = bounds_info.find(input_ptr);
-          if (it != bounds_info.end()) {
-            BoundsInfo& binfo = it->getSecond();
-            if (!binfo.isValid()) {
+          // propagate the input pointer's bounds to the new pointer. We let
+          // the new pointer still have access to the whole allocation
+          const BoundsInfo& binfo = bounds_info.lookup(input_ptr);
+          switch (binfo.kind) {
+            case BoundsInfo::UNKNOWN:
               bounds_info[&gep] = binfo;
-            } else if (binfo.isUnsafePermissive()) {
+              break;
+            case BoundsInfo::INFINITE:
               bounds_info[&gep] = binfo;
-            } else if (grc.offset_is_constant) {
-              bounds_info[&gep] = BoundsInfo(binfo.low_offset + grc.constant_offset, binfo.high_offset - grc.constant_offset);
-            } else {
-              // bounds of the new pointer aren't known statically
+              break;
+            case BoundsInfo::STATIC: {
+              const BoundsInfo::StaticBoundsInfo& static_info = binfo.info.static_info;
+              if (grc.offset_is_constant) {
+                bounds_info[&gep] = BoundsInfo::static_bounds(
+                  static_info.low_offset + grc.constant_offset,
+                  static_info.high_offset - grc.constant_offset
+                );
+              } else {
+                // bounds of the new pointer aren't known statically
+                // and actually, we don't care what the dynamic GEP offset is:
+                // it doesn't change the `base` and `max` of the allocation
+                const BoundsInfo::StaticBoundsInfo& input_static_info = binfo.info.static_info;
+                // `base` is `input_ptr` minus the input pointer's low_offset
+                const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, -input_static_info.low_offset);
+                // `max` is `input_ptr` plus the input pointer's high_offset
+                const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, input_static_info.high_offset);
+                bounds_info[&gep] = BoundsInfo::dynamic_bounds(base, max);
+              }
+              break;
             }
+            case BoundsInfo::DYNAMIC:
+            case BoundsInfo::DYNAMIC_MERGED:
+            {
+              // regardless of the GEP offset, the `base` and `max` don't change
+              bounds_info[&gep] = binfo;
+              break;
+            }
+            default:
+              llvm_unreachable("Missing BoundsInfo.kind case");
           }
           break;
         }
@@ -1453,28 +1849,22 @@ private:
           if (bitcast.getType()->isPointerTy()) {
             const Value* input_ptr = bitcast.getOperand(0);
             ptr_statuses.mark_as(&bitcast, ptr_statuses.getStatus(input_ptr));
-            // also propagate bounds info, if it exists
-            auto it = bounds_info.find(input_ptr);
-            if (it != bounds_info.end()) {
-              BoundsInfo& binfo = it->getSecond();
-              bounds_info[&bitcast] = binfo;
-            }
+            // also propagate bounds info
+            const BoundsInfo& binfo = bounds_info.lookup(input_ptr);
+            bounds_info[&bitcast] = binfo;
           }
           break;
         }
         case Instruction::AddrSpaceCast: {
           const Value* input_ptr = inst.getOperand(0);
           ptr_statuses.mark_as(&inst, ptr_statuses.getStatus(input_ptr));
-          // also propagate bounds info, if it exists
-          auto it = bounds_info.find(input_ptr);
-          if (it != bounds_info.end()) {
-            BoundsInfo& binfo = it->getSecond();
-            bounds_info[&inst] = binfo;
-          }
+          // also propagate bounds info
+          const BoundsInfo& binfo = bounds_info.lookup(input_ptr);
+          bounds_info[&inst] = binfo;
           break;
         }
         case Instruction::Select: {
-          const SelectInst& select = cast<SelectInst>(inst);
+          SelectInst& select = cast<SelectInst>(inst);
           if (select.getType()->isPointerTy()) {
             // output is clean if both inputs are clean; etc
             const Value* true_input = select.getTrueValue();
@@ -1482,22 +1872,37 @@ private:
             const PointerStatus true_status = ptr_statuses.getStatus(true_input);
             const PointerStatus false_status = ptr_statuses.getStatus(false_input);
             ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status, &inst));
-            // also propagate bounds info, if it exists
-            auto it1 = bounds_info.find(true_input);
-            auto it2 = bounds_info.find(false_input);
-            if (it1 != bounds_info.end() && it2 != bounds_info.end()) {
-              BoundsInfo& binfo1 = it1->getSecond();
-              BoundsInfo& binfo2 = it2->getSecond();
-              bounds_info[&select] = BoundsInfo::merge(binfo1, binfo2);
+            // also propagate bounds info
+            const BoundsInfo& binfo1 = bounds_info.lookup(true_input);
+            const BoundsInfo& binfo2 = bounds_info.lookup(false_input);
+            const BoundsInfo& prev_iteration_binfo = bounds_info.lookup(&select);
+            if (
+              prev_iteration_binfo.kind == BoundsInfo::DYNAMIC_MERGED
+              && prev_iteration_binfo.merge_inputs.size() == 2
+              && *prev_iteration_binfo.merge_inputs[0] == binfo1
+              && *prev_iteration_binfo.merge_inputs[1] == binfo2
+            ) {
+              // no need to update
+            } else {
+              IRBuilder<> BeforeSelect(&select);
+              // but the merge may need to insert instructions that use the
+              // final value of the select, so we need a builder pointing after
+              // the select
+              BasicBlock* bb = BeforeSelect.GetInsertBlock();
+              auto ip = BeforeSelect.GetInsertPoint();
+              ip++;
+              IRBuilder<> AfterSelect(bb, ip);
+              bounds_info[&select] = BoundsInfo::merge(binfo1, binfo2, &select, AfterSelect, bounds_insts);
             }
           }
           break;
         }
         case Instruction::PHI: {
-          const PHINode& phi = cast<PHINode>(inst);
+          PHINode& phi = cast<PHINode>(inst);
           IRBuilder<> Builder(&inst);
           if (phi.getType()->isPointerTy()) {
             SmallVector<std::pair<PointerStatus, BasicBlock*>, 4> incoming_statuses;
+            SmallVector<BoundsInfo*, 4> incoming_binfos;
             for (const Use& use : phi.incoming_values()) {
               BasicBlock* bb = phi.getIncomingBlock(use);
               auto& ptr_statuses_end_of_bb = block_states[bb]->ptrs_end;
@@ -1506,6 +1911,7 @@ private:
                 ptr_statuses_end_of_bb.getStatus(value),
                 bb
               ));
+              incoming_binfos.push_back(new BoundsInfo(bounds_info.lookup(value)));
             }
             // check for an entry in dynamic_phi_to_status_phi
             auto it = dynamic_phi_to_status_phi.find(&phi);
@@ -1552,70 +1958,79 @@ private:
               }
               // now we're done
               ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
-              break;
-            }
-            // ok, compute the result status fresh.
-            // If all incoming status are statically known (i.e. not dynamic),
-            // then the result status is just the merger of the statuses of all
-            // the inputs in their corresponding blocks.
-            // But if some incoming status are dynamic, and if
-            // `pointer_encoding_is_complete` (which guarantees that all
-            // `dynamic_kind`s are filled-in, i.e., non-NULL), then we'll just
-            // add a new PHI to select the correct dynamic status.
-            // (We could theoretically use a PHI even for the all-static case.
-            // This would have the advantage of path-sensitive status, but the
-            // disadvantage of having a dynamic status when the merger approach
-            // gives a statically-known status, albeit a more conservative one.
-            // Currently we don't insert a PHI in the all-static case. But, if
-            // we insert one, and then in a later iteration it becomes
-            // all-static somehow, we still leave the PHI.)
-            assert(incoming_statuses.size() >= 1);
-            bool all_incoming_status_are_static = true;
-            for (auto& pair : incoming_statuses) {
-              PointerStatus& incoming_status = pair.first;
-              if (incoming_status.kind == PointerKind::DYNAMIC) {
-                all_incoming_status_are_static = false;
-                break;
-              }
-            }
-            if (pointer_encoding_is_complete && !all_incoming_status_are_static) {
-              PHINode* status_phi = Builder.CreatePHI(Builder.getInt64Ty(), phi.getNumIncomingValues());
-              for (auto& pair : incoming_statuses) {
-                PointerStatus& incoming_status = pair.first;
-                BasicBlock* incoming_bb = pair.second;
-                Value* dynamic_kind = incoming_status.to_dynamic_kind_mask(Builder);
-                assert(dynamic_kind && "when pointer_encoding_is_complete, we shouldn't have dynamic_kind == NULL");
-                status_phi->addIncoming(dynamic_kind, incoming_bb);
-              }
-              assert(status_phi->isComplete());
-              ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
-              dynamic_phi_to_status_phi[&phi] = status_phi;
             } else {
-              PointerStatus merged_status = PointerStatus::clean();
+              // ok, compute the result status fresh.
+              // If all incoming status are statically known (i.e. not dynamic),
+              // then the result status is just the merger of the statuses of all
+              // the inputs in their corresponding blocks.
+              // But if some incoming status are dynamic, and if
+              // `pointer_encoding_is_complete` (which guarantees that all
+              // `dynamic_kind`s are filled-in, i.e., non-NULL), then we'll just
+              // add a new PHI to select the correct dynamic status.
+              // (We could theoretically use a PHI even for the all-static case.
+              // This would have the advantage of path-sensitive status, but the
+              // disadvantage of having a dynamic status when the merger approach
+              // gives a statically-known status, albeit a more conservative one.
+              // Currently we don't insert a PHI in the all-static case. But, if
+              // we insert one, and then in a later iteration it becomes
+              // all-static somehow, we still leave the PHI.)
+              assert(incoming_statuses.size() >= 1);
+              bool all_incoming_status_are_static = true;
               for (auto& pair : incoming_statuses) {
                 PointerStatus& incoming_status = pair.first;
-                merged_status = PointerStatus::merge(merged_status, incoming_status, &inst);
-              }
-              ptr_statuses.mark_as(&phi, merged_status);
-              // also propagate bounds info, if all incoming pointers have
-              // bounds info
-              BoundsInfo merged_binfo = BoundsInfo::unsafe_permissive(); // just the initial value we start the merge with
-              bool all_have_bounds_info = false;
-              assert(phi.getNumIncomingValues() >= 1);
-              for (const Use& use : phi.incoming_values()) {
-                const Value* value = use.get();
-                auto it = bounds_info.find(value);
-                if (it == bounds_info.end()) {
-                  all_have_bounds_info = false;
+                if (incoming_status.kind == PointerKind::DYNAMIC) {
+                  all_incoming_status_are_static = false;
                   break;
-                } else {
-                  BoundsInfo& binfo = it->getSecond();
-                  merged_binfo = BoundsInfo::merge(merged_binfo, binfo);
                 }
               }
-              if (all_have_bounds_info) {
-                bounds_info[&phi] = merged_binfo;
+              if (pointer_encoding_is_complete && !all_incoming_status_are_static) {
+                PHINode* status_phi = Builder.CreatePHI(Builder.getInt64Ty(), phi.getNumIncomingValues());
+                for (auto& pair : incoming_statuses) {
+                  PointerStatus& incoming_status = pair.first;
+                  BasicBlock* incoming_bb = pair.second;
+                  Value* dynamic_kind = incoming_status.to_dynamic_kind_mask(Builder);
+                  assert(dynamic_kind && "when pointer_encoding_is_complete, we shouldn't have dynamic_kind == NULL");
+                  status_phi->addIncoming(dynamic_kind, incoming_bb);
+                }
+                assert(status_phi->isComplete());
+                ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
+                dynamic_phi_to_status_phi[&phi] = status_phi;
+              } else {
+                PointerStatus merged_status = PointerStatus::clean();
+                for (auto& pair : incoming_statuses) {
+                  PointerStatus& incoming_status = pair.first;
+                  merged_status = PointerStatus::merge(merged_status, incoming_status, &inst);
+                }
+                ptr_statuses.mark_as(&phi, merged_status);
               }
+            }
+            // also propagate bounds info
+            const BoundsInfo& prev_iteration_binfo = bounds_info.lookup(&phi);
+            bool any_merge_inputs_changed = false;
+            if (prev_iteration_binfo.kind != BoundsInfo::DYNAMIC_MERGED)
+              any_merge_inputs_changed = true;
+            if (prev_iteration_binfo.merge_inputs.size() != incoming_binfos.size())
+              any_merge_inputs_changed = true;
+            if (!any_merge_inputs_changed) {
+              for (unsigned i = 0; i < incoming_binfos.size(); i++) {
+                if (*prev_iteration_binfo.merge_inputs[i] != *incoming_binfos[i]) {
+                  any_merge_inputs_changed = true;
+                  break;
+                }
+              }
+            }
+            if (any_merge_inputs_changed) {
+              // have to update the boundsinfo
+              BoundsInfo merged_binfo = BoundsInfo::infinite(); // just the initial value we start the merge with
+              assert(phi.getNumIncomingValues() >= 1);
+              IRBuilder<> Builder(&block, block.getFirstInsertionPt());
+              for (const BoundsInfo* binfo : incoming_binfos) {
+                merged_binfo = BoundsInfo::merge(merged_binfo, *binfo, &phi, Builder, bounds_insts);
+              }
+              bounds_info[&phi] = merged_binfo;
+            }
+            for (BoundsInfo* binfo : incoming_binfos) {
+              delete binfo;
             }
           }
           break;
@@ -1645,7 +2060,9 @@ private:
             if (inttoptr_kind == PointerKind::CLEAN) {
               PointerType* resultType = cast<PointerType>(inttoptr.getType());
               auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
-              bounds_info[&inttoptr] = BoundsInfo(zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1));
+              bounds_info[&inttoptr] = BoundsInfo::static_bounds(
+                zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
+              );
             }
           }
           break;
@@ -1676,7 +2093,9 @@ private:
               assert(call.getNumArgOperands() == 1);
               Value* allocationBytes = call.getArgOperand(0);
               if (ConstantInt* allocationBytes_const = dyn_cast<ConstantInt>(allocationBytes)) {
-                bounds_info[&inst] = BoundsInfo(zero, allocationBytes_const->getValue() - 1);
+                bounds_info[&inst] = BoundsInfo::static_bounds(
+                  zero, allocationBytes_const->getValue() - 1
+                );
               }
             } else {
               // For now, mark pointers returned from other calls as UNKNOWN
@@ -1751,39 +2170,87 @@ private:
       case PointerKind::BLEMISHED64:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
-        auto it = bounds_info.find(addr);
-        if (it == bounds_info.end()) {
-          dbgs() << "warning: no bounds info found for " << addr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
-          return;
-        }
-        const BoundsInfo& binfo = it->getSecond();
-        if (!binfo.isValid()) {
-          dbgs() << "warning: bounds info invalid for " << addr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
-          return;
-        }
-        if (binfo.isUnsafePermissive()) {
-          // no check required
-          return;
-        }
-        if (binfo.low_offset.isStrictlyPositive()) {
-          // invalid pointer: too low
-          Module* mod = F.getParent();
-          FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
-          FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
-          Builder.CreateCall(Abort);
-          Builder.CreateUnreachable();
-        } else if (binfo.high_offset.isNegative()) {
-          // invalid pointer: too high
-          Module* mod = F.getParent();
-          FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
-          FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
-          Builder.CreateCall(Abort);
-          Builder.CreateUnreachable();
+        const BoundsInfo& binfo = bounds_info.lookup(addr);
+        switch (binfo.kind) {
+          case BoundsInfo::UNKNOWN:
+            dbgs() << "warning: bounds info unknown for " << addr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
+            return;
+          case BoundsInfo::INFINITE:
+            // no check required
+            return;
+          case BoundsInfo::STATIC: {
+            const BoundsInfo::StaticBoundsInfo &static_info = binfo.info.static_info;
+            if (static_info.low_offset.isStrictlyPositive()) {
+              // invalid pointer: too low
+              insertBoundsCheckFail(Builder);
+            } else if (static_info.high_offset.isNegative()) {
+              // invalid pointer: too high
+              insertBoundsCheckFail(Builder);
+            }
+            break;
+          }
+          case BoundsInfo::DYNAMIC:
+          case BoundsInfo::DYNAMIC_MERGED:
+          {
+            llvm_unreachable("unimplemented: spatial check with dynamic bounds info");
+          }
+          default:
+            llvm_unreachable("Missing BoundsInfo.kind case");
         }
         break;
       }
-      case PointerKind::DYNAMIC:
-        llvm_unreachable("unimplemented: bounds check on dynamic-status pointer");
+      case PointerKind::DYNAMIC: {
+        const BoundsInfo& binfo = bounds_info.lookup(addr);
+        switch (binfo.kind) {
+          case BoundsInfo::UNKNOWN:
+            dbgs() << "warning: bounds info unknown for " << addr->getNameOrAsOperand() << " even though it may need a bounds check, depending on dynamic kind. Unsafely omitting the bounds check.\n";
+            break;
+          case BoundsInfo::INFINITE:
+            // no check required
+            break;
+          case BoundsInfo::STATIC: {
+            const BoundsInfo::StaticBoundsInfo &static_info = binfo.info.static_info;
+            if (
+              static_info.low_offset.isStrictlyPositive() /* invalid pointer: too low */
+              || static_info.high_offset.isNegative() /* invalid pointer: too high */
+            ) {
+              // we check the dynamic kind, if it is DYN_CLEAN or
+              // DYN_BLEMISHED16 then we do nothing, else we SW-fail
+              BasicBlock* bb = Builder.GetInsertBlock();
+              BasicBlock::iterator I = Builder.GetInsertPoint();
+              BasicBlock* new_bb = bb->splitBasicBlock(I);
+              // at this point, `bb` holds everything before the pointer
+              // dereference, and an unconditional-br terminator to `new_bb`.
+              // `new_bb` holds the dereference and everything following,
+              // including the old terminator.
+              // To be safe, we assume that `Builder` is invalidated by the
+              // above operation (docs say that the iterator `I` is
+              // invalidated).
+              BasicBlock* boundsfail = BasicBlock::Create(F.getContext(), "", &F);
+              IRBuilder<> BoundsFailBuilder(boundsfail, boundsfail->getFirstInsertionPt());
+              insertBoundsCheckFail(BoundsFailBuilder);
+              // replace `bb`'s terminator with a condbr jumping to either
+              // `boundsfail` or `new_bb` as appropriate
+              BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
+              IRBuilder<> Builder(bb, bbend);
+              Value* doesnt_need_check = Builder.CreateLogicalOr(
+                Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(clean_mask)),
+                Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(blemished16_mask))
+              );
+              Builder.CreateCondBr(doesnt_need_check, new_bb, boundsfail);
+            }
+            break;
+          }
+          case BoundsInfo::DYNAMIC:
+          case BoundsInfo::DYNAMIC_MERGED:
+          {
+            llvm_unreachable("unimplemented: spatial check with dynamic bounds info and dynamic kind");
+          }
+          default:
+            llvm_unreachable("Missing BoundsInfo.kind case");
+        }
+        break;
+      }
       case PointerKind::UNKNOWN:
         llvm_unreachable("unimplemented: bounds check on unknown-status pointer");
       case PointerKind::NOTDEFINEDYET:
@@ -1791,6 +2258,16 @@ private:
       default:
         llvm_unreachable("Missing PointerKind case");
     }
+  }
+
+  /// Insert dynamic instructions indicating a bounds-check failure, at the
+  /// program point indicated by the given `Builder`
+  void insertBoundsCheckFail(IRBuilder<>& Builder) {
+    Module* mod = F.getParent();
+    FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
+    FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
+    Builder.CreateCall(Abort);
+    Builder.CreateUnreachable();
   }
 
   DynamicResults initializeDynamicResults() {
@@ -2214,6 +2691,7 @@ static GEPResultClassification classifyGEPResult(
   const bool trustLLVMStructTypes,
   const APInt* override_constant_offset
 ) {
+  assert(input_status.kind != PointerKind::NOTDEFINEDYET && "Shouldn't call classifyGEPResult() with NOTDEFINEDYET input_ptr");
   GEPResultClassification grc;
   grc.offset_is_constant = false;
   grc.constant_offset = zero; // `constant_offset` is only valid if `offset_is_constant`
