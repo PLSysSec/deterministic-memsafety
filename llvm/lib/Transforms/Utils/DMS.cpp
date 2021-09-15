@@ -1030,7 +1030,7 @@ private:
           // propagate the input pointer's bounds to the new pointer. We let
           // the new pointer still have access to the whole allocation
           const BoundsInfo& binfo = bounds_info.lookup(input_ptr);
-          switch (binfo.kind) {
+          switch (binfo.get_kind()) {
             case BoundsInfo::UNKNOWN:
               bounds_info[&gep] = binfo;
               break;
@@ -1038,21 +1038,21 @@ private:
               bounds_info[&gep] = binfo;
               break;
             case BoundsInfo::STATIC: {
-              const BoundsInfo::StaticBoundsInfo& static_info = binfo.info.static_info;
+              const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
               if (grc.offset_is_constant) {
                 bounds_info[&gep] = BoundsInfo::static_bounds(
-                  static_info.low_offset + grc.constant_offset,
-                  static_info.high_offset - grc.constant_offset
+                  static_info->low_offset + grc.constant_offset,
+                  static_info->high_offset - grc.constant_offset
                 );
               } else {
                 // bounds of the new pointer aren't known statically
                 // and actually, we don't care what the dynamic GEP offset is:
                 // it doesn't change the `base` and `max` of the allocation
-                const BoundsInfo::StaticBoundsInfo& input_static_info = binfo.info.static_info;
+                const BoundsInfo::StaticBoundsInfo* input_static_info = binfo.static_info();
                 // `base` is `input_ptr` minus the input pointer's low_offset
-                const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, -input_static_info.low_offset);
+                const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, -input_static_info->low_offset);
                 // `max` is `input_ptr` plus the input pointer's high_offset
-                const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, input_static_info.high_offset);
+                const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, input_static_info->high_offset);
                 bounds_info[&gep] = BoundsInfo::dynamic_bounds(base, max);
               }
               break;
@@ -1102,7 +1102,7 @@ private:
             const BoundsInfo& binfo2 = bounds_info.lookup(false_input);
             const BoundsInfo& prev_iteration_binfo = bounds_info.lookup(&select);
             if (
-              prev_iteration_binfo.kind == BoundsInfo::DYNAMIC_MERGED
+              prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC_MERGED
               && prev_iteration_binfo.merge_inputs.size() == 2
               && *prev_iteration_binfo.merge_inputs[0] == binfo1
               && *prev_iteration_binfo.merge_inputs[1] == binfo2
@@ -1252,16 +1252,15 @@ private:
               // let's not insert them again.
               PHINode* base_phi = NULL;
               PHINode* max_phi = NULL;
-              if (prev_iteration_binfo.is_dynamic()) {
-                const BoundsInfo::DynamicBoundsInfo& prev_iteration_dyninfo = prev_iteration_binfo.info.dynamic_info;
-                if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo.base.ptr))) {
-                  assert(prev_iteration_dyninfo.base.offset == 0);
+              if (const BoundsInfo::DynamicBoundsInfo* prev_iteration_dyninfo = prev_iteration_binfo.dynamic_info()) {
+                if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->base.ptr))) {
+                  assert(prev_iteration_dyninfo->base.offset == 0);
                   assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
                   for (auto& pair : incoming_binfos) {
                     const BoundsInfo* incoming_binfo = pair.first;
                     BasicBlock* incoming_bb = pair.second;
                     const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
-                    switch (incoming_binfo->kind) {
+                    switch (incoming_binfo->get_kind()) {
                       case BoundsInfo::UNKNOWN:
                       case BoundsInfo::INFINITE:
                         llvm_unreachable("Bad incoming_binfo.kind here");
@@ -1272,13 +1271,13 @@ private:
                       case BoundsInfo::DYNAMIC:
                       case BoundsInfo::DYNAMIC_MERGED:
                       {
-                        const BoundsInfo::DynamicBoundsInfo& incoming_dyninfo = incoming_binfo->info.dynamic_info;
-                        if (incoming_dyninfo.base.offset != 0) {
+                        const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
+                        if (incoming_dyninfo->base.offset != 0) {
                           // need to recalculate base_phi
                           base_phi = NULL;
                           break;
                         }
-                        const Value* incoming_base = incoming_dyninfo.base.ptr;
+                        const Value* incoming_base = incoming_dyninfo->base.ptr;
                         if (incoming_base != old_base) {
                           // need to recalculate base_phi
                           base_phi = NULL;
@@ -1295,14 +1294,14 @@ private:
                 } else {
                   // prev_iteration base was not a phi. we'll have to insert a fresh phi
                 }
-                if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo.max.ptr))) {
-                  assert(prev_iteration_dyninfo.max.offset == 0);
+                if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->max.ptr))) {
+                  assert(prev_iteration_dyninfo->max.offset == 0);
                   assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
                   for (auto& pair : incoming_binfos) {
                     const BoundsInfo* incoming_binfo = pair.first;
                     BasicBlock* incoming_bb = pair.second;
                     const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
-                    switch (incoming_binfo->kind) {
+                    switch (incoming_binfo->get_kind()) {
                       case BoundsInfo::UNKNOWN:
                       case BoundsInfo::INFINITE:
                         llvm_unreachable("Bad incoming_binfo.kind here");
@@ -1313,13 +1312,13 @@ private:
                       case BoundsInfo::DYNAMIC:
                       case BoundsInfo::DYNAMIC_MERGED:
                       {
-                        const BoundsInfo::DynamicBoundsInfo& incoming_dyninfo = incoming_binfo->info.dynamic_info;
-                        if (incoming_dyninfo.max.offset != 0) {
+                        const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
+                        if (incoming_dyninfo->max.offset != 0) {
                           // need to recalculate max_phi
                           max_phi = NULL;
                           break;
                         }
-                        const Value* incoming_max = incoming_dyninfo.max.ptr;
+                        const Value* incoming_max = incoming_dyninfo->max.ptr;
                         if (incoming_max != old_max) {
                           // need to recalculate max_phi
                           max_phi = NULL;
@@ -1368,7 +1367,7 @@ private:
             } else {
               // no incoming bounds are dynamic. let's just merge them statically
               bool any_merge_inputs_changed = false;
-              if (prev_iteration_binfo.kind != BoundsInfo::DYNAMIC_MERGED)
+              if (prev_iteration_binfo.get_kind() != BoundsInfo::DYNAMIC_MERGED)
                 any_merge_inputs_changed = true;
               if (prev_iteration_binfo.merge_inputs.size() != incoming_binfos.size())
                 any_merge_inputs_changed = true;
@@ -1534,7 +1533,7 @@ private:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        switch (binfo.kind) {
+        switch (binfo.get_kind()) {
           case BoundsInfo::UNKNOWN:
             dbgs() << "warning: bounds info unknown for " << addr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
             return;
@@ -1542,11 +1541,11 @@ private:
             // no check required
             return;
           case BoundsInfo::STATIC: {
-            const BoundsInfo::StaticBoundsInfo &static_info = binfo.info.static_info;
-            if (static_info.low_offset.isStrictlyPositive()) {
+            const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
+            if (static_info->low_offset.isStrictlyPositive()) {
               // invalid pointer: too low
               insertBoundsCheckFail(Builder);
-            } else if (static_info.high_offset.isNegative()) {
+            } else if (static_info->high_offset.isNegative()) {
               // invalid pointer: too high
               insertBoundsCheckFail(Builder);
             }
@@ -1564,7 +1563,7 @@ private:
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        switch (binfo.kind) {
+        switch (binfo.get_kind()) {
           case BoundsInfo::UNKNOWN:
             dbgs() << "warning: bounds info unknown for " << addr->getNameOrAsOperand() << " even though it may need a bounds check, depending on dynamic kind. Unsafely omitting the bounds check.\n";
             break;
@@ -1572,10 +1571,10 @@ private:
             // no check required
             break;
           case BoundsInfo::STATIC: {
-            const BoundsInfo::StaticBoundsInfo &static_info = binfo.info.static_info;
+            const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
             if (
-              static_info.low_offset.isStrictlyPositive() /* invalid pointer: too low */
-              || static_info.high_offset.isNegative() /* invalid pointer: too high */
+              static_info->low_offset.isStrictlyPositive() /* invalid pointer: too low */
+              || static_info->high_offset.isNegative() /* invalid pointer: too high */
             ) {
               // we check the dynamic kind, if it is DYN_CLEAN or
               // DYN_BLEMISHED16 then we do nothing, else we SW-fail

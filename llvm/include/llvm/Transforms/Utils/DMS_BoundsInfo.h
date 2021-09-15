@@ -18,17 +18,21 @@ public:
 		/// pointer is a compile-time error - we should know bounds info for
 		/// all pointers which are ever dereferenced.
 		UNKNOWN = 0,
-		/// Bounds info is known statically. Look in `.static_info`
+		/// Bounds info is known statically. Get it with `static_info()`
 		STATIC,
-		/// Bounds info is known dynamically. Look in `.dynamic_info`
+		/// Bounds info is known dynamically. Get it with `dynamic_info()`
 		DYNAMIC,
 		/// Bounds info is known dynamically, and is derived as the merger of the
-		/// bounds infos in `.merge_inputs`. Look in `.dynamic_info`
+		/// bounds infos in `.merge_inputs`. Get it with `dynamic_info()`
 		DYNAMIC_MERGED,
 		/// This pointer should be considered to have infinite bounds in both
 		/// directions
 		INFINITE,
 	};
+
+	Kind get_kind() const {
+		return kind;
+	}
 
 	/// Statically known bounds info.
 	///
@@ -153,30 +157,41 @@ public:
 		}
 	};
 
-	/// This should really be a union.  But C++ complains hard about implicitly
-	/// deleted copy constructors, implicitly deleted assignment operators, etc
-	/// and I'm not C++ enough to be able to fix it
-	struct StaticOrDynamic {
-		StaticBoundsInfo static_info;
-		DynamicBoundsInfo dynamic_info;
+	/// Get the StaticBoundsInfo, or NULL if not `is_static()`
+	const StaticBoundsInfo* static_info() const {
+		if (is_static()) {
+			return &info.static_info;
+		} else {
+			return NULL;
+		}
+	}
 
-		StaticOrDynamic(StaticBoundsInfo static_info) : static_info(static_info) {}
-		StaticOrDynamic(DynamicBoundsInfo dynamic_info) : dynamic_info(dynamic_info) {}
-	};
+	/// Get the DynamicBoundsInfo, or NULL if not `is_dynamic()`
+	const DynamicBoundsInfo* dynamic_info() const {
+		if (is_dynamic()) {
+			return &info.dynamic_info;
+		} else {
+			return NULL;
+		}
+	}
 
-	Kind kind;
-	StaticOrDynamic info;
+	/// Helper, returns `true` if the kind is `STATIC`.
+	/// If this returns `true`, `static_info()` will return non-NULL
+	bool is_static() const {
+		return (kind == STATIC);
+	}
+
+	/// Helper, returns `true` if the kind is `DYNAMIC` or `DYNAMIC_MERGED`.
+	/// In either case, if this returns `true`, `dynamic_info()` will return
+	/// non-NULL
+	bool is_dynamic() const {
+		return (kind == DYNAMIC || kind == DYNAMIC_MERGED);
+	}
 
 	/// Only valid if kind is `DYNAMIC_MERGED`.
 	/// Elements in this are new()'d - they must be delete()'d.
 	/// Elements in this will never be of kind `DYNAMIC_MERGED` themselves.
 	SmallVector<BoundsInfo*, 4> merge_inputs;
-
-	/// Helper, returns `true` if the kind is `DYNAMIC` or `DYNAMIC_MERGED`.
-	/// In either case, if this returns `true`, `.dynamic_info` is valid
-	bool is_dynamic() const {
-		return (kind == DYNAMIC || kind == DYNAMIC_MERGED);
-	}
 
 	/// Construct a BoundsInfo with the given `StaticBoundsInfo`
 	explicit BoundsInfo(StaticBoundsInfo static_info) :
@@ -317,6 +332,20 @@ public:
 	);
 
 private:
+	/// This should really be a union.  But C++ complains hard about implicitly
+	/// deleted copy constructors, implicitly deleted assignment operators, etc
+	/// and I'm not C++ enough to be able to fix it
+	struct StaticOrDynamic {
+		StaticBoundsInfo static_info;
+		DynamicBoundsInfo dynamic_info;
+
+		StaticOrDynamic(StaticBoundsInfo static_info) : static_info(static_info) {}
+		StaticOrDynamic(DynamicBoundsInfo dynamic_info) : dynamic_info(dynamic_info) {}
+	};
+
+	Kind kind;
+	StaticOrDynamic info;
+
 	/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
 	/// the resulting pointer.
 	/// The input pointer can be any pointer type, the output pointer will
