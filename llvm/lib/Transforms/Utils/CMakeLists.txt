@@ -19,6 +19,7 @@ add_llvm_component_library(LLVMTransformUtils
   Debugify.cpp
   DemoteRegToStack.cpp
   DMS.cpp
+  DMS_Induction.cpp
   DMS_PointerStatus.cpp
   EntryExitInstrumenter.cpp
   EscapeEnumerator.cpp
