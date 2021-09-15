@@ -1,4 +1,5 @@
 #include "llvm/Transforms/Utils/DMS.h"
+#include "llvm/Transforms/Utils/DMS_PointerStatus.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -89,310 +90,6 @@ static bool isAllocatingCall(const CallBase &call);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
 static Constant* createGlobalConstStr(Module* mod, const char* global_name, const char* str);
 static std::string regexSubAll(const Regex &R, const StringRef Repl, const StringRef String);
-
-class PointerKind {
-public:
-  enum Kind {
-    // As of this writing, the operations producing UNKNOWN are: returning a
-    // pointer from a call; or receiving a pointer as a function parameter
-    UNKNOWN = 0,
-    // CLEAN means "not modified since last allocated or dereferenced", or for
-    // some other reason we know it is in-bounds
-    CLEAN,
-    // BLEMISHED16 means "incremented by 16 bytes or less from a clean pointer"
-    BLEMISHED16,
-    // BLEMISHED32 means "incremented by 32 bytes or less from a clean pointer".
-    // We'll make some effort to keep BLEMISHED16 pointers out of this bucket, but
-    // if we can't determine which bucket it belongs in, it conservatively goes
-    // here.
-    BLEMISHED32,
-    // BLEMISHED64 means "incremented by 64 bytes or less from a clean pointer".
-    // We'll make some effort to keep BLEMISHED16 and BLEMISHED32 pointers out of
-    // this bucket, but if we can't determine which bucket it belongs in, it
-    // conservatively goes here.
-    BLEMISHED64,
-    // BLEMISHEDCONST means "incremented/decremented by some compile-time-constant
-    // number of bytes from a clean pointer".
-    // We'll make some effort to keep BLEMISHED16 / BLEMISHED32 / BLEMISHED64
-    // pointers out of this bucket (leaving this bucket just for constants greater
-    // than 64, or negative constants), but if we can't determine which bucket it
-    // belongs in, it conservatively goes here.
-    BLEMISHEDCONST,
-    // DIRTY means "may have been incremented/decremented by a
-    // non-compile-time-constant amount since last allocated or dereferenced"
-    DIRTY,
-    // DYNAMIC means that we don't know the kind statically, but the kind is
-    // stored in an LLVM variable. Currently, the only operation producing DYNAMIC
-    // is loading a pointer from memory. See `PointerStatus`.
-    DYNAMIC,
-    // NOTDEFINEDYET means that the pointer has not been defined yet at this program
-    // point (at least, to our current knowledge). All pointers are (effectively)
-    // initialized to NOTDEFINEDYET at the beginning of the fixpoint analysis, and
-    // as we iterate we gradually refine this.
-    NOTDEFINEDYET,
-  };
-
-  constexpr PointerKind(Kind kind) : kind(kind) { }
-  PointerKind() : kind(UNKNOWN) {}
-
-  bool operator==(PointerKind& other) {
-    return kind == other.kind;
-  }
-  bool operator!=(PointerKind& other) {
-    return kind != other.kind;
-  }
-
-  /// Enable switch() on a `PointerKind` with the expected syntax
-  operator Kind() const { return kind; }
-  /// Disable if(kind) where `kind` is a `PointerKind`
-  explicit operator bool() = delete;
-
-  /// Merge two `PointerKind`s.
-  /// For the purposes of this function, the ordering is
-  /// DIRTY < UNKNOWN < BLEMISHEDCONST < BLEMISHED64 < BLEMISHED32 < BLEMISHED16 < CLEAN,
-  /// and the merge returns the least element.
-  /// NOTDEFINEDYET has the property where the merger of x and NOTDEFINEDYET is x
-  /// (for all x) - for instance, if we are at a join point in the CFG where the
-  /// pointer is x status on one incoming branch and not defined on the other,
-  /// the pointer can have x status going forward.
-  static PointerKind merge(const PointerKind a, const PointerKind b) {
-    if (a == DYNAMIC || b == DYNAMIC) {
-      llvm_unreachable("Can't PointerKind::merge a DYNAMIC; use PointerStatus::merge instead");
-    } else if (a == NOTDEFINEDYET) {
-      return b;
-    } else if (b == NOTDEFINEDYET) {
-      return a;
-    } else if (a == DIRTY || b == DIRTY) {
-      return DIRTY;
-    } else if (a == UNKNOWN || b == UNKNOWN) {
-      return UNKNOWN;
-    } else if (a == BLEMISHEDCONST || b == BLEMISHEDCONST) {
-      return BLEMISHEDCONST;
-    } else if (a == BLEMISHED64 || b == BLEMISHED64) {
-      return BLEMISHED64;
-    } else if (a == BLEMISHED32 || b == BLEMISHED32) {
-      return BLEMISHED32;
-    } else if (a == BLEMISHED16 || b == BLEMISHED16) {
-      return BLEMISHED16;
-    } else if (a == CLEAN && b == CLEAN) {
-      return CLEAN;
-    } else {
-      llvm_unreachable("Missing case in merge function");
-    }
-  }
-
-  private:
-  Kind kind;
-};
-
-typedef enum DynamicPointerKind {
-  /// Same as PointerKind::CLEAN
-  DYN_CLEAN = 3,
-  /// Same as PointerKind::BLEMISHED16
-  DYN_BLEMISHED16 = 1,
-  /// Any BLEMISHED other than BLEMISHED16
-  DYN_BLEMISHEDOTHER = 2,
-  /// Anything else is conservatively considered DIRTY
-  DYN_DIRTY = 0,
-} DynamicPointerKind;
-
-static const uint64_t dirty_mask = ((uint64_t)DYN_DIRTY) << 48;
-static const uint64_t blemished16_mask = ((uint64_t)DYN_BLEMISHED16) << 48;
-static const uint64_t blemished_other_mask = ((uint64_t)DYN_BLEMISHEDOTHER) << 48;
-static const uint64_t clean_mask = ((uint64_t)DYN_CLEAN) << 48;
-static const uint64_t dynamic_kind_mask = ((uint64_t)0b11) << 48;
-
-/// If C++ had ADTs, PointerKind::DYNAMIC would carry an LLVM Value*.  (And maybe
-/// BLEMISHED would carry an int indicating exactly how blemished.)  Instead,
-/// we have this.
-struct PointerStatus {
-  /// the PointerKind
-  PointerKind kind;
-  /// Only for PointerKind::DYNAMIC, this holds the dynamic kind. This will be a
-  /// Value of type i64, where all bits are zeroes except possibly bits 48 and
-  /// 49, whose value together indicate the dynamic kind according to
-  /// DynamicPointerKind (above).
-  ///
-  /// This field is undefined if `kind` is not `DYNAMIC`.
-  ///
-  /// This field may be NULL before `pointer_encoding_is_complete` -- in
-  /// particular if we're not doing pointer encoding at all.
-  /// (If we aren't inserting dynamic instructions for pointer encoding, we
-  /// don't have the dynamic Values representing dynamic kinds.)
-  /// If/when `pointer_encoding_is_complete`, this field must not be NULL.
-  Value* dynamic_kind;
-
-  static PointerStatus unknown() { return { PointerKind::UNKNOWN, NULL }; }
-  static PointerStatus clean() { return { PointerKind::CLEAN, NULL }; }
-  static PointerStatus blemished16() { return { PointerKind::BLEMISHED16, NULL }; }
-  static PointerStatus blemished32() { return { PointerKind::BLEMISHED32, NULL }; }
-  static PointerStatus blemished64() { return { PointerKind::BLEMISHED64, NULL }; }
-  static PointerStatus blemishedconst() { return { PointerKind::BLEMISHEDCONST, NULL }; }
-  static PointerStatus dirty() { return { PointerKind::DIRTY, NULL }; }
-  static PointerStatus notdefinedyet() { return { PointerKind::NOTDEFINEDYET, NULL }; }
-  static PointerStatus dynamic(Value* dynamic_kind) { return { PointerKind::DYNAMIC, dynamic_kind }; }
-
-  /// Merge two `PointerStatus`es.
-  /// See comments on PointerKind::merge.
-  ///
-  /// `insertion_pt`: If we need to insert new dynamic instructions to handle
-  /// a dynamic merge, insert them before this Instruction.
-  /// We will only potentially need to do this if at least one of the statuses
-  /// is DYNAMIC with a non-null `dynamic_kind`. If neither of the statuses is
-  /// DYNAMIC with a non-null `dynamic_kind`, then this parameter is ignored
-  /// (and may be NULL).
-  static PointerStatus merge(const PointerStatus a, const PointerStatus b, Instruction* insertion_pt) {
-    if (a.kind == PointerKind::DYNAMIC && b.kind == PointerKind::DYNAMIC) {
-      return { PointerKind::DYNAMIC, merge_two_dynamic(a.dynamic_kind, b.dynamic_kind, insertion_pt) };
-    } else if (a.kind == PointerKind::DYNAMIC) {
-      return merge_static_dynamic(b.kind, a.dynamic_kind, insertion_pt);
-    } else if (b.kind == PointerKind::DYNAMIC) {
-      return merge_static_dynamic(a.kind, b.dynamic_kind, insertion_pt);
-    } else {
-      return { PointerKind::merge(a.kind, b.kind), NULL };
-    }
-  }
-
-  /// `Builder`: the `IRBuilder` to use to insert dynamic instructions/values as
-  /// necessary
-  Value* to_dynamic_kind_mask(IRBuilder<>& Builder) const {
-    switch (kind) {
-      case PointerKind::CLEAN:
-        return Builder.getInt64(clean_mask);
-        break;
-      case PointerKind::BLEMISHED16:
-        return Builder.getInt64(blemished16_mask);
-        break;
-      case PointerKind::BLEMISHED32:
-      case PointerKind::BLEMISHED64:
-      case PointerKind::BLEMISHEDCONST:
-        return Builder.getInt64(blemished_other_mask);
-        break;
-      case PointerKind::DIRTY:
-        return Builder.getInt64(dirty_mask);
-        break;
-      case PointerKind::UNKNOWN:
-        // for now we just mark UNKNOWN pointers as dirty when storing them
-        return Builder.getInt64(dirty_mask);
-        break;
-      case PointerKind::DYNAMIC:
-        return dynamic_kind;
-        break;
-      case PointerKind::NOTDEFINEDYET:
-        llvm_unreachable("Shouldn't call to_dynamic_kind_mask on a NOTDEFINEDYET");
-        break;
-      default:
-        llvm_unreachable("PointerKind case not handled");
-    }
-  }
-
-  private:
-  /// Merge a static `PointerKind` and a `dynamic_kind`.
-  /// See comments on PointerStatus::merge.
-  static PointerStatus merge_static_dynamic(const PointerKind static_kind, Value* dynamic_kind, Instruction* insertion_pt) {
-    if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
-    assert(insertion_pt && "To merge with a non-null `dynamic_kind`, insertion_pt must not be NULL");
-    IRBuilder<> Builder(insertion_pt);
-    Value* merged_dynamic_kind;
-    switch (static_kind) {
-      case PointerKind::NOTDEFINEDYET:
-        // As in PointerKind::merge, merging x with NOTDEFINEDYET is always x
-        merged_dynamic_kind = dynamic_kind;
-        break;
-      case PointerKind::CLEAN:
-        // For all x, merging CLEAN with x results in x
-        merged_dynamic_kind = dynamic_kind;
-        break;
-      case PointerKind::BLEMISHED16:
-        // merging BLEMISHED16 with DYN_CLEAN is DYN_BLEMISHED16.
-        // merging BLEMISHED16 with any other x results in x.
-        merged_dynamic_kind = Builder.CreateSelect(
-          Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(clean_mask)),
-          Builder.getInt64(blemished16_mask),
-          dynamic_kind
-        );
-        break;
-      case PointerKind::BLEMISHED32:
-      case PointerKind::BLEMISHED64:
-      case PointerKind::BLEMISHEDCONST:
-        // merging any of these with DYN_CLEAN, DYN_BLEMISHED16, or
-        // DYN_BLEMISHEDOTHER results in DYN_BLEMISHEDOTHER.
-        // merging any of these with DYN_DIRTY results in DYN_DIRTY.
-        merged_dynamic_kind = Builder.CreateSelect(
-          Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(dirty_mask)),
-          Builder.getInt64(dirty_mask),
-          Builder.getInt64(blemished_other_mask)
-        );
-        break;
-      case PointerKind::DIRTY:
-      case PointerKind::UNKNOWN:
-        // merging anything with DIRTY or UNKNOWN results in DYN_DIRTY
-        merged_dynamic_kind = Builder.getInt64(dirty_mask);
-        break;
-      case PointerKind::DYNAMIC:
-        llvm_unreachable("merge_static_dynamic: expected a static PointerKind");
-      default:
-        llvm_unreachable("Missing PointerKind case");
-    }
-    return PointerStatus::dynamic(merged_dynamic_kind);
-  }
-
-  /// Merge two `dynamic_kind`s.
-  /// See comments on PointerStatus::merge.
-  static Value* merge_two_dynamic(Value* dynamic_kind_a, Value* dynamic_kind_b, Instruction* insertion_pt) {
-    if (dynamic_kind_a == NULL) return dynamic_kind_b;
-    if (dynamic_kind_b == NULL) return dynamic_kind_a;
-    if (dynamic_kind_a == dynamic_kind_b) return dynamic_kind_a;
-    // at this point we'll have to do a true dynamic merge.
-    // we'll insert dynamic instructions intended to do this (pseudocode):
-    //   if (a is dirty or b is dirty) merged_dynamic_kind = dirty
-    //   else if (a is blemother or b is blemother) merged_dynamic_kind = blemother
-    //   else if (a is blem16 or b is blem16) merged_dynamic_kind = blem16
-    //     else merged_dynamic_kind = clean
-    // in terms of selects this is:
-    //   merged_dynamic_kind =
-    //     (a is dirty or b is dirty) ? dirty :
-    //     (a is blemother or b is blemother) ? blemother :
-    //     (a is blem16 or b is blem16) ? blem16 :
-    //     clean
-    assert(insertion_pt && "To merge with a non-null `dynamic_kind`, insertion_pt must not be NULL");
-    IRBuilder<> Builder(insertion_pt);
-    Value* dirty = Builder.getInt64(dirty_mask);
-    Value* blemother = Builder.getInt64(blemished_other_mask);
-    Value* blem16 = Builder.getInt64(blemished16_mask);
-    Value* clean = Builder.getInt64(clean_mask);
-    Value* either_is_dirty = Builder.CreateLogicalOr(
-      Builder.CreateICmpEQ(dynamic_kind_a, dirty),
-      Builder.CreateICmpEQ(dynamic_kind_b, dirty)
-    );
-    Value* either_is_blemother = Builder.CreateLogicalOr(
-      Builder.CreateICmpEQ(dynamic_kind_a, blemother),
-      Builder.CreateICmpEQ(dynamic_kind_b, blemother)
-    );
-    Value* either_is_blem16 = Builder.CreateLogicalOr(
-      Builder.CreateICmpEQ(dynamic_kind_a, blem16),
-      Builder.CreateICmpEQ(dynamic_kind_b, blem16)
-    );
-    Value* merged_dynamic_kind =
-      Builder.CreateSelect(either_is_dirty, dirty,
-      Builder.CreateSelect(either_is_blemother, blemother,
-      Builder.CreateSelect(either_is_blem16, blem16,
-      clean)));
-    return merged_dynamic_kind;
-  }
-};
-
-inline bool operator==(const PointerStatus& a, const PointerStatus& b) {
-  if (a.kind != b.kind) return false;
-  if (a.kind == PointerKind::DYNAMIC || b.kind == PointerKind::DYNAMIC) {
-    // require dynamic_kinds to be pointer-equal
-    if (a.dynamic_kind != b.dynamic_kind) return false;
-  }
-  return true;
-}
-inline bool operator!=(const PointerStatus& a, const PointerStatus& b) {
-  return !(a == b);
-}
 
 /// Return type for `classifyGEPResult`.
 struct GEPResultClassification {
@@ -1798,8 +1495,8 @@ private:
               ip++;
               IRBuilder<> AfterLoad(bb, ip);
               Value* val_as_int = AfterLoad.CreatePtrToInt(&load, AfterLoad.getInt64Ty());
-              Value* dynamic_kind = AfterLoad.CreateAnd(val_as_int, dynamic_kind_mask);
-              Value* new_val = AfterLoad.CreateAnd(val_as_int, ~dynamic_kind_mask);
+              Value* dynamic_kind = AfterLoad.CreateAnd(val_as_int, DynamicKindMasks::dynamic_kind_mask);
+              Value* new_val = AfterLoad.CreateAnd(val_as_int, ~DynamicKindMasks::dynamic_kind_mask);
               Value* new_val_as_ptr = AfterLoad.CreateIntToPtr(new_val, load.getType());
               // replace all uses of `load` with the modified loaded ptr, except
               // of course the use which we just inserted (which generates
@@ -2430,8 +2127,8 @@ private:
               BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
               IRBuilder<> Builder(bb, bbend);
               Value* doesnt_need_check = Builder.CreateLogicalOr(
-                Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(clean_mask)),
-                Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(blemished16_mask))
+                Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
+                Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
               );
               Builder.CreateCondBr(doesnt_need_check, new_bb, boundsfail);
             }
@@ -2523,19 +2220,19 @@ private:
     Type* i64ty = Builder.getInt64Ty();
     Constant* null = Constant::getNullValue(dyn_counts.clean->getType());
     Value* GlobalCounter = Builder.CreateSelect(
-      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(clean_mask)),
+      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
       dyn_counts.clean,
       null);
     GlobalCounter = Builder.CreateSelect(
-      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(blemished16_mask)),
+      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16)),
       dyn_counts.blemished16,
       GlobalCounter);
     GlobalCounter = Builder.CreateSelect(
-      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(blemished_other_mask)),
+      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished_other)),
       dyn_counts.blemishedconst,  // conservative, as we don't know which BLEMISHED category to use
       GlobalCounter);
     GlobalCounter = Builder.CreateSelect(
-      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(dirty_mask)),
+      Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::dirty)),
       dyn_counts.dirty,
       GlobalCounter);
     LoadInst* loaded = Builder.CreateLoad(i64ty, GlobalCounter);
@@ -2939,8 +2636,8 @@ static GEPResultClassification classifyGEPResult(
           // blemished is still arbitrarily blemished.
           IRBuilder<> Builder((GetElementPtrInst*)&gep); // cast to discard const. We should be able to insert stuff before a const instruction.
           Value* dynamic_kind = Builder.CreateSelect(
-            Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(blemished16_mask)),
-            Builder.getInt64(blemished_other_mask),
+            Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16)),
+            Builder.getInt64(DynamicKindMasks::blemished_other),
             input_status.dynamic_kind
           );
           grc.classification = PointerStatus::dynamic(dynamic_kind);
@@ -3051,20 +2748,20 @@ static GEPResultClassification classifyGEPResult(
           // We need to dynamically check the kind in order to classify the
           // result.
           IRBuilder<> Builder((GetElementPtrInst*)&gep); // cast to discard const. We should be able to insert stuff before a const instruction.
-          Value* is_clean = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(clean_mask));
-          Value* is_blem16 = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(blemished16_mask));
-          Value* is_blemother = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(blemished_other_mask));
-          Value* dynamic_kind = Builder.getInt64(dirty_mask);
+          Value* is_clean = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean));
+          Value* is_blem16 = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16));
+          Value* is_blemother = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished_other));
+          Value* dynamic_kind = Builder.getInt64(DynamicKindMasks::dirty);
           dynamic_kind = Builder.CreateSelect(
             is_clean,
             (grc.constant_offset.ule(APInt(/* bits = */ 64, /* val = */ 16))) ?
-              Builder.getInt64(blemished16_mask) : // offset <= 16 from a dynamically clean pointer
-              Builder.getInt64(blemished_other_mask), // offset >16 from a dynamically clean pointer
+              Builder.getInt64(DynamicKindMasks::blemished16) : // offset <= 16 from a dynamically clean pointer
+              Builder.getInt64(DynamicKindMasks::blemished_other), // offset >16 from a dynamically clean pointer
             dynamic_kind
           );
           dynamic_kind = Builder.CreateSelect(
             Builder.CreateLogicalOr(is_blem16, is_blemother),
-            Builder.getInt64(blemished_other_mask), // any offset from any blemished has to be blemished_other, as we can't prove it stays within blemished16
+            Builder.getInt64(DynamicKindMasks::blemished_other), // any offset from any blemished has to be blemished_other, as we can't prove it stays within blemished16
             dynamic_kind
           );
           // the case where the kind was DYN_DIRTY is implicitly handled by the
