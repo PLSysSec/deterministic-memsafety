@@ -127,7 +127,7 @@ Value* BoundsInfo::add_offset_to_ptr(
 	if (Instruction* cast_inst = dyn_cast<Instruction>(casted)) {
 		bounds_insts.insert(cast_inst);
 	}
-	Value* GEP = Builder.CreateGEP(casted, Builder.getInt(offset));
+	Value* GEP = Builder.CreateGEP(Builder.getInt8Ty(), casted, Builder.getInt(offset));
 	if (Instruction* gep_inst = dyn_cast<Instruction>(GEP)) {
 		bounds_insts.insert(gep_inst);
 	}
