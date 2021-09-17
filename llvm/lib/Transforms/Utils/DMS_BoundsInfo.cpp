@@ -137,12 +137,12 @@ Value* BoundsInfo::add_offset_to_ptr(
 	DenseSet<const Instruction*>& bounds_insts)
 {
 	Value* casted = Builder.CreatePointerCast(ptr, Builder.getInt8PtrTy());
-	if (Instruction* cast_inst = dyn_cast<Instruction>(casted)) {
-		bounds_insts.insert(cast_inst);
+	if (casted != ptr) {
+		bounds_insts.insert(cast<Instruction>(casted));
 	}
 	Value* GEP = Builder.CreateGEP(Builder.getInt8Ty(), casted, Builder.getInt(offset));
-	if (Instruction* gep_inst = dyn_cast<Instruction>(GEP)) {
-		bounds_insts.insert(gep_inst);
+	if (GEP != casted) {
+		bounds_insts.insert(cast<Instruction>(GEP));
 	}
 	return GEP;
 }
@@ -200,8 +200,8 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 			b_base,
 			a_base
 		);
-		if (Instruction* select_inst = dyn_cast<Instruction>(merged_base)) {
-			bounds_insts.insert(select_inst);
+		if (merged_base != a_base && merged_base != b_base) {
+			bounds_insts.insert(cast<Instruction>(merged_base));
 		}
 		base = PointerWithOffset(merged_base);
 	}
@@ -218,8 +218,8 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 			a_max,
 			b_max
 		);
-		if (Instruction* select_inst = dyn_cast<Instruction>(merged_max)) {
-			bounds_insts.insert(select_inst);
+		if (merged_max != a_max && merged_max != b_max) {
+			bounds_insts.insert(cast<Instruction>(merged_max));
 		}
 		max = PointerWithOffset(merged_max);
 	}
@@ -237,7 +237,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 ///
 /// `bounds_insts`: If we insert any instructions into the program, we'll
 /// also add them to `bounds_insts`, see notes there
-void store_dynamic_boundsinfo(
+void llvm::store_dynamic_boundsinfo(
   Value* ptr,
   const BoundsInfo& binfo,
   IRBuilder<>& Builder,
@@ -250,10 +250,8 @@ void store_dynamic_boundsinfo(
 	Value* base = binfo.base_as_llvm_value(ptr, Builder, bounds_insts);
 	Value* max = binfo.max_as_llvm_value(ptr, Builder, bounds_insts);
 	Value* ptr_as_charstar = Builder.CreatePointerCast(ptr, CharStarTy);
-	if (Instruction* ptr_inst = dyn_cast<Instruction>(ptr_as_charstar)) {
-		// TODO: what if `ptr` was already an Instruction and didn't need the cast?
-		// We'll screw ourselves with `bounds_insts` here. Also in similar places.
-		bounds_insts.insert(ptr_inst);
+	if (ptr_as_charstar != ptr) {
+		bounds_insts.insert(cast<Instruction>(ptr_as_charstar));
 	}
 	Builder.CreateCall(StoreBounds, {ptr_as_charstar, base, max});
 }
@@ -266,7 +264,7 @@ void store_dynamic_boundsinfo(
 ///
 /// `bounds_insts`: If we insert any instructions into the program, we'll
 /// also add them to `bounds_insts`, see notes there
-BoundsInfo::DynamicBoundsInfo load_dynamic_boundsinfo(
+BoundsInfo::DynamicBoundsInfo llvm::load_dynamic_boundsinfo(
   Value* ptr,
   IRBuilder<>& Builder,
   DenseSet<const Instruction*>& bounds_insts
@@ -281,8 +279,8 @@ BoundsInfo::DynamicBoundsInfo load_dynamic_boundsinfo(
 	// of this hook rather than remembering to do it individually
 	// every time
 	Value* arg = Builder.CreatePointerCast(ptr, CharStarTy);
-	if (Instruction* arg_inst = dyn_cast<Instruction>(arg)) {
-		bounds_insts.insert(arg_inst);
+	if (arg != ptr) {
+		bounds_insts.insert(cast<Instruction>(arg));
 	}
 	Value* dynbounds = Builder.CreateCall(GetBounds, arg);
 	bounds_insts.insert(cast<Instruction>(dynbounds));

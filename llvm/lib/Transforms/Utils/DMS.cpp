@@ -1500,12 +1500,12 @@ private:
                   IRBuilder<> AfterCall(&block);
                   setInsertPointToAfterInst(AfterCall, &call);
                   Value* callPlusBytes = AfterCall.CreateAdd(&call, allocationBytes);
-                  if (Instruction* callPlusBytes_inst = dyn_cast<Instruction>(callPlusBytes)) {
-                    bounds_insts.insert(callPlusBytes_inst);
+                  if (callPlusBytes != &call) {
+                    bounds_insts.insert(cast<Instruction>(callPlusBytes));
                   }
                   Value* max = AfterCall.CreateSub(callPlusBytes, AfterCall.getInt64(1));
-                  if (Instruction* max_inst = dyn_cast<Instruction>(max)) {
-                    bounds_insts.insert(max_inst);
+                  if (max != callPlusBytes) {
+                    bounds_insts.insert(cast<Instruction>(max));
                   }
                   bounds_info[&call] = BoundsInfo::dynamic_bounds(&call, max);
                 }
