@@ -5,11 +5,6 @@
 extern const llvm::APInt zero;
 extern const llvm::APInt minusone;
 
-/// Mangled name of the get_bounds function
-extern const char* get_bounds_func;
-/// Mangled name of the store_bounds function
-extern const char* store_bounds_func;
-
 namespace llvm {
 
 /// Holds the bounds information for a single pointer, if it is known.
@@ -405,5 +400,32 @@ private:
     DenseSet<const Instruction*>& bounds_insts
   );
 };
+
+/// Insert dynamic instructions to store bounds info for the given `ptr`.
+///
+/// Insert dynamic instructions using the given `IRBuilder`.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+void store_dynamic_boundsinfo(
+  Value* ptr,
+  const BoundsInfo& binfo,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+);
+
+/// Insert dynamic instructions to load bounds info for the given `ptr`.
+/// Bounds info for this `ptr` should have been previously stored with
+/// `store_dynamic_boundsinfo`.
+///
+/// Insert dynamic instructions using the given `IRBuilder`.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+BoundsInfo::DynamicBoundsInfo load_dynamic_boundsinfo(
+  Value* ptr,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+);
 
 } // end namespace

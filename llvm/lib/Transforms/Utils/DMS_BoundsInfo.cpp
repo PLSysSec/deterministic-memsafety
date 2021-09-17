@@ -3,9 +3,9 @@
 using namespace llvm;
 
 /// Mangled name of the get_bounds function
-const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
+static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
 /// Mangled name of the store_bounds function
-const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
+static const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
 
 /// `cur_ptr`: the pointer value for which these bounds apply.
 ///
@@ -229,4 +229,66 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 	merged.merge_inputs.push_back(new BoundsInfo(a_info));
 	merged.merge_inputs.push_back(new BoundsInfo(b_info));
 	return merged;
+}
+
+/// Insert dynamic instructions to store bounds info for the given `ptr`.
+///
+/// Insert dynamic instructions using the given `IRBuilder`.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+void store_dynamic_boundsinfo(
+  Value* ptr,
+  const BoundsInfo& binfo,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+) {
+	Module* mod = Builder.GetInsertBlock()->getModule();
+	Type* CharStarTy = Builder.getInt8PtrTy();
+	FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
+	FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
+	Value* base = binfo.base_as_llvm_value(ptr, Builder, bounds_insts);
+	Value* max = binfo.max_as_llvm_value(ptr, Builder, bounds_insts);
+	Value* ptr_as_charstar = Builder.CreatePointerCast(ptr, CharStarTy);
+	if (Instruction* ptr_inst = dyn_cast<Instruction>(ptr_as_charstar)) {
+		// TODO: what if `ptr` was already an Instruction and didn't need the cast?
+		// We'll screw ourselves with `bounds_insts` here. Also in similar places.
+		bounds_insts.insert(ptr_inst);
+	}
+	Builder.CreateCall(StoreBounds, {ptr_as_charstar, base, max});
+}
+
+/// Insert dynamic instructions to load bounds info for the given `ptr`.
+/// Bounds info for this `ptr` should have been previously stored with
+/// `store_dynamic_boundsinfo`.
+///
+/// Insert dynamic instructions using the given `IRBuilder`.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+BoundsInfo::DynamicBoundsInfo load_dynamic_boundsinfo(
+  Value* ptr,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+) {
+	Module* mod = Builder.GetInsertBlock()->getModule();
+	Type* CharStarTy = Builder.getInt8PtrTy();
+	Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
+	FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
+	FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
+	// TODO: IRBuilder supports some kind of hook for instruction
+	// insertion, maybe we can have the adding-to-bounds_insts be part
+	// of this hook rather than remembering to do it individually
+	// every time
+	Value* arg = Builder.CreatePointerCast(ptr, CharStarTy);
+	if (Instruction* arg_inst = dyn_cast<Instruction>(arg)) {
+		bounds_insts.insert(arg_inst);
+	}
+	Value* dynbounds = Builder.CreateCall(GetBounds, arg);
+	bounds_insts.insert(cast<Instruction>(dynbounds));
+	Value* base = Builder.CreateExtractValue(dynbounds, 0);
+	bounds_insts.insert(cast<Instruction>(base));
+	Value* max = Builder.CreateExtractValue(dynbounds, 1);
+	bounds_insts.insert(cast<Instruction>(max));
+	return BoundsInfo::DynamicBoundsInfo(base, max);
 }

@@ -1006,26 +1006,8 @@ private:
               // pointer, we could/should wait until it is needed for a SW
               // bounds check. I'm envisioning some type of laziness solution
               // inside BoundsInfo.
-              Module* mod = F.getParent();
-              Type* CharStarTy = AfterLoad.getInt8PtrTy();
-              Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
-              FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
-              FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
-              // TODO: IRBuilder supports some kind of hook for instruction
-              // insertion, maybe we can have the adding-to-bounds_insts be part
-              // of this hook rather than remembering to do it individually
-              // every time
-              Value* arg = AfterLoad.CreatePointerCast(new_val_as_ptr, CharStarTy);
-              if (Instruction* arg_inst = dyn_cast<Instruction>(arg)) {
-                bounds_insts.insert(arg_inst);
-              }
-              Value* dynbounds = AfterLoad.CreateCall(GetBounds, arg);
-              bounds_insts.insert(cast<Instruction>(dynbounds));
-              Value* base = AfterLoad.CreateExtractValue(dynbounds, 0);
-              bounds_insts.insert(cast<Instruction>(base));
-              Value* max = AfterLoad.CreateExtractValue(dynbounds, 1);
-              bounds_insts.insert(cast<Instruction>(max));
-              bounds_info[&load] = BoundsInfo::dynamic_bounds(base, max);
+              BoundsInfo::DynamicBoundsInfo loadedInfo = load_dynamic_boundsinfo(new_val_as_ptr, AfterLoad, bounds_insts);
+              bounds_info[&load] = BoundsInfo(std::move(loadedInfo));
             } else {
               // when not `do_pointer_encoding`, we're allowed to pass NULL
               // here. See notes on `mark_dynamic`
@@ -1040,22 +1022,8 @@ private:
               if (bounds_info.count(&load) == 0) {
                 IRBuilder<> AfterLoad(&block);
                 setInsertPointToAfterInst(AfterLoad, &load);
-                Module* mod = F.getParent();
-                Type* CharStarTy = AfterLoad.getInt8PtrTy();
-                Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
-                FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
-                FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
-                Value* arg = AfterLoad.CreatePointerCast(&load, CharStarTy);
-                if (Instruction* arg_inst = dyn_cast<Instruction>(arg)) {
-                  bounds_insts.insert(arg_inst);
-                }
-                Value* dynbounds = AfterLoad.CreateCall(GetBounds, arg);
-                bounds_insts.insert(cast<Instruction>(dynbounds));
-                Value* base = AfterLoad.CreateExtractValue(dynbounds, 0);
-                bounds_insts.insert(cast<Instruction>(base));
-                Value* max = AfterLoad.CreateExtractValue(dynbounds, 1);
-                bounds_insts.insert(cast<Instruction>(max));
-                bounds_info[&load] = BoundsInfo::dynamic_bounds(base, max);
+                BoundsInfo::DynamicBoundsInfo loadedInfo = load_dynamic_boundsinfo(&load, AfterLoad, bounds_insts);
+                bounds_info[&load] = BoundsInfo(std::move(loadedInfo));
               }
             }
           }
