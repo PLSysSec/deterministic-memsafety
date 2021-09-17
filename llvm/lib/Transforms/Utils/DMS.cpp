@@ -596,6 +596,7 @@ private:
     for (const Argument& arg : F.args()) {
       if (arg.getType()->isPointerTy()) {
         entry_block_pbs->ptrs_beg.mark_unknown(&arg);
+        bounds_info[&arg] = BoundsInfo::unknown();
       }
     }
 
@@ -606,6 +607,16 @@ private:
     for (const GlobalValue& gv : F.getParent()->global_values()) {
       assert(gv.getType()->isPointerTy());
       entry_block_pbs->ptrs_beg.mark_clean(&gv);
+      // we know the bounds of the global allocation statically
+      Type* globalType = gv.getValueType();
+      if (globalType->isSized()) {
+        auto allocationSize = DL.getTypeStoreSize(globalType).getFixedSize();
+        bounds_info[&gv] = BoundsInfo::static_bounds(
+          zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
+        );
+      } else {
+        bounds_info[&gv] = BoundsInfo::unknown();
+      }
     }
   }
 
@@ -1036,7 +1047,7 @@ private:
                 FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
                 Value* arg = AfterLoad.CreatePointerCast(&load, CharStarTy);
                 if (Instruction* arg_inst = dyn_cast<Instruction>(arg)) {
-                  bounds_insts.insert(cast<Instruction>(arg));
+                  bounds_insts.insert(arg_inst);
                 }
                 Value* dynbounds = AfterLoad.CreateCall(GetBounds, arg);
                 bounds_insts.insert(cast<Instruction>(dynbounds));
@@ -1488,7 +1499,7 @@ private:
         // all three of these are instructions which call functions, and we
         // handle them the same
         {
-          const CallBase& call = cast<CallBase>(inst);
+          CallBase& call = cast<CallBase>(inst);
           // count call arguments for stats purposes, if appropriate
           if (shouldCountCallForStatsPurposes(call)) {
             for (const Use& arg : call.args()) {
@@ -1504,17 +1515,37 @@ private:
             // returned pointer is CLEAN
             if (isAllocatingCall(call)) {
               ptr_statuses.mark_clean(&call);
-              // we know the bounds of the allocation statically
               assert(call.getNumArgOperands() == 1);
               Value* allocationBytes = call.getArgOperand(0);
               if (ConstantInt* allocationBytes_const = dyn_cast<ConstantInt>(allocationBytes)) {
-                bounds_info[&inst] = BoundsInfo::static_bounds(
+                // allocating a constant number of bytes.
+                // we know the bounds of the allocation statically.
+                bounds_info[&call] = BoundsInfo::static_bounds(
                   zero, allocationBytes_const->getValue() - 1
                 );
+              } else {
+                // allocating a dynamic number of bytes.
+                // We need a dynamic addition instruction to compute the upper
+                // bound. Only insert that the first time -- the bounds info
+                // here should not change from iteration to iteration
+                if (bounds_info.count(&call) == 0) {
+                  IRBuilder<> AfterCall(&block);
+                  setInsertPointToAfterInst(AfterCall, &call);
+                  Value* callPlusBytes = AfterCall.CreateAdd(&call, allocationBytes);
+                  if (Instruction* callPlusBytes_inst = dyn_cast<Instruction>(callPlusBytes)) {
+                    bounds_insts.insert(callPlusBytes_inst);
+                  }
+                  Value* max = AfterCall.CreateSub(callPlusBytes, AfterCall.getInt64(1));
+                  if (Instruction* max_inst = dyn_cast<Instruction>(max)) {
+                    bounds_insts.insert(max_inst);
+                  }
+                  bounds_info[&call] = BoundsInfo::dynamic_bounds(&call, max);
+                }
               }
             } else {
               // For now, mark pointers returned from other calls as UNKNOWN
               ptr_statuses.mark_unknown(&call);
+              bounds_info[&call] = BoundsInfo::unknown();
             }
           }
           break;
@@ -1531,11 +1562,13 @@ private:
           // should just mark the result UNKNOWN per our current assumptions.
           // So for now, we'll just mark UNKNOWN and move on
           ptr_statuses.mark_unknown(&inst);
+          bounds_info[&inst] = BoundsInfo::unknown();
           break;
         }
         case Instruction::ExtractElement: {
           // same comments apply as for ExtractValue, basically
           ptr_statuses.mark_unknown(&inst);
+          bounds_info[&inst] = BoundsInfo::unknown();
           break;
         }
         case Instruction::Ret: {

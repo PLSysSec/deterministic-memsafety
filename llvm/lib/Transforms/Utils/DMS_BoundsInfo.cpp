@@ -17,12 +17,15 @@ const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
 /// Returns the "base" (minimum inbounds pointer value) of the allocation,
 /// as an LLVM `Value` of type `i8*`.
 /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
+/// The `kind` should not be NOTDEFINEDYET.
 Value* BoundsInfo::base_as_llvm_value(
 	Value* cur_ptr,
 	IRBuilder<>& Builder,
 	DenseSet<const Instruction*>& bounds_insts
 ) const {
 	switch (kind) {
+		case NOTDEFINEDYET:
+			llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
 		case UNKNOWN:
 		case INFINITE:
 			return NULL;
@@ -46,12 +49,15 @@ Value* BoundsInfo::base_as_llvm_value(
 /// Returns the "max" (maximum inbounds pointer value) of the allocation,
 /// as an LLVM `Value` of type `i8*`.
 /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
+/// The `kind` should not be NOTDEFINEDYET.
 Value* BoundsInfo::max_as_llvm_value(
 	Value* cur_ptr,
 	IRBuilder<>& Builder,
 	DenseSet<const Instruction*>& bounds_insts
 ) const {
 	switch (kind) {
+		case NOTDEFINEDYET:
+			llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
 		case UNKNOWN:
 		case INFINITE:
 			return NULL;
@@ -79,6 +85,8 @@ BoundsInfo BoundsInfo::merge(
 	IRBuilder<>& Builder,
 	DenseSet<const Instruction*>& bounds_insts
 ) {
+	if (A.kind == NOTDEFINEDYET) return B;
+	if (B.kind == NOTDEFINEDYET) return A;
 	if (A.kind == UNKNOWN) return A;
 	if (B.kind == UNKNOWN) return B;
 	if (A.kind == INFINITE) return B;
