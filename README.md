@@ -44,6 +44,8 @@ command, where `<option>` is one of:
 * `dynamic`: this runs the dynamic DMS pass, which instruments the code so
   that at runtime it will count dynamic statistics about clean/dirty pointers
   etc, and print those counts when the program finishes.
+* `dynamic-stdout`: same as `dynamic`, but prints dynamic statistics to stdout
+  instead of to a file in `./dms_dynamic_counts/`.
 
 You can also specify more than one of these options, comma-separated: e.g.,
 `-fdms=static,dynamic`.
@@ -62,8 +64,9 @@ To get detailed debugging information, add the `-debug` flag.
 
 ### Dynamic DMS pass:
 
-From the `llvm` directory: `./build/bin/opt -passes=dynamic-dms file.ll -o=file_instrumented.bc`
-(again, you can use either a `.ll` or `.bc` file as input).
+From the `llvm` directory: `./build/bin/opt -passes=<pass> file.ll -o=file_instrumented.bc`
+where `<pass>` is either `dynamic-dms` or `dynamic-stdout-dms`.
+(Again, you can use either a `.ll` or `.bc` file as input.)
 To get `.ll` _output_ instead of `.bc`, add the `-S` flag (and, to avoid
 confusion, change the extension of the output filename).
 To get detailed debugging information, add the `-debug` flag.
@@ -86,7 +89,9 @@ here's the instructions.
 3. For static DMS passes, you're already done. For dynamic DMS passes, to
    actually finish compiling the code so you can run it, just use `clang`,
    e.g. `clang file_instrumented.bc -o file`. This can again be done with any
-  `clang` you want.
+   `clang` you want. EDIT: Now that dynamic DMS has a runtime component, you
+   will also need to add flags to link in the DMS runtime. Really, for dynamic
+   DMS passes you should just be using the Clang integration described above.
 
 Original README follows.
 

@@ -975,6 +975,10 @@ bool tools::addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
   return !StaticRuntimes.empty() || !NonWholeStaticRuntimes.empty();
 }
 
+void tools::addDMSRuntime(const ToolChain &TC, const ArgList &Args, ArgStringList &CmdArgs) {
+  addSanitizerRuntime(TC, Args, CmdArgs, "dms", false, true);
+}
+
 bool tools::addXRayRuntime(const ToolChain&TC, const ArgList &Args, ArgStringList &CmdArgs) {
   if (Args.hasArg(options::OPT_shared))
     return false;

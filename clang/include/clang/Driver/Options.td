@@ -1116,8 +1116,8 @@ def fasm : Flag<["-"], "fasm">, Group<f_Group>;
 def fdms : CommaJoined<["-"], "fdms=">, Group<f_Group>,
   Flags<[CC1Option]>, // CodeGenOpts<"DMS">,
   MetaVarName<"<option>">,
-  HelpText<"DMS analysis to use: choose from static, dynamic, and/or paranoid-static. You may choose multiple values for <option> by separating them with commas, e.g. -fdms=static,dynamic">,
-  Values<"static,dynamic,paranoid-static">,
+  HelpText<"DMS analysis to use: choose from static, dynamic, dynamic-stdout, and/or paranoid-static. You may choose multiple values for <option> by separating them with commas, e.g. -fdms=static,dynamic">,
+  Values<"static,dynamic,dynamic-stdout,paranoid-static">,
   MarshallingInfoStringVector<CodeGenOpts<"DMS">>;
 
 def fassume_sane_operator_new : Flag<["-"], "fassume-sane-operator-new">, Group<f_Group>;
@@ -1812,7 +1812,7 @@ defm strict_float_cast_overflow : BoolFOption<"strict-float-cast-overflow",
 
 defm protect_parens : BoolFOption<"protect-parens",
   LangOpts<"ProtectParens">, DefaultFalse,
-  PosFlag<SetTrue, [CoreOption, CC1Option], 
+  PosFlag<SetTrue, [CoreOption, CC1Option],
           "Determines whether the optimizer honors parentheses when "
           "floating-point expressions are evaluated">,
   NegFlag<SetFalse>>;

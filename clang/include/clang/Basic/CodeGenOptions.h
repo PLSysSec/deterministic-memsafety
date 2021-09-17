@@ -387,7 +387,7 @@ public:
   /// passed on the command line.
   std::string StackUsageOutput;
 
-  /// DMS options: static, dynamic, and/or paranoid-static
+  /// DMS options: static, dynamic, dynamic-stdout, and/or paranoid-static
   std::vector<std::string> DMS;
 
   /// Executable and command-line used to create a given CompilerInvocation.

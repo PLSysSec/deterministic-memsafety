@@ -5,6 +5,11 @@
 extern const llvm::APInt zero;
 extern const llvm::APInt minusone;
 
+/// Mangled name of the get_bounds function
+extern const char* get_bounds_func;
+/// Mangled name of the store_bounds function
+extern const char* store_bounds_func;
+
 namespace llvm {
 
 /// Holds the bounds information for a single pointer, if it is known.

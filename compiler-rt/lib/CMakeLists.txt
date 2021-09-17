@@ -43,11 +43,13 @@ if(COMPILER_RT_BUILD_SANITIZERS)
     add_subdirectory(stats)
     add_subdirectory(lsan)
     add_subdirectory(ubsan)
+    add_subdirectory(dms)
   endif()
 
   foreach(sanitizer ${COMPILER_RT_SANITIZERS_TO_BUILD})
     compiler_rt_build_runtime(${sanitizer})
   endforeach()
+  compiler_rt_build_runtime(dms)
 endif()
 
 if(COMPILER_RT_BUILD_PROFILE AND COMPILER_RT_HAS_PROFILE)

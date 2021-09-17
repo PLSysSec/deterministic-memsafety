@@ -1440,6 +1440,14 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
             MPM.addPass(createModuleToFunctionPassAdaptor(
               DynamicDMSPass()));
           });
+      } else if (opt == "dynamic-stdout") {
+        assert(!have_dynamic && "DMS: can't specify more than one dynamic option");
+        have_dynamic = true;
+        PB.registerOptimizerLastEPCallback(
+          [](ModulePassManager &MPM, OptimizationLevel Level) {
+            MPM.addPass(createModuleToFunctionPassAdaptor(
+              DynamicStdoutDMSPass()));
+          });
       } else {
         assert(false && "DMS: unrecognized option");
       }

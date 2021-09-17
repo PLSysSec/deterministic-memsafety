@@ -30,6 +30,7 @@ const APInt minusone = APInt(/* bits = */ 64, /* val = */ -1);
 
 template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
+static void setInsertPointToAfterInst(IRBuilder<>& Builder, Instruction* inst);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool isAllocatingCall(const CallBase &call);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
@@ -619,11 +620,11 @@ private:
   DenseMap<const PHINode*, PHINode*> dynamic_phi_to_status_phi;
 
   /// For the IntToPtrs in this map, don't count them for stats, and lock the
-  /// result's PointerStatus to be the same status as that of the corresponding
-  /// Value.
+  /// result's PointerStatus and BoundsInfo to be the same status/boundsinfo as
+  /// that of the corresponding Value.
   /// This is used for the IntToPtrs which we insert ourselves as part of
   /// pointer encoding/decoding.
-  DenseMap<const IntToPtrInst*, const Value*> inttoptr_status_overrides;
+  DenseMap<const IntToPtrInst*, const Value*> inttoptr_status_and_bounds_overrides;
 
   /// For the Instructions in this set, don't count them for stats or do any
   /// other operations with them. They aren't from the original program, they
@@ -920,7 +921,7 @@ private:
               // relationship is preserved even in future passes. It will always
               // have the same status as `storedVal`.
               IntToPtrInst* inttoptr = cast<IntToPtrInst>(new_storedVal_as_ptr);
-              inttoptr_status_overrides[inttoptr] = storedVal;
+              inttoptr_status_and_bounds_overrides[inttoptr] = storedVal;
             }
           }
           // next count the address
@@ -950,27 +951,28 @@ private:
 
           if (load.getType()->isPointerTy()) {
             // in this case, we loaded a pointer from memory, so we
-            // only know its status dynamically, not statically.
+            // only know its status and bounds dynamically, not statically.
             // See notes above on the Store case.
             if (pointer_encoding_is_complete) {
               // get the status from `loaded_val_statuses`; see notes there
               PointerStatus status = loaded_val_statuses[&load];
               ptr_statuses.mark_as(&load, status);
+              // bounds info remains valid from iteration to iteration (our
+              // fixpoint won't change the bounds info here), so we don't
+              // need to change anything now. we computed the bounds info
+              // when we did the pointer encoding.
+              assert(bounds_info.count(&load) > 0);
             } else if (do_pointer_encoding) {
               // insert the instructions to interpret the encoded pointer
-              IRBuilder<> BeforeLoad(&load);
-              // but we want to insert _after_ the load, not before it
-              BasicBlock* bb = BeforeLoad.GetInsertBlock();
-              auto ip = BeforeLoad.GetInsertPoint();
-              ip++;
-              IRBuilder<> AfterLoad(bb, ip);
+              IRBuilder<> AfterLoad(&block);
+              setInsertPointToAfterInst(AfterLoad, &load);
               Value* val_as_int = AfterLoad.CreatePtrToInt(&load, AfterLoad.getInt64Ty());
               Value* dynamic_kind = AfterLoad.CreateAnd(val_as_int, DynamicKindMasks::dynamic_kind_mask);
               Value* new_val = AfterLoad.CreateAnd(val_as_int, ~DynamicKindMasks::dynamic_kind_mask);
               Value* new_val_as_ptr = AfterLoad.CreateIntToPtr(new_val, load.getType());
               // replace all uses of `load` with the modified loaded ptr, except
               // of course the use which we just inserted (which generates
-              // `val_as_int`)
+              // `val_as_int`), and any uses in `bounds_insts`
               load.replaceUsesWithIf(
                 new_val_as_ptr,
                 [val_as_int](Use &U){ return U.getUser() != val_as_int; }
@@ -980,17 +982,70 @@ private:
               ptr_statuses.mark_as(new_val_as_ptr, status);
               // store this mapping in `loaded_val_statuses`; see notes there
               loaded_val_statuses[&load] = status;
-              // create a status override for the `IntToPtr` which we just
-              // inserted: it should always have the same dynamic status as
-              // the loaded value. (The loaded value itself will always have the
-              // dynamic `status` we just created, thanks to
+              // create a status and bounds override for the `IntToPtr` which we
+              // just inserted: it should always have the same dynamic status
+              // and bounds as the loaded value. (The loaded value itself will
+              // always have the dynamic `status` we just created, thanks to
               // `loaded_val_statuses`.)
               IntToPtrInst* new_val_inttoptr = cast<IntToPtrInst>(new_val_as_ptr);
-              inttoptr_status_overrides[new_val_inttoptr] = &load;
+              inttoptr_status_and_bounds_overrides[new_val_inttoptr] = &load;
+              // compute the bounds of the loaded pointer dynamically. this
+              // requires the unencoded pointer value, ie `new_val_as_ptr`.
+              // TODO: Instead of loading bounds info right when we load the
+              // pointer, we could/should wait until it is needed for a SW
+              // bounds check. I'm envisioning some type of laziness solution
+              // inside BoundsInfo.
+              Module* mod = F.getParent();
+              Type* CharStarTy = AfterLoad.getInt8PtrTy();
+              Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
+              FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
+              FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
+              // TODO: IRBuilder supports some kind of hook for instruction
+              // insertion, maybe we can have the adding-to-bounds_insts be part
+              // of this hook rather than remembering to do it individually
+              // every time
+              Value* arg = AfterLoad.CreatePointerCast(new_val_as_ptr, CharStarTy);
+              if (Instruction* arg_inst = dyn_cast<Instruction>(arg)) {
+                bounds_insts.insert(arg_inst);
+              }
+              Value* dynbounds = AfterLoad.CreateCall(GetBounds, arg);
+              bounds_insts.insert(cast<Instruction>(dynbounds));
+              Value* base = AfterLoad.CreateExtractValue(dynbounds, 0);
+              bounds_insts.insert(cast<Instruction>(base));
+              Value* max = AfterLoad.CreateExtractValue(dynbounds, 1);
+              bounds_insts.insert(cast<Instruction>(max));
+              bounds_info[&load] = BoundsInfo::dynamic_bounds(base, max);
             } else {
               // when not `do_pointer_encoding`, we're allowed to pass NULL
               // here. See notes on `mark_dynamic`
               ptr_statuses.mark_dynamic(&load, NULL);
+              // bounds info remains valid from iteration to iteration (our
+              // fixpoint won't change the bounds info here), so we only need to
+              // insert the instructions computing it the first time.
+              // TODO: Instead of loading bounds info right when we load the
+              // pointer, we could/should wait until it is needed for a SW
+              // bounds check. I'm envisioning some type of laziness solution
+              // inside BoundsInfo.
+              if (bounds_info.count(&load) == 0) {
+                IRBuilder<> AfterLoad(&block);
+                setInsertPointToAfterInst(AfterLoad, &load);
+                Module* mod = F.getParent();
+                Type* CharStarTy = AfterLoad.getInt8PtrTy();
+                Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
+                FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
+                FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
+                Value* arg = AfterLoad.CreatePointerCast(&load, CharStarTy);
+                if (Instruction* arg_inst = dyn_cast<Instruction>(arg)) {
+                  bounds_insts.insert(cast<Instruction>(arg));
+                }
+                Value* dynbounds = AfterLoad.CreateCall(GetBounds, arg);
+                bounds_insts.insert(cast<Instruction>(dynbounds));
+                Value* base = AfterLoad.CreateExtractValue(dynbounds, 0);
+                bounds_insts.insert(cast<Instruction>(base));
+                Value* max = AfterLoad.CreateExtractValue(dynbounds, 1);
+                bounds_insts.insert(cast<Instruction>(max));
+                bounds_info[&load] = BoundsInfo::dynamic_bounds(base, max);
+              }
             }
           }
           break;
@@ -1109,14 +1164,11 @@ private:
             ) {
               // no need to update
             } else {
-              IRBuilder<> BeforeSelect(&select);
-              // but the merge may need to insert instructions that use the
-              // final value of the select, so we need a builder pointing after
-              // the select
-              BasicBlock* bb = BeforeSelect.GetInsertBlock();
-              auto ip = BeforeSelect.GetInsertPoint();
-              ip++;
-              IRBuilder<> AfterSelect(bb, ip);
+              // the merge may need to insert instructions that use the final
+              // value of the select, so we need a builder pointing after the
+              // select
+              IRBuilder<> AfterSelect(&block);
+              setInsertPointToAfterInst(AfterSelect, &select);
               bounds_info[&select] = BoundsInfo::merge(binfo1, binfo2, &select, AfterSelect, bounds_insts);
             }
           }
@@ -1399,15 +1451,16 @@ private:
         }
         case Instruction::IntToPtr: {
           const IntToPtrInst& inttoptr = cast<IntToPtrInst>(inst);
-          auto it = inttoptr_status_overrides.find(&inttoptr);
-          if (it != inttoptr_status_overrides.end()) {
+          auto it = inttoptr_status_and_bounds_overrides.find(&inttoptr);
+          if (it != inttoptr_status_and_bounds_overrides.end()) {
             // there's an override in place for this IntToPtr.
-            // Ignore it for stats purposes, and copy the status from the
-            // indicated Value.
-            // See notes on `inttoptr_status_overrides`.
+            // Ignore it for stats purposes, and copy the status and boundsinfo
+            // from the indicated Value.
+            // See notes on `inttoptr_status_and_bounds_overrides`.
             PointerStatus status = ptr_statuses.getStatus(it->getSecond());
             assert(status.kind != PointerKind::NOTDEFINEDYET);
             ptr_statuses.mark_as(&inttoptr, status);
+            bounds_info[&inttoptr] = bounds_info[it->getSecond()];
           } else {
             // no override in place for this IntToPtr.
             // count this for stats, and then mark it as `inttoptr_kind`
@@ -2284,6 +2337,16 @@ static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::o
       break;
     }
   }
+}
+
+/// The given `Builder` will now be ready to insert instructions _after_ the
+/// given `inst`
+static void setInsertPointToAfterInst(IRBuilder<>& Builder, Instruction* inst) {
+  Builder.SetInsertPoint(inst);
+  BasicBlock* bb = Builder.GetInsertBlock();
+  auto ip = Builder.GetInsertPoint();
+  ip++;
+  Builder.SetInsertPoint(bb, ip);
 }
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {

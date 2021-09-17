@@ -567,6 +567,10 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   bool NeedsSanitizerDeps = addSanitizerRuntimes(ToolChain, Args, CmdArgs);
   bool NeedsXRayDeps = addXRayRuntime(ToolChain, Args, CmdArgs);
+  // TODO: the following line is incorrect, it checks if any DMS option is passed.
+  // Really, we only need the DMS runtime if a _dynamic_ DMS option is passed.
+  bool NeedsDMSRuntime = Args.hasArg(options::OPT_fdms);
+  if (NeedsDMSRuntime) addDMSRuntime(ToolChain, Args, CmdArgs);
   addLinkerCompressDebugSectionsOption(ToolChain, Args, CmdArgs);
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
   // The profile runtime also needs access to system libraries.
@@ -593,7 +597,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       if (IsStatic || IsStaticPIE)
         CmdArgs.push_back("--start-group");
 
-      if (NeedsSanitizerDeps)
+      if (NeedsSanitizerDeps || NeedsDMSRuntime)
         linkSanitizerRuntimeDeps(ToolChain, CmdArgs);
 
       if (NeedsXRayDeps)

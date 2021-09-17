@@ -2,6 +2,11 @@
 
 using namespace llvm;
 
+/// Mangled name of the get_bounds function
+const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
+/// Mangled name of the store_bounds function
+const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
+
 /// `cur_ptr`: the pointer value for which these bounds apply.
 ///
 /// `Builder`: the IRBuilder to use to insert dynamic instructions.
