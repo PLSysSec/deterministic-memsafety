@@ -1268,133 +1268,151 @@ private:
             const BoundsInfo& prev_iteration_binfo = bounds_info.lookup(&phi);
             assert(incoming_binfos.size() >= 1);
             bool any_incoming_bounds_are_dynamic = false;
+            bool any_incoming_bounds_are_unknown = false;
+            bool any_incoming_bounds_are_notdefinedyet = false;
             for (auto& pair : incoming_binfos) {
               const BoundsInfo* incoming_binfo = pair.first;
               if (incoming_binfo->is_dynamic()) {
                 any_incoming_bounds_are_dynamic = true;
-                break;
+              }
+              if (incoming_binfo->get_kind() == BoundsInfo::UNKNOWN) {
+                any_incoming_bounds_are_unknown = true;
+              }
+              if (incoming_binfo->get_kind() == BoundsInfo::NOTDEFINEDYET) {
+                any_incoming_bounds_are_notdefinedyet = true;
               }
             }
-            if (any_incoming_bounds_are_dynamic) {
-              // in this case, we'll use PHIs to select the proper dynamic
-              // `base` and `max`, much as we used PHIs for the dynamic_kind
-              // above.
-              // Of course, if we already inserted PHIs in a previous iteration,
-              // let's not insert them again.
-              PHINode* base_phi = NULL;
-              PHINode* max_phi = NULL;
-              if (const BoundsInfo::DynamicBoundsInfo* prev_iteration_dyninfo = prev_iteration_binfo.dynamic_info()) {
-                if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->base.ptr))) {
-                  assert(prev_iteration_dyninfo->base.offset == 0);
-                  assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
-                  for (auto& pair : incoming_binfos) {
-                    const BoundsInfo* incoming_binfo = pair.first;
-                    BasicBlock* incoming_bb = pair.second;
-                    const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
-                    switch (incoming_binfo->get_kind()) {
-                      case BoundsInfo::UNKNOWN:
-                      case BoundsInfo::INFINITE:
-                        llvm_unreachable("Bad incoming_binfo.kind here");
-                      case BoundsInfo::STATIC:
-                        // for now we just assume that static bounds don't
-                        // change from iteration to iteration
-                        break;
-                      case BoundsInfo::DYNAMIC:
-                      case BoundsInfo::DYNAMIC_MERGED:
-                      {
-                        const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
-                        if (incoming_dyninfo->base.offset != 0) {
-                          // need to recalculate base_phi
-                          base_phi = NULL;
-                          break;
-                        }
-                        const Value* incoming_base = incoming_dyninfo->base.ptr;
-                        if (incoming_base != old_base) {
-                          // need to recalculate base_phi
-                          base_phi = NULL;
-                          break;
-                        }
-                        // if we get here, this incoming block is still good and doesn't need recalculating
-                        break;
-                      }
-                      default:
-                        llvm_unreachable("Missing BoundsInfo.kind case");
-                    }
-                    if (!base_phi) break;
-                  }
-                } else {
-                  // prev_iteration base was not a phi. we'll have to insert a fresh phi
-                }
-                if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->max.ptr))) {
-                  assert(prev_iteration_dyninfo->max.offset == 0);
-                  assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
-                  for (auto& pair : incoming_binfos) {
-                    const BoundsInfo* incoming_binfo = pair.first;
-                    BasicBlock* incoming_bb = pair.second;
-                    const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
-                    switch (incoming_binfo->get_kind()) {
-                      case BoundsInfo::UNKNOWN:
-                      case BoundsInfo::INFINITE:
-                        llvm_unreachable("Bad incoming_binfo.kind here");
-                      case BoundsInfo::STATIC:
-                        // for now we just assume that static bounds don't
-                        // change from iteration to iteration
-                        break;
-                      case BoundsInfo::DYNAMIC:
-                      case BoundsInfo::DYNAMIC_MERGED:
-                      {
-                        const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
-                        if (incoming_dyninfo->max.offset != 0) {
-                          // need to recalculate max_phi
-                          max_phi = NULL;
-                          break;
-                        }
-                        const Value* incoming_max = incoming_dyninfo->max.ptr;
-                        if (incoming_max != old_max) {
-                          // need to recalculate max_phi
-                          max_phi = NULL;
-                          break;
-                        }
-                        // if we get here, this incoming block is still good and doesn't need recalculating
-                        break;
-                      }
-                      default:
-                        llvm_unreachable("Missing BoundsInfo.kind case");
-                    }
-                    if (!max_phi) break;
-                  }
-
-                } else {
-                  // prev_iteration max was not a phi. we'll have to insert a fresh phi
-                }
+            if (any_incoming_bounds_are_unknown) {
+              bounds_info[&phi] = BoundsInfo::unknown();
+            } else if (any_incoming_bounds_are_dynamic) {
+              if (any_incoming_bounds_are_notdefinedyet) {
+                // in this case, just mark UNKNOWN for this iteration; we'll
+                // insert PHIs and compute the proper dynamic bounds in the next
+                // iteration, when everything is defined
+                bounds_info[&phi] = BoundsInfo::unknown();
               } else {
-                // prev_iteration boundsinfo was not dynamic. we'll have to insert fresh phis
-              }
-              if (!base_phi) {
-                base_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
-                bounds_insts.insert(base_phi);
-                for (auto& pair : incoming_binfos) {
-                  const BoundsInfo* incoming_binfo = pair.first;
-                  BasicBlock* incoming_bb = pair.second;
-                  Value* base = incoming_binfo->base_as_llvm_value(&phi, Builder, bounds_insts);
-                  assert(base);
-                  base_phi->addIncoming(base, incoming_bb);
+                // in this case, we'll use PHIs to select the proper dynamic
+                // `base` and `max`, much as we used PHIs for the dynamic_kind
+                // above.
+                // Of course, if we already inserted PHIs in a previous iteration,
+                // let's not insert them again.
+                PHINode* base_phi = NULL;
+                PHINode* max_phi = NULL;
+                if (const BoundsInfo::DynamicBoundsInfo* prev_iteration_dyninfo = prev_iteration_binfo.dynamic_info()) {
+                  if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->base.ptr))) {
+                    assert(prev_iteration_dyninfo->base.offset == 0);
+                    assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
+                    for (auto& pair : incoming_binfos) {
+                      const BoundsInfo* incoming_binfo = pair.first;
+                      BasicBlock* incoming_bb = pair.second;
+                      const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
+                      switch (incoming_binfo->get_kind()) {
+                        case BoundsInfo::NOTDEFINEDYET:
+                        case BoundsInfo::UNKNOWN:
+                        case BoundsInfo::INFINITE:
+                          llvm_unreachable("Bad incoming_binfo.kind here");
+                        case BoundsInfo::STATIC:
+                          // for now we just assume that static bounds don't
+                          // change from iteration to iteration
+                          break;
+                        case BoundsInfo::DYNAMIC:
+                        case BoundsInfo::DYNAMIC_MERGED:
+                        {
+                          const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
+                          if (incoming_dyninfo->base.offset != 0) {
+                            // need to recalculate base_phi
+                            base_phi = NULL;
+                            break;
+                          }
+                          const Value* incoming_base = incoming_dyninfo->base.ptr;
+                          if (incoming_base != old_base) {
+                            // need to recalculate base_phi
+                            base_phi = NULL;
+                            break;
+                          }
+                          // if we get here, this incoming block is still good and doesn't need recalculating
+                          break;
+                        }
+                        default:
+                          llvm_unreachable("Missing BoundsInfo.kind case");
+                      }
+                      if (!base_phi) break;
+                    }
+                  } else {
+                    // prev_iteration base was not a phi. we'll have to insert a fresh phi
+                  }
+                  if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->max.ptr))) {
+                    assert(prev_iteration_dyninfo->max.offset == 0);
+                    assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
+                    for (auto& pair : incoming_binfos) {
+                      const BoundsInfo* incoming_binfo = pair.first;
+                      BasicBlock* incoming_bb = pair.second;
+                      const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
+                      switch (incoming_binfo->get_kind()) {
+                        case BoundsInfo::NOTDEFINEDYET:
+                        case BoundsInfo::UNKNOWN:
+                        case BoundsInfo::INFINITE:
+                          llvm_unreachable("Bad incoming_binfo.kind here");
+                        case BoundsInfo::STATIC:
+                          // for now we just assume that static bounds don't
+                          // change from iteration to iteration
+                          break;
+                        case BoundsInfo::DYNAMIC:
+                        case BoundsInfo::DYNAMIC_MERGED:
+                        {
+                          const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
+                          if (incoming_dyninfo->max.offset != 0) {
+                            // need to recalculate max_phi
+                            max_phi = NULL;
+                            break;
+                          }
+                          const Value* incoming_max = incoming_dyninfo->max.ptr;
+                          if (incoming_max != old_max) {
+                            // need to recalculate max_phi
+                            max_phi = NULL;
+                            break;
+                          }
+                          // if we get here, this incoming block is still good and doesn't need recalculating
+                          break;
+                        }
+                        default:
+                          llvm_unreachable("Missing BoundsInfo.kind case");
+                      }
+                      if (!max_phi) break;
+                    }
+
+                  } else {
+                    // prev_iteration max was not a phi. we'll have to insert a fresh phi
+                  }
+                } else {
+                  // prev_iteration boundsinfo was not dynamic. we'll have to insert fresh phis
                 }
-                assert(base_phi->isComplete());
-              }
-              if (!max_phi) {
-                max_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
-                bounds_insts.insert(max_phi);
-                for (auto& pair : incoming_binfos) {
-                  const BoundsInfo* incoming_binfo = pair.first;
-                  BasicBlock* incoming_bb = pair.second;
-                  Value* max = incoming_binfo->max_as_llvm_value(&phi, Builder, bounds_insts);
-                  assert(max);
-                  max_phi->addIncoming(max, incoming_bb);
+                if (!base_phi) {
+                  base_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
+                  bounds_insts.insert(base_phi);
+                  for (auto& pair : incoming_binfos) {
+                    const BoundsInfo* incoming_binfo = pair.first;
+                    BasicBlock* incoming_bb = pair.second;
+                    Value* base = incoming_binfo->base_as_llvm_value(&phi, Builder, bounds_insts);
+                    assert(base);
+                    base_phi->addIncoming(base, incoming_bb);
+                  }
+                  assert(base_phi->isComplete());
                 }
-                assert(max_phi->isComplete());
+                if (!max_phi) {
+                  max_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
+                  bounds_insts.insert(max_phi);
+                  for (auto& pair : incoming_binfos) {
+                    const BoundsInfo* incoming_binfo = pair.first;
+                    BasicBlock* incoming_bb = pair.second;
+                    Value* max = incoming_binfo->max_as_llvm_value(&phi, Builder, bounds_insts);
+                    assert(max);
+                    max_phi->addIncoming(max, incoming_bb);
+                  }
+                  assert(max_phi->isComplete());
+                }
+                bounds_info[&phi] = BoundsInfo::dynamic_bounds(base_phi, max_phi);
               }
-              bounds_info[&phi] = BoundsInfo::dynamic_bounds(base_phi, max_phi);
             } else {
               // no incoming bounds are dynamic. let's just merge them statically
               bool any_merge_inputs_changed = false;
