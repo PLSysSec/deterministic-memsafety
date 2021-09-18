@@ -1393,7 +1393,11 @@ private:
                   for (auto& pair : incoming_binfos) {
                     const BoundsInfo* incoming_binfo = pair.first;
                     BasicBlock* incoming_bb = pair.second;
-                    Value* base = incoming_binfo->base_as_llvm_value(&phi, Builder, bounds_insts);
+                    // if dynamic instructions are necessary to compute phi
+                    // incoming value, insert them at the end of the
+                    // corresponding block, not here
+                    IRBuilder<> IncomingBlockBuilder(incoming_bb->getTerminator());
+                    Value* base = incoming_binfo->base_as_llvm_value(&phi, IncomingBlockBuilder, bounds_insts);
                     assert(base);
                     base_phi->addIncoming(base, incoming_bb);
                   }
@@ -1405,7 +1409,11 @@ private:
                   for (auto& pair : incoming_binfos) {
                     const BoundsInfo* incoming_binfo = pair.first;
                     BasicBlock* incoming_bb = pair.second;
-                    Value* max = incoming_binfo->max_as_llvm_value(&phi, Builder, bounds_insts);
+                    // if dynamic instructions are necessary to compute phi
+                    // incoming value, insert them at the end of the
+                    // corresponding block, not here
+                    IRBuilder<> IncomingBlockBuilder(incoming_bb->getTerminator());
+                    Value* max = incoming_binfo->max_as_llvm_value(&phi, IncomingBlockBuilder, bounds_insts);
                     assert(max);
                     max_phi->addIncoming(max, incoming_bb);
                   }
