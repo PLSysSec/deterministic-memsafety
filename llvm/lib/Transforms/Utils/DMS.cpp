@@ -846,6 +846,13 @@ private:
             // we count the stored pointer for stats purposes
             PointerStatus storedVal_status = ptr_statuses.getStatus(storedVal);
             COUNT_OP_AS_STATUS(store_vals, storedVal_status, &inst, "Storing a pointer");
+            // we store the bounds info so that when this pointer is later
+            // loaded, we can get the bounds info back
+            IRBuilder<> Builder(&block);
+            setInsertPointToAfterInst(Builder, &store);
+            BoundsInfo& binfo = bounds_info[storedVal];
+            store_dynamic_boundsinfo(storedVal, binfo, Builder, bounds_insts);
+            // make sure the stored pointer is masked as necessary
             if (pointer_encoding_is_complete) {
               // update the mask if necessary, based on our knowledge of the
               // status of `storedVal`. See below case, for
@@ -928,9 +935,9 @@ private:
               // and also mark the status of the new (encoded) value -- it's the
               // same as the status of the original (unencoded) value
               ptr_statuses.mark_as(new_storedVal_as_ptr, storedVal_status);
-              // create a status override for the new `IntToPtr`, so this
-              // relationship is preserved even in future passes. It will always
-              // have the same status as `storedVal`.
+              // create a status and bounds override for the new `IntToPtr`, so
+              // this relationship is preserved even in future passes. It will
+              // always have the same status and boundsinfo as `storedVal`.
               IntToPtrInst* inttoptr = cast<IntToPtrInst>(new_storedVal_as_ptr);
               inttoptr_status_and_bounds_overrides[inttoptr] = storedVal;
             }
@@ -1065,6 +1072,8 @@ private:
           // the new pointer still have access to the whole allocation
           const BoundsInfo& binfo = bounds_info.lookup(input_ptr);
           switch (binfo.get_kind()) {
+            case BoundsInfo::NOTDEFINEDYET:
+              llvm_unreachable("GEP input ptr's BoundsInfo should be defined (at least UNKNOWN)");
             case BoundsInfo::UNKNOWN:
               bounds_info[&gep] = binfo;
               break;

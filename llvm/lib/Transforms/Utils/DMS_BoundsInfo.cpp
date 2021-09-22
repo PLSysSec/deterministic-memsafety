@@ -8,6 +8,7 @@ static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
 static const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
 
 /// `cur_ptr`: the pointer value for which these bounds apply.
+/// Can be any pointer type.
 ///
 /// `Builder`: the IRBuilder to use to insert dynamic instructions.
 ///
@@ -40,6 +41,7 @@ Value* BoundsInfo::base_as_llvm_value(
 }
 
 /// `cur_ptr`: the pointer value for which these bounds apply.
+/// Can be any pointer type.
 ///
 /// `Builder`: the IRBuilder to use to insert dynamic instructions.
 ///
@@ -57,7 +59,7 @@ Value* BoundsInfo::max_as_llvm_value(
 ) const {
 	switch (kind) {
 		case NOTDEFINEDYET:
-			llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
+			llvm_unreachable("max_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
 		case UNKNOWN:
 		case INFINITE:
 			return NULL;
@@ -72,6 +74,7 @@ Value* BoundsInfo::max_as_llvm_value(
 }
 
 /// `cur_ptr` is the pointer which these bounds are for.
+/// Can be any pointer type.
 ///
 /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
 /// that is necessary.
@@ -140,14 +143,19 @@ Value* BoundsInfo::add_offset_to_ptr(
 	if (casted != ptr) {
 		bounds_insts.insert(cast<Instruction>(casted));
 	}
-	Value* GEP = Builder.CreateGEP(Builder.getInt8Ty(), casted, Builder.getInt(offset));
-	if (GEP != casted) {
-		bounds_insts.insert(cast<Instruction>(GEP));
+	if (offset == 0) {
+		return casted;
+	} else {
+		Value* GEP = Builder.CreateGEP(Builder.getInt8Ty(), casted, Builder.getInt(offset));
+		if (GEP != casted) {
+			bounds_insts.insert(cast<Instruction>(GEP));
+		}
+		return GEP;
 	}
-	return GEP;
 }
 
 /// `cur_ptr` is the pointer which these bounds are for.
+/// Can be any pointer type.
 ///
 /// `Builder` is the IRBuilder to use to insert dynamic instructions.
 ///
@@ -232,6 +240,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 }
 
 /// Insert dynamic instructions to store bounds info for the given `ptr`.
+/// `ptr` can be of any pointer type.
 ///
 /// Insert dynamic instructions using the given `IRBuilder`.
 ///
@@ -253,10 +262,12 @@ void llvm::store_dynamic_boundsinfo(
 	if (ptr_as_charstar != ptr) {
 		bounds_insts.insert(cast<Instruction>(ptr_as_charstar));
 	}
-	Builder.CreateCall(StoreBounds, {ptr_as_charstar, base, max});
+	Value* call = Builder.CreateCall(StoreBounds, {ptr_as_charstar, base, max});
+	bounds_insts.insert(cast<Instruction>(call));
 }
 
 /// Insert dynamic instructions to load bounds info for the given `ptr`.
+/// `ptr` can be of any pointer type.
 /// Bounds info for this `ptr` should have been previously stored with
 /// `store_dynamic_boundsinfo`.
 ///
