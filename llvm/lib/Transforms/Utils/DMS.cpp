@@ -645,7 +645,7 @@ private:
   ///
   /// We don't necessarily add all the instructions we insert for bounds
   /// purposes to this set. But, the intent is that we at minimum add all the
-  /// pointer-producing instructions inserted for bounds purposes.
+  /// pointer-producing instructions, and all the calls.
   DenseSet<const Instruction*> bounds_insts;
 
   /// Maps a pointer to its bounds info, if we know anything about its bounds
@@ -943,7 +943,7 @@ private:
             }
           }
           // next count the address
-          const Value* addr = store.getPointerOperand();
+          Value* addr = store.getPointerOperand();
           COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
           // insert a bounds check before the store, if necessary
           if (add_spatial_sw_checks) {
@@ -956,7 +956,7 @@ private:
         }
         case Instruction::Load: {
           LoadInst& load = cast<LoadInst>(inst);
-          const Value* ptr = load.getPointerOperand();
+          Value* ptr = load.getPointerOperand();
           // first count this for static stats
           COUNT_OP_AS_STATUS(load_addrs, ptr_statuses.getStatus(ptr), &inst, "Loading from pointer");
           // insert a bounds check before the load, if necessary
@@ -1609,7 +1609,7 @@ private:
   ///
   /// Currently this assumes that dereferencing BLEMISHED16 pointers does not
   /// need a SW check, but all other BLEMISHED pointers need checks.
-  void maybeAddSpatialSWCheck(const Value* addr, PointerStatus status, IRBuilder<>& Builder) {
+  void maybeAddSpatialSWCheck(Value* addr, PointerStatus status, IRBuilder<>& Builder) {
     switch (status.kind) {
       case PointerKind::CLEAN:
         // no check required
@@ -1622,83 +1622,63 @@ private:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        switch (binfo.get_kind()) {
-          case BoundsInfo::UNKNOWN:
-            dbgs() << "warning: bounds info unknown for " << addr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
-            return;
-          case BoundsInfo::INFINITE:
-            // no check required
-            return;
-          case BoundsInfo::STATIC: {
-            const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
-            if (static_info->low_offset.isStrictlyPositive()) {
-              // invalid pointer: too low
-              insertBoundsCheckFail(Builder);
-            } else if (static_info->high_offset.isNegative()) {
-              // invalid pointer: too high
-              insertBoundsCheckFail(Builder);
-            }
-            break;
-          }
-          case BoundsInfo::DYNAMIC:
-          case BoundsInfo::DYNAMIC_MERGED:
-          {
-            llvm_unreachable("unimplemented: spatial check with dynamic bounds info");
-          }
-          default:
-            llvm_unreachable("Missing BoundsInfo.kind case");
-        }
+        binfo.sw_bounds_check(addr, Builder, bounds_insts);
         break;
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        switch (binfo.get_kind()) {
-          case BoundsInfo::UNKNOWN:
-            dbgs() << "warning: bounds info unknown for " << addr->getNameOrAsOperand() << " even though it may need a bounds check, depending on dynamic kind. Unsafely omitting the bounds check.\n";
-            break;
-          case BoundsInfo::INFINITE:
-            // no check required
-            break;
-          case BoundsInfo::STATIC: {
-            const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
-            if (
-              static_info->low_offset.isStrictlyPositive() /* invalid pointer: too low */
-              || static_info->high_offset.isNegative() /* invalid pointer: too high */
-            ) {
-              // we check the dynamic kind, if it is DYN_CLEAN or
-              // DYN_BLEMISHED16 then we do nothing, else we SW-fail
-              BasicBlock* bb = Builder.GetInsertBlock();
-              BasicBlock::iterator I = Builder.GetInsertPoint();
-              BasicBlock* new_bb = bb->splitBasicBlock(I);
-              // at this point, `bb` holds everything before the pointer
-              // dereference, and an unconditional-br terminator to `new_bb`.
-              // `new_bb` holds the dereference and everything following,
-              // including the old terminator.
-              // To be safe, we assume that `Builder` is invalidated by the
-              // above operation (docs say that the iterator `I` is
-              // invalidated).
-              BasicBlock* boundsfail = BasicBlock::Create(F.getContext(), "", &F);
-              IRBuilder<> BoundsFailBuilder(boundsfail, boundsfail->getFirstInsertionPt());
-              insertBoundsCheckFail(BoundsFailBuilder);
-              // replace `bb`'s terminator with a condbr jumping to either
-              // `boundsfail` or `new_bb` as appropriate
-              BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
-              IRBuilder<> Builder(bb, bbend);
-              Value* doesnt_need_check = Builder.CreateLogicalOr(
-                Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
-                Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
-              );
-              Builder.CreateCondBr(doesnt_need_check, new_bb, boundsfail);
-            }
-            break;
+        if (binfo.get_kind() == BoundsInfo::STATIC) {
+          if(binfo.static_info()->fails()) {
+            // we check the dynamic kind, if it is DYN_CLEAN or
+            // DYN_BLEMISHED16 then we do nothing, else we SW-fail
+            BasicBlock* bb = Builder.GetInsertBlock();
+            BasicBlock::iterator I = Builder.GetInsertPoint();
+            BasicBlock* new_bb = bb->splitBasicBlock(I);
+            // at this point, `bb` holds everything before the pointer
+            // dereference, and an unconditional-br terminator to `new_bb`.
+            // `new_bb` holds the dereference and everything following,
+            // including the old terminator.
+            // To be safe, we assume that `Builder` is invalidated by the
+            // above operation (docs say that the iterator `I` is
+            // invalidated).
+            BasicBlock* boundsfail = boundsCheckFailBB(&F, bounds_insts);
+            // replace `bb`'s terminator with a condbr jumping to either
+            // `boundsfail` or `new_bb` as appropriate
+            BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
+            IRBuilder<> Builder(bb, bbend);
+            Value* doesnt_need_check = Builder.CreateLogicalOr(
+              Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
+              Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
+            );
+            Builder.CreateCondBr(doesnt_need_check, new_bb, boundsfail);
+          } else {
+            // do nothing: static bounds check passes, so we don't need to
+            // insert instructions to check the dynamic PointerKind
           }
-          case BoundsInfo::DYNAMIC:
-          case BoundsInfo::DYNAMIC_MERGED:
-          {
-            llvm_unreachable("unimplemented: spatial check with dynamic bounds info and dynamic kind");
-          }
-          default:
-            llvm_unreachable("Missing BoundsInfo.kind case");
+        } else {
+          BasicBlock* bb = Builder.GetInsertBlock();
+          BasicBlock::iterator I = Builder.GetInsertPoint();
+          BasicBlock* new_bb = bb->splitBasicBlock(I);
+          // at this point, `bb` holds everything before the pointer
+          // dereference, and an unconditional-br terminator to `new_bb`.
+          // `new_bb` holds the dereference and everything following,
+          // including the old terminator.
+          // To be safe, we assume that `Builder` is invalidated by the
+          // above operation (docs say that the iterator `I` is
+          // invalidated).
+          BasicBlock* boundscheck = BasicBlock::Create(F.getContext(), "", &F);
+          IRBuilder<> BoundsCheckBuilder(boundscheck, boundscheck->getFirstInsertionPt());
+          binfo.sw_bounds_check(addr, BoundsCheckBuilder, bounds_insts);
+          BoundsCheckBuilder.CreateBr(new_bb);
+          // replace `bb`'s terminator with a condbr jumping to either
+          // `boundscheck` or `new_bb` as appropriate
+          BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
+          IRBuilder<> Builder(bb, bbend);
+          Value* doesnt_need_check = Builder.CreateLogicalOr(
+            Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
+            Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
+          );
+          Builder.CreateCondBr(doesnt_need_check, new_bb, boundscheck);
         }
         break;
       }
@@ -1709,16 +1689,6 @@ private:
       default:
         llvm_unreachable("Missing PointerKind case");
     }
-  }
-
-  /// Insert dynamic instructions indicating a bounds-check failure, at the
-  /// program point indicated by the given `Builder`
-  void insertBoundsCheckFail(IRBuilder<>& Builder) {
-    Module* mod = F.getParent();
-    FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
-    FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
-    Builder.CreateCall(Abort);
-    Builder.CreateUnreachable();
   }
 
   DynamicResults initializeDynamicResults() {

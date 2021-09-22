@@ -105,6 +105,37 @@ public:
     ) const {
       return add_offset_to_ptr(cur_ptr, high_offset, Builder, bounds_insts);
     }
+
+    /// Do the current bounds fail? Meaning, if we were to insert a SW bounds
+    /// check for this `StaticBoundsInfo` right now, would the check fail?
+    ///
+    /// Since the bounds are known statically, we can give an answer to this
+    /// statically and without inserting any dynamic instructions
+    bool fails() const {
+      if (low_offset.isStrictlyPositive()) {
+        // invalid pointer: too low
+        return true;
+      } else if (high_offset.isNegative()) {
+        // invalid pointer: too high
+        return true;
+      } else {
+        return false;
+      }
+    }
+
+    /// Insert a SW bounds check of `ptr` against the bounds information in this
+    /// `StaticBoundsInfo`.
+    ///
+    /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+    /// that is necessary.
+    ///
+    /// `bounds_insts`: If we insert any instructions into the program, we'll
+    /// also add them to `bounds_insts`, see notes there
+    void sw_bounds_check(
+      Value* ptr,
+      IRBuilder<>& Builder,
+      DenseSet<const Instruction*>& bounds_insts
+    ) const;
   };
 
   /// Represents a pointer value as an LLVM pointer, with an optional
@@ -163,6 +194,20 @@ public:
     bool operator!=(const DynamicBoundsInfo& other) const {
       return !(*this == other);
     }
+
+    /// Insert a SW bounds check of `ptr` against the bounds information in this
+    /// `DynamicBoundsInfo`.
+    ///
+    /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+    /// that is necessary.
+    ///
+    /// `bounds_insts`: If we insert any instructions into the program, we'll
+    /// also add them to `bounds_insts`, see notes there
+    void sw_bounds_check(
+      Value* ptr,
+      IRBuilder<>& Builder,
+      DenseSet<const Instruction*>& bounds_insts
+    ) const;
   };
 
   /// Get the StaticBoundsInfo, or NULL if not `is_static()`
@@ -344,6 +389,20 @@ public:
     DenseSet<const Instruction*>& bounds_insts
   );
 
+  /// Insert a SW bounds check of `ptr` against the bounds information in this
+  /// `BoundsInfo`.
+  ///
+  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+  /// that is necessary.
+  ///
+  /// `bounds_insts`: If we insert any instructions into the program, we'll
+  /// also add them to `bounds_insts`, see notes there
+  void sw_bounds_check(
+    Value* ptr,
+    IRBuilder<>& Builder,
+    DenseSet<const Instruction*>& bounds_insts
+  ) const;
+
 private:
   /// This should really be a union.  But C++ complains hard about implicitly
   /// deleted copy constructors, implicitly deleted assignment operators, etc
@@ -400,6 +459,18 @@ private:
     DenseSet<const Instruction*>& bounds_insts
   );
 };
+
+/// Create a new BasicBlock containing code indicating a bounds-check failure.
+/// The BasicBlock will be inserted in the given `Function`.
+/// We can dynamically jump to this block to report a bounds-check failure.
+/// Returns the BasicBlock.
+///
+/// `bounds_insts`: As we insert instructions into the program, we'll also add
+/// them to `bounds_insts`, see notes there
+BasicBlock* boundsCheckFailBB(
+	Function* F,
+	DenseSet<const Instruction*>& bounds_insts
+);
 
 /// Insert dynamic instructions to store bounds info for the given `ptr`.
 ///
