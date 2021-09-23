@@ -62,7 +62,7 @@ struct GEPResultClassification {
 ///
 /// `override_constant_offset`: if this is not NULL, then ignore the GEP's indices
 /// and classify it as if the offset were the given compile-time constant.
-static GEPResultClassification classifyGEPResult(const GetElementPtrInst &gep, const PointerStatus input_status, const DataLayout &DL, const bool trustLLVMStructTypes, const APInt* override_constant_offset);
+static GEPResultClassification classifyGEPResult(GetElementPtrInst &gep, const PointerStatus input_status, const DataLayout &DL, const bool trustLLVMStructTypes, const APInt* override_constant_offset);
 
 /// Conceptually stores the PointerKind of all currently valid pointers at a
 /// particular program point.
@@ -170,8 +170,8 @@ public:
           }
           case Instruction::GetElementPtr: {
             // constant-GEP expression
-            const Instruction* inst = expr->getAsInstruction();
-            const GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
+            Instruction* inst = expr->getAsInstruction();
+            GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
             return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trustLLVMStructTypes, NULL).classification;
           }
           default: {
@@ -2158,7 +2158,7 @@ PreservedAnalyses BoundsChecksDMSPass::run(Function &F, FunctionAnalysisManager 
 /// `override_constant_offset`: if this is not NULL, then ignore the GEP's indices
 /// and classify it as if the offset were the given compile-time constant.
 static GEPResultClassification classifyGEPResult(
-  const GetElementPtrInst &gep,
+  GetElementPtrInst &gep,
   const PointerStatus input_status,
   const DataLayout &DL,
   const bool trustLLVMStructTypes,
@@ -2214,7 +2214,7 @@ static GEPResultClassification classifyGEPResult(
           // "trustworthy" offset from clean is clean, from dirty is dirty,
           // from BLEMISHED16 is arbitrarily blemished, and from arbitrarily
           // blemished is still arbitrarily blemished.
-          IRBuilder<> Builder((GetElementPtrInst*)&gep); // cast to discard const. We should be able to insert stuff before a const instruction.
+          IRBuilder<> Builder(&gep);
           Value* dynamic_kind = Builder.CreateSelect(
             Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16)),
             Builder.getInt64(DynamicKindMasks::blemished_other),
@@ -2327,7 +2327,7 @@ static GEPResultClassification classifyGEPResult(
         } else {
           // We need to dynamically check the kind in order to classify the
           // result.
-          IRBuilder<> Builder((GetElementPtrInst*)&gep); // cast to discard const. We should be able to insert stuff before a const instruction.
+          IRBuilder<> Builder(&gep);
           Value* is_clean = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean));
           Value* is_blem16 = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16));
           Value* is_blemother = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished_other));
