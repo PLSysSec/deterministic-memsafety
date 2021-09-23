@@ -397,7 +397,10 @@ public:
   ///
   /// `bounds_insts`: If we insert any instructions into the program, we'll
   /// also add them to `bounds_insts`, see notes there
-  void sw_bounds_check(
+  ///
+  /// Returns `true` if the current basic block was split and thus is done being
+  /// processed.
+  bool sw_bounds_check(
     Value* ptr,
     IRBuilder<>& Builder,
     DenseSet<const Instruction*>& bounds_insts

@@ -334,7 +334,7 @@ public:
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())),
       blocks_in_function(F.getBasicBlockList().size()),
       do_pointer_encoding(do_pointer_encoding),
-      pointer_encoding_is_complete(false) {
+      pointer_encoding_is_complete(false), fixpoint_reached(false) {
     initialize_block_states();
   }
   ~DMSAnalysis() {
@@ -463,6 +463,8 @@ public:
       res = doIteration(NULL, false);
     }
 
+    fixpoint_reached = true;
+
     return res.static_results;
   }
 
@@ -478,9 +480,10 @@ public:
   /// You _must_ run() the analysis first -- instrument() assumes that the
   /// analysis is complete.
   void instrument(DynamicPrintType print_type) {
+    assert(fixpoint_reached && "Please run() before instrument()");
     DynamicResults results = initializeDynamicResults();
     IterationResult res = doIteration(NULL, false);
-    assert(!res.changed && "Don't run instrument() until analysis has reached fixpoint");
+    assert(!res.changed && "Please run() before instrument()");
     doIteration(&results, false);
     addDynamicResultsPrint(results, print_type);
   }
@@ -489,8 +492,16 @@ public:
   /// You _must_ run() the analysis first -- addSpatialSafetySWChecks() assumes
   /// that the analysis is complete.
   void addSpatialSafetySWChecks() {
+    assert(fixpoint_reached && "Please run() before addSpatialSafetySWChecks()");
     IterationResult res = doIteration(NULL, true);
-    assert(!res.changed && "Don't run addSpatialSafetyChecks() until analysis has reached fixpoint");
+    // `doIteration` with add_spatial_sw_checks=true will sometimes split basic
+    // blocks, which is a problem when it's also trying to iterate over all the
+    // blocks in the function. To ensure that we don't miss any blocks that were
+    // created or split, we continue iterating until the number of blocks doesn't
+    // change.
+    while (F.getBasicBlockList().size() > blocks_in_function) {
+      res = doIteration(NULL, true);
+    }
   }
 
   void reportStaticResults(StaticResults& results) {
@@ -572,6 +583,9 @@ private:
   /// pointers stored in memory.
   bool pointer_encoding_is_complete;
 
+  /// True if the analysis has reached a fixpoint, ie pointer statuses are stable.
+  bool fixpoint_reached;
+
   /// This holds the per-block state for the analysis
   class PerBlockState final {
   public:
@@ -592,9 +606,7 @@ private:
 
   void initialize_block_states() {
     for (const BasicBlock &block : F) {
-      block_states.insert(
-        std::pair<const BasicBlock*, PerBlockState*>(&block, new PerBlockState(DL, trustLLVMStructTypes))
-      );
+      block_states[&block] = new PerBlockState(DL, trustLLVMStructTypes);
     }
 
     // For now, if any function parameters are pointers,
@@ -643,6 +655,11 @@ private:
   /// This is used for the IntToPtrs which we insert ourselves as part of
   /// pointer encoding/decoding.
   DenseMap<const IntToPtrInst*, const Value*> inttoptr_status_and_bounds_overrides;
+
+  /// `Load` and `Store` instructions for which we have already inserted bounds
+  /// checks. This way, we know which instructions may still need checks during
+  /// the next iteration.
+  DenseSet<const Instruction*> checked_insts;
 
   /// For the Instructions in this set, don't count them for stats or do any
   /// other operations with them. They aren't from the original program, they
@@ -694,6 +711,15 @@ private:
       RPOT = ReversePostOrderTraversal<BasicBlock*>(&F.getEntryBlock());
     }
 
+    // If any block doesn't have a PerBlockState (for instance, because it was
+    // just created in the previous iteration), initialize its PerBlockState
+    for (const BasicBlock* block : RPOT) {
+      if (block_states.count(block) == 0) {
+        block_states[block] = new PerBlockState(DL, trustLLVMStructTypes);
+      }
+    }
+
+    // now the main analysis
     for (BasicBlock* block : RPOT) {
       AnalyzeBlockResult res = analyze_block(*block, dynamic_results, add_spatial_sw_checks);
       changed |= res.end_of_block_statuses_changed;
@@ -851,6 +877,7 @@ private:
         // see notes on bounds_insts
         continue;
       }
+      bool block_done = false;
       switch (inst.getOpcode()) {
         case Instruction::Store: {
           StoreInst& store = cast<StoreInst>(inst);
@@ -960,9 +987,10 @@ private:
           Value* addr = store.getPointerOperand();
           COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
           // insert a bounds check before the store, if necessary
-          if (add_spatial_sw_checks) {
+          if (add_spatial_sw_checks && !checked_insts.count(&store)) {
             IRBuilder<> BeforeStore(&store);
-            maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore);
+            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore);
+            checked_insts.insert(&store);
           }
           // now, the pointer used as an address becomes clean
           ptr_statuses.mark_clean(addr);
@@ -974,9 +1002,10 @@ private:
           // first count this for static stats
           COUNT_OP_AS_STATUS(load_addrs, ptr_statuses.getStatus(ptr), &inst, "Loading from pointer");
           // insert a bounds check before the load, if necessary
-          if (add_spatial_sw_checks) {
+          if (add_spatial_sw_checks && !checked_insts.count(&load)) {
             IRBuilder<> BeforeLoad(&load);
-            maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), BeforeLoad);
+            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), BeforeLoad);
+            checked_insts.insert(&load);
           }
           // now, the pointer becomes clean
           ptr_statuses.mark_clean(ptr);
@@ -1603,6 +1632,7 @@ private:
           }
           break;
       }
+      if (block_done) break;
     }
 
     // Now that we've processed all the instructions, we have the final
@@ -1623,26 +1653,28 @@ private:
   ///
   /// Currently this assumes that dereferencing BLEMISHED16 pointers does not
   /// need a SW check, but all other BLEMISHED pointers need checks.
-  void maybeAddSpatialSWCheck(Value* addr, PointerStatus status, IRBuilder<>& Builder) {
+  ///
+  /// Returns `true` if the current basic block was split and thus is done being
+  /// processed. (Note this is _not_ the same as, if a SW check was inserted.)
+  bool maybeAddSpatialSWCheck(Value* addr, PointerStatus status, IRBuilder<>& Builder) {
     switch (status.kind) {
       case PointerKind::CLEAN:
         // no check required
-        return;
+        return false;
       case PointerKind::BLEMISHED16:
         // no check required
-        return;
+        return false;
       case PointerKind::BLEMISHED32:
       case PointerKind::BLEMISHED64:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        binfo.sw_bounds_check(addr, Builder, bounds_insts);
-        break;
+        return binfo.sw_bounds_check(addr, Builder, bounds_insts);
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
         if (binfo.get_kind() == BoundsInfo::STATIC) {
-          if(binfo.static_info()->fails()) {
+          if (binfo.static_info()->fails()) {
             // we check the dynamic kind, if it is DYN_CLEAN or
             // DYN_BLEMISHED16 then we do nothing, else we SW-fail
             BasicBlock* bb = Builder.GetInsertBlock();
@@ -1665,9 +1697,11 @@ private:
               Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
             );
             Builder.CreateCondBr(doesnt_need_check, new_bb, boundsfail);
+            return true;
           } else {
             // do nothing: static bounds check passes, so we don't need to
             // insert instructions to check the dynamic PointerKind
+            return false;
           }
         } else {
           BasicBlock* bb = Builder.GetInsertBlock();
@@ -1693,8 +1727,8 @@ private:
             Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
           );
           Builder.CreateCondBr(doesnt_need_check, new_bb, boundscheck);
+          return true;
         }
-        break;
       }
       case PointerKind::UNKNOWN:
         llvm_unreachable("unimplemented: bounds check on unknown-status pointer");
@@ -1703,6 +1737,7 @@ private:
       default:
         llvm_unreachable("Missing PointerKind case");
     }
+    llvm_unreachable("Should return before we get here");
   }
 
   DynamicResults initializeDynamicResults() {

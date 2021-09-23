@@ -301,7 +301,10 @@ BasicBlock* llvm::boundsCheckFailBB(
 ///
 /// `bounds_insts`: If we insert any instructions into the program, we'll
 /// also add them to `bounds_insts`, see notes there
-void BoundsInfo::sw_bounds_check(
+///
+/// Returns `true` if the current basic block was split and thus is done being
+/// processed.
+bool BoundsInfo::sw_bounds_check(
 	Value* ptr,
 	IRBuilder<>& Builder,
 	DenseSet<const Instruction*>& bounds_insts
@@ -311,17 +314,17 @@ void BoundsInfo::sw_bounds_check(
 			llvm_unreachable("Can't sw_bounds_check with NOTDEFINEDYET bounds");
 		case UNKNOWN:
 			dbgs() << "warning: bounds info unknown for " << ptr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
-			return;
+			return false;
 		case INFINITE:
 			// bounds check passes by default
-			return;
+			return false;
 		case STATIC:
 			static_info()->sw_bounds_check(ptr, Builder, bounds_insts);
-			break;
+			return false;
 		case DYNAMIC:
 		case DYNAMIC_MERGED:
 			dynamic_info()->sw_bounds_check(ptr, Builder, bounds_insts);
-			break;
+			return true;
 		default:
 			llvm_unreachable("Missing BoundsInfo.kind case");
 	}
