@@ -742,13 +742,23 @@ private:
     // then it is also clean at the beginning of this block
     auto preds = pred_begin(&block);
     const BasicBlock* firstPred = *preds;
+    // If firstPred doesn't have a PerBlockState (for instance, because we
+    // recently inserted it), initialize its PerBlockState
+    if (block_states.count(firstPred) == 0) {
+      block_states[firstPred] = new PerBlockState(DL, trustLLVMStructTypes);
+    }
     const PerBlockState* firstPred_pbs = block_states[firstPred];
     // we start with all of the ptr_statuses at the end of our first predecessor,
     // then merge with the ptr_statuses at the end of our other predecessors
-    PointerStatuses ptr_statuses = PointerStatuses(firstPred_pbs->ptrs_end);
+    PointerStatuses ptr_statuses(firstPred_pbs->ptrs_end);
     DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   first predecessor has " << ptr_statuses.describe() << " at end\n");
     for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
       const BasicBlock* otherPred = *it;
+      // If otherPred doesn't have a PerBlockState (for instance, because we
+      // recently inserted it), initialize its PerBlockState
+      if (block_states.count(otherPred) == 0) {
+        block_states[otherPred] = new PerBlockState(DL, trustLLVMStructTypes);
+      }
       const PerBlockState* otherPred_pbs = block_states[otherPred];
       DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
       ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end, &block.front());
@@ -782,6 +792,12 @@ private:
     DynamicResults* dynamic_results,
     const bool add_spatial_sw_checks
   ) {
+    // If the block doesn't have a PerBlockState (for instance, because we
+    // recently inserted it), initialize its PerBlockState
+    if (block_states.count(&block) == 0) {
+      block_states[&block] = new PerBlockState(DL, trustLLVMStructTypes);
+    }
+
     PerBlockState* pbs = block_states[&block];
 
     LLVM_DEBUG(
