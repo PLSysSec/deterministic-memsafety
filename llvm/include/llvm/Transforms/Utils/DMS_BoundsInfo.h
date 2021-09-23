@@ -502,4 +502,9 @@ BoundsInfo::DynamicBoundsInfo load_dynamic_boundsinfo(
   DenseSet<const Instruction*>& bounds_insts
 );
 
+/// Returns `true` if the block is well-formed. For this function's purposes,
+/// "well-formed" means it has exactly one terminator instruction and that
+/// instruction is at the end.
+bool wellFormed(const BasicBlock& bb);
+
 } // end namespace

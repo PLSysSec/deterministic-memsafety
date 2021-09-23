@@ -1,4 +1,5 @@
 #include "llvm/Transforms/Utils/DMS_BoundsInfo.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
@@ -272,7 +273,6 @@ static void insertBoundsCheckFail(
 	FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
 	Value* call = Builder.CreateCall(Abort);
 	bounds_insts.insert(cast<Instruction>(call));
-	Builder.CreateUnreachable();
 }
 
 /// Create a new BasicBlock containing code indicating a bounds-check failure.
@@ -289,6 +289,8 @@ BasicBlock* llvm::boundsCheckFailBB(
 	BasicBlock* boundsfail = BasicBlock::Create(F->getContext(), "", F);
 	IRBuilder<> BoundsFailBuilder(boundsfail, boundsfail->getFirstInsertionPt());
 	insertBoundsCheckFail(BoundsFailBuilder, bounds_insts);
+	BoundsFailBuilder.CreateUnreachable();
+	assert(wellFormed(*boundsfail));
 	return boundsfail;
 }
 
@@ -347,6 +349,7 @@ void BoundsInfo::StaticBoundsInfo::sw_bounds_check(
 	if (fails()) {
 		insertBoundsCheckFail(Builder, bounds_insts);
 	}
+	assert(wellFormed(*Builder.GetInsertBlock()));
 }
 
 /// Insert a SW bounds check of `ptr` against the bounds information in this
@@ -382,6 +385,9 @@ void BoundsInfo::DynamicBoundsInfo::sw_bounds_check(
 	BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
 	IRBuilder<> NewBuilder(bb, bbend);
 	NewBuilder.CreateCondBr(Fail, boundsfail, new_bb);
+	assert(wellFormed(*bb));
+	assert(wellFormed(*new_bb));
+	assert(wellFormed(*boundsfail));
 }
 
 /// Insert dynamic instructions to store bounds info for the given `ptr`.
@@ -439,4 +445,16 @@ BoundsInfo::DynamicBoundsInfo llvm::load_dynamic_boundsinfo(
 	Value* max = Builder.CreateExtractValue(dynbounds, 1);
 	bounds_insts.insert(cast<Instruction>(max));
 	return BoundsInfo::DynamicBoundsInfo(base, max);
+}
+
+/// Returns `true` if the block is well-formed. For this function's purposes,
+/// "well-formed" means it has exactly one terminator instruction and that
+/// instruction is at the end.
+bool llvm::wellFormed(const BasicBlock& bb) {
+  const Instruction* terminator = bb.getTerminator();
+  if (!terminator) return false;
+  for (const Instruction& I : bb) {
+    if (I.isTerminator() && &I != terminator) return false;
+  }
+  return true;
 }

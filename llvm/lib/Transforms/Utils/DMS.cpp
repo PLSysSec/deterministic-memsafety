@@ -1702,6 +1702,9 @@ private:
               Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
             );
             Builder.CreateCondBr(doesnt_need_check, new_bb, boundsfail);
+            assert(wellFormed(*bb));
+            assert(wellFormed(*new_bb));
+            assert(wellFormed(*boundsfail));
             return true;
           } else {
             // do nothing: static bounds check passes, so we don't need to
@@ -1721,8 +1724,9 @@ private:
           // invalidated).
           BasicBlock* boundscheck = BasicBlock::Create(F.getContext(), "", &F);
           IRBuilder<> BoundsCheckBuilder(boundscheck, boundscheck->getFirstInsertionPt());
+          Instruction* br = BoundsCheckBuilder.CreateBr(new_bb);
+          BoundsCheckBuilder.SetInsertPoint(br);
           binfo.sw_bounds_check(addr, BoundsCheckBuilder, bounds_insts);
-          BoundsCheckBuilder.CreateBr(new_bb);
           // replace `bb`'s terminator with a condbr jumping to either
           // `boundscheck` or `new_bb` as appropriate
           BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
@@ -1732,6 +1736,9 @@ private:
             Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
           );
           Builder.CreateCondBr(doesnt_need_check, new_bb, boundscheck);
+          assert(wellFormed(*bb));
+          assert(wellFormed(*new_bb));
+          assert(wellFormed(*boundscheck));
           return true;
         }
       }
