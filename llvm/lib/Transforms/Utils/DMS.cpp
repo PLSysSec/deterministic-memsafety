@@ -1671,6 +1671,11 @@ private:
         const BoundsInfo& binfo = bounds_info.lookup(addr);
         return binfo.sw_bounds_check(addr, Builder, bounds_insts);
       }
+      case PointerKind::UNKNOWN: {
+        dbgs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
+        const BoundsInfo& binfo = bounds_info.lookup(addr);
+        return binfo.sw_bounds_check(addr, Builder, bounds_insts);
+      }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
         if (binfo.get_kind() == BoundsInfo::STATIC) {
@@ -1730,8 +1735,6 @@ private:
           return true;
         }
       }
-      case PointerKind::UNKNOWN:
-        llvm_unreachable("unimplemented: bounds check on unknown-status pointer");
       case PointerKind::NOTDEFINEDYET:
         llvm_unreachable("trying to bounds check on pointer with NOTDEFINEDYET status");
       default:
