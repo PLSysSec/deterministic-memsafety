@@ -332,6 +332,7 @@ public:
       loopinfo(FAM.getResult<LoopAnalysis>(F)), pdtree(FAM.getResult<PostDominatorTreeAnalysis>(F)),
       trustLLVMStructTypes(trustLLVMStructTypes), inttoptr_kind(inttoptr_kind),
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())),
+      blocks_in_function(F.getBasicBlockList().size()),
       do_pointer_encoding(do_pointer_encoding),
       pointer_encoding_is_complete(false) {
     initialize_block_states();
@@ -553,8 +554,14 @@ private:
   /// perfectly, because of loops.)
   /// We also store this as a class member because constructing it is expensive,
   /// according to the docs in PostOrderIterator.h. We don't want to construct it
-  /// each time it's needed in `doIteration()`.
-  const ReversePostOrderTraversal<BasicBlock*> RPOT;
+  /// every `doIteration()`. However, we do reconstruct it if blocks are added
+  /// to the function.
+  ReversePostOrderTraversal<BasicBlock*> RPOT;
+  /// This is used to help us determine whether the RPOT needs to be recomputed.
+  /// We assume that our pass never removes blocks, only adds them.
+  /// So, if the number of blocks has increased since last iteration, the RPOT
+  /// needs to be recomputed.
+  unsigned blocks_in_function;
 
   /// True if the `DMSAnalysis` should modify the in-memory representation of
   /// pointers, using bits 48 and 49 to indicate the DynamicPointerKind.
@@ -679,6 +686,13 @@ private:
     bool changed = false;
 
     LLVM_DEBUG(dbgs() << "DMS: starting an iteration through function " << F.getName() << "\n");
+
+    // Recompute the RPOT if necessary. See notes on RPOT
+    unsigned new_num_bbs = F.getBasicBlockList().size();
+    if (new_num_bbs > blocks_in_function) {
+      blocks_in_function = new_num_bbs;
+      RPOT = ReversePostOrderTraversal<BasicBlock*>(&F.getEntryBlock());
+    }
 
     for (BasicBlock* block : RPOT) {
       AnalyzeBlockResult res = analyze_block(*block, dynamic_results, add_spatial_sw_checks);
