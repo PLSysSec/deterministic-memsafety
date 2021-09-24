@@ -913,7 +913,19 @@ private:
       switch (inst.getOpcode()) {
         case Instruction::Store: {
           StoreInst& store = cast<StoreInst>(inst);
-          // first, if we're storing a pointer we have some extra work to do.
+          // first count the address
+          Value* addr = store.getPointerOperand();
+          COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
+          // insert a bounds check before the store, if necessary
+          if (add_spatial_sw_checks && !checked_insts.count(&store)) {
+            IRBuilder<> BeforeStore(&store);
+            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore, new_blocks);
+            checked_insts.insert(&store);
+          }
+          // now, the pointer used as an address becomes clean
+          ptr_statuses.mark_clean(addr);
+
+          // if we're storing a pointer we have some extra work to do.
           Value* storedVal = store.getValueOperand();
           if (storedVal->getType()->isPointerTy()) {
             // we count the stored pointer for stats purposes
@@ -1015,17 +1027,6 @@ private:
               inttoptr_status_and_bounds_overrides[inttoptr] = storedVal;
             }
           }
-          // next count the address
-          Value* addr = store.getPointerOperand();
-          COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
-          // insert a bounds check before the store, if necessary
-          if (add_spatial_sw_checks && !checked_insts.count(&store)) {
-            IRBuilder<> BeforeStore(&store);
-            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore, new_blocks);
-            checked_insts.insert(&store);
-          }
-          // now, the pointer used as an address becomes clean
-          ptr_statuses.mark_clean(addr);
           break;
         }
         case Instruction::Load: {
