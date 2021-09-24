@@ -1023,7 +1023,7 @@ private:
           // insert a bounds check before the store, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&store)) {
             IRBuilder<> BeforeStore(&store);
-            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses, BeforeStore, new_blocks);
+            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore, new_blocks);
             checked_insts.insert(&store);
           }
           // now, the pointer used as an address becomes clean
@@ -1038,7 +1038,7 @@ private:
           // insert a bounds check before the load, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&load)) {
             IRBuilder<> BeforeLoad(&load);
-            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses, BeforeLoad, new_blocks);
+            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), BeforeLoad, new_blocks);
             checked_insts.insert(&load);
           }
           // now, the pointer becomes clean
@@ -1694,11 +1694,10 @@ private:
   }
 
   /// If necessary, add a dynamic spatial safety check for the dereference of
-  /// `addr`.
-  /// If dynamic instructions need to be inserted, use `Builder`.
+  /// `addr`, assuming it has status `status` immediately before being
+  /// dereferenced.
   ///
-  /// `statuses` should have the up-to-date status for `addr` and all other
-  /// pointers at the `Builder`'s current insertion point.
+  /// If dynamic instructions need to be inserted, use `Builder`.
   ///
   /// If we create/insert any new blocks, they will be added to `new_blocks`.
   ///
@@ -1709,11 +1708,10 @@ private:
   /// processed. (Note this is _not_ the same as, if a SW check was inserted.)
   bool maybeAddSpatialSWCheck(
     Value* addr,
-    const PointerStatuses& statuses,
+    const PointerStatus status,
     IRBuilder<>& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
-    PointerStatus status = statuses.getStatus(addr);
     switch (status.kind) {
       case PointerKind::CLEAN:
         // no check required
@@ -1726,12 +1724,12 @@ private:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        return sw_bounds_check(addr, binfo, Builder, statuses, new_blocks);
+        return sw_bounds_check(addr, binfo, Builder, new_blocks);
       }
       case PointerKind::UNKNOWN: {
         dbgs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        return sw_bounds_check(addr, binfo, Builder, statuses, new_blocks);
+        return sw_bounds_check(addr, binfo, Builder, new_blocks);
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
@@ -1745,7 +1743,7 @@ private:
             );
             BasicBlock* failbb = boundsCheckFailBB();
             new_blocks.push_back(failbb);
-            insertCondJumpTo(needs_check, failbb, Builder, statuses, new_blocks);
+            insertCondJumpTo(needs_check, failbb, Builder, new_blocks);
             return true;
           } else {
             // do nothing: static bounds check passes, so we don't need to
@@ -1759,11 +1757,11 @@ private:
             Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
             Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
           );
-          BasicBlock* cont = insertCondJumpTo(needs_check, boundscheck, Builder, statuses, new_blocks);
+          BasicBlock* cont = insertCondJumpTo(needs_check, boundscheck, Builder, new_blocks);
           IRBuilder<> BoundsCheckBuilder(boundscheck, boundscheck->getFirstInsertionPt());
           Instruction* br = BoundsCheckBuilder.CreateBr(cont);
           BoundsCheckBuilder.SetInsertPoint(br);
-          sw_bounds_check(addr, binfo, BoundsCheckBuilder, statuses, new_blocks);
+          sw_bounds_check(addr, binfo, BoundsCheckBuilder, new_blocks);
           assert(wellFormed(*boundscheck));
           return true;
         }
@@ -1782,9 +1780,6 @@ private:
   /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
   /// that is necessary.
   ///
-  /// `statuses`: the `PointerStatuses` at the Builder's current insertion
-  /// point
-  ///
   /// If we create/insert any new blocks, they will be added to `new_blocks`.
   ///
   /// Returns `true` if the current basic block was split and thus is done being
@@ -1793,7 +1788,6 @@ private:
     Value* ptr,
     const BoundsInfo& binfo,
     IRBuilder<>& Builder,
-    const PointerStatuses& statuses,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     switch (binfo.get_kind()) {
@@ -1810,7 +1804,7 @@ private:
         return false;
       case BoundsInfo::DYNAMIC:
       case BoundsInfo::DYNAMIC_MERGED:
-        sw_bounds_check(ptr, *binfo.dynamic_info(), Builder, statuses, new_blocks);
+        sw_bounds_check(ptr, *binfo.dynamic_info(), Builder, new_blocks);
         return true;
       default:
         llvm_unreachable("Missing BoundsInfo.kind case");
@@ -1841,15 +1835,11 @@ private:
   /// that is necessary. To be safe, you should assume `Builder` is invalidated
   /// when this function returns.
   ///
-  /// `statuses`: the `PointerStatuses` at the Builder's current insertion
-  /// point
-  ///
   /// If we create/insert any new blocks, they will be added to `new_blocks`.
   void sw_bounds_check(
     Value* ptr,
     const BoundsInfo::DynamicBoundsInfo& binfo,
     IRBuilder<>& Builder,
-    const PointerStatuses& statuses,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     ptr = castToCharStar(ptr, Builder, bounds_insts);
@@ -1859,7 +1849,7 @@ private:
     );
     BasicBlock* failbb = boundsCheckFailBB();
     new_blocks.push_back(failbb);
-    insertCondJumpTo(Fail, failbb, Builder, statuses, new_blocks);
+    insertCondJumpTo(Fail, failbb, Builder, new_blocks);
   }
 
   /// Insert dynamic instructions indicating a bounds-check failure, at the
@@ -1893,11 +1883,6 @@ private:
   /// If `cond` is true, execution jumps to `true_bb`; else, it continues
   /// in B.
   ///
-  /// `statuses`: the `PointerStatuses` at the Builder's current insertion
-  /// point. This function will update the PerBlockState for B and `true_bb`
-  /// accordingly. It assumes that `true_bb` has been newly created and thus
-  /// doesn't have any (other) predecessors.
-  ///
   /// Since block B is created/inserted, this function also adds it to
   /// `new_blocks`.
   ///
@@ -1909,7 +1894,6 @@ private:
     Value* cond,
     BasicBlock* true_bb,
     IRBuilder<>& Builder,
-    const PointerStatuses& statuses,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     BasicBlock* A = Builder.GetInsertBlock();
@@ -1927,9 +1911,6 @@ private:
 
     assert(wellFormed(*A));
     assert(wellFormed(*B));
-
-    block_states.lookup(B).ptrs_beg = PointerStatuses(statuses);
-    block_states.lookup(true_bb).ptrs_beg = PointerStatuses(statuses);
 
     return B;
   }
