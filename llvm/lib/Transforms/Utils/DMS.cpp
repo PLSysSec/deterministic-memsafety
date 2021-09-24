@@ -768,8 +768,6 @@ private:
   /// block).
   PointerStatuses computeTopOfBlockPointerStatuses(BasicBlock &block) {
     assert(block.hasNPredecessorsOrMore(1));
-    // if any variable is clean at the end of all of this block's predecessors,
-    // then it is also clean at the beginning of this block
     auto preds = pred_begin(&block);
     const BasicBlock* firstPred = *preds;
     const PerBlockState& firstPred_pbs = block_states.lookup(firstPred);
