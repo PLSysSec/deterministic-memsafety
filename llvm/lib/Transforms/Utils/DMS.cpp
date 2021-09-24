@@ -334,14 +334,10 @@ public:
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())),
       blocks_in_function(F.getBasicBlockList().size()),
       do_pointer_encoding(do_pointer_encoding),
-      pointer_encoding_is_complete(false), fixpoint_reached(false) {
-    initialize_block_states();
-  }
-  ~DMSAnalysis() {
-    // clean up the `PerBlockState`s which were created with `new`
-    for (auto& pair : block_states) {
-      delete pair.getSecond();
-    }
+      pointer_encoding_is_complete(false), fixpoint_reached(false),
+      block_states(BlockStates(F, DL, trustLLVMStructTypes))
+  {
+    initialize_bounds_info();
   }
 
   struct StaticCounts {
@@ -586,7 +582,8 @@ private:
   /// True if the analysis has reached a fixpoint, ie pointer statuses are stable.
   bool fixpoint_reached;
 
-  /// This holds the per-block state for the analysis
+  /// This holds the per-block state for the analysis. One instance of this
+  /// class is kept per block in the function.
   class PerBlockState final {
   public:
     PerBlockState(const DataLayout &DL, const bool trustLLVMStructTypes)
@@ -602,42 +599,57 @@ private:
     DMSAnalysis::StaticResults static_results;
   };
 
-  DenseMap<const BasicBlock*, PerBlockState*> block_states;
+  /// This holds the per-block states for all blocks
+  class BlockStates final {
+  public:
+    explicit BlockStates(const Function& F, const DataLayout &DL, const bool trustLLVMStructTypes)
+      : DL(DL), trustLLVMStructTypes(trustLLVMStructTypes)
+    {
+      // For now, if any function parameters are pointers,
+      // mark them UNKNOWN in the function's entry block
+      PerBlockState& entry_block_pbs = lookup(&F.getEntryBlock());
+      for (const Argument& arg : F.args()) {
+        if (arg.getType()->isPointerTy()) {
+          entry_block_pbs.ptrs_beg.mark_unknown(&arg);
+        }
+      }
 
-  void initialize_block_states() {
-    for (const BasicBlock &block : F) {
-      block_states[&block] = new PerBlockState(DL, trustLLVMStructTypes);
-    }
-
-    // For now, if any function parameters are pointers,
-    // mark them UNKNOWN in the function's entry block
-    PerBlockState* entry_block_pbs = block_states[&F.getEntryBlock()];
-    for (const Argument& arg : F.args()) {
-      if (arg.getType()->isPointerTy()) {
-        entry_block_pbs->ptrs_beg.mark_unknown(&arg);
-        bounds_info[&arg] = BoundsInfo::unknown();
+      // Mark pointers to global variables (and other global values, e.g.,
+      // functions and IFuncs) as CLEAN in the function's entry block.
+      // (If the global variable itself is a pointer, it's still implicitly
+      // NOTDEFINEDYET.)
+      for (const GlobalValue& gv : F.getParent()->global_values()) {
+        assert(gv.getType()->isPointerTy());
+        entry_block_pbs.ptrs_beg.mark_clean(&gv);
       }
     }
 
-    // Mark pointers to global variables (and other global values, e.g.,
-    // functions and IFuncs) as CLEAN in the function's entry block.
-    // (If the global variable itself is a pointer, it's still implicitly
-    // NOTDEFINEDYET.)
-    for (const GlobalValue& gv : F.getParent()->global_values()) {
-      assert(gv.getType()->isPointerTy());
-      entry_block_pbs->ptrs_beg.mark_clean(&gv);
-      // we know the bounds of the global allocation statically
-      Type* globalType = gv.getValueType();
-      if (globalType->isSized()) {
-        auto allocationSize = DL.getTypeStoreSize(globalType).getFixedSize();
-        bounds_info[&gv] = BoundsInfo::static_bounds(
-          zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-        );
+    /// Get the PerBlockState for the given block, constructing a blank
+    /// PerBlockState if needed.
+    PerBlockState& lookup(const BasicBlock* block) {
+      if (block_states.count(block) > 0) {
+        return *block_states[block];
       } else {
-        bounds_info[&gv] = BoundsInfo::unknown();
+        PerBlockState* pbs = new PerBlockState(DL, trustLLVMStructTypes);
+        block_states[block] = pbs;
+        return *pbs;
       }
     }
-  }
+
+    ~BlockStates() {
+      // clean up the `PerBlockState`s which were created with `new`
+      for (auto& pair : block_states) {
+        delete pair.getSecond();
+      }
+    }
+
+  private:
+    DenseMap<const BasicBlock*, PerBlockState*> block_states;
+    const DataLayout& DL;
+    const bool trustLLVMStructTypes;
+  };
+
+  BlockStates block_states;
 
   /// If the `DMSAnalysis` has `do_pointer_encoding`, this maps loaded value
   /// (type `LoadInst`) to its `PointerStatus` at the program point right after
@@ -678,6 +690,31 @@ private:
   /// bounds.
   DenseMap<const Value*, BoundsInfo> bounds_info;
 
+  void initialize_bounds_info() {
+    // For now, if any function parameters are pointers, mark their bounds info
+    // as UNKNOWN
+    for (const Argument& arg : F.args()) {
+      if (arg.getType()->isPointerTy()) {
+        bounds_info[&arg] = BoundsInfo::unknown();
+      }
+    }
+
+    // Mark appropriate bounds info for global variables. We know this bounds
+    // information statically
+    for (const GlobalValue& gv : F.getParent()->global_values()) {
+      assert(gv.getType()->isPointerTy());
+      Type* globalType = gv.getValueType();
+      if (globalType->isSized()) {
+        auto allocationSize = DL.getTypeStoreSize(globalType).getFixedSize();
+        bounds_info[&gv] = BoundsInfo::static_bounds(
+          zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
+        );
+      } else {
+        bounds_info[&gv] = BoundsInfo::unknown();
+      }
+    }
+  }
+
   /// Return value for `doIteration`.
   struct IterationResult {
     /// This indicates if any change was made to the pointer statuses in _any_
@@ -711,14 +748,6 @@ private:
       RPOT = ReversePostOrderTraversal<BasicBlock*>(&F.getEntryBlock());
     }
 
-    // If any block doesn't have a PerBlockState (for instance, because it was
-    // just created in the previous iteration), initialize its PerBlockState
-    for (const BasicBlock* block : RPOT) {
-      if (block_states.count(block) == 0) {
-        block_states[block] = new PerBlockState(DL, trustLLVMStructTypes);
-      }
-    }
-
     // now the main analysis
     for (BasicBlock* block : RPOT) {
       AnalyzeBlockResult res = analyze_block(*block, dynamic_results, add_spatial_sw_checks);
@@ -742,26 +771,16 @@ private:
     // then it is also clean at the beginning of this block
     auto preds = pred_begin(&block);
     const BasicBlock* firstPred = *preds;
-    // If firstPred doesn't have a PerBlockState (for instance, because we
-    // recently inserted it), initialize its PerBlockState
-    if (block_states.count(firstPred) == 0) {
-      block_states[firstPred] = new PerBlockState(DL, trustLLVMStructTypes);
-    }
-    const PerBlockState* firstPred_pbs = block_states[firstPred];
+    const PerBlockState& firstPred_pbs = block_states.lookup(firstPred);
     // we start with all of the ptr_statuses at the end of our first predecessor,
     // then merge with the ptr_statuses at the end of our other predecessors
-    PointerStatuses ptr_statuses(firstPred_pbs->ptrs_end);
+    PointerStatuses ptr_statuses(firstPred_pbs.ptrs_end);
     DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   first predecessor has " << ptr_statuses.describe() << " at end\n");
     for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
       const BasicBlock* otherPred = *it;
-      // If otherPred doesn't have a PerBlockState (for instance, because we
-      // recently inserted it), initialize its PerBlockState
-      if (block_states.count(otherPred) == 0) {
-        block_states[otherPred] = new PerBlockState(DL, trustLLVMStructTypes);
-      }
-      const PerBlockState* otherPred_pbs = block_states[otherPred];
-      DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   next predecessor has " << otherPred_pbs->ptrs_end.describe() << " at end\n");
-      ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs->ptrs_end, &block.front());
+      const PerBlockState& otherPred_pbs = block_states.lookup(otherPred);
+      DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   next predecessor has " << otherPred_pbs.ptrs_end.describe() << " at end\n");
+      ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs.ptrs_end, &block.front());
     }
     return ptr_statuses;
   }
@@ -792,13 +811,7 @@ private:
     DynamicResults* dynamic_results,
     const bool add_spatial_sw_checks
   ) {
-    // If the block doesn't have a PerBlockState (for instance, because we
-    // recently inserted it), initialize its PerBlockState
-    if (block_states.count(&block) == 0) {
-      block_states[&block] = new PerBlockState(DL, trustLLVMStructTypes);
-    }
-
-    PerBlockState* pbs = block_states[&block];
+    PerBlockState& pbs = block_states.lookup(&block);
 
     LLVM_DEBUG(
       StringRef blockname;
@@ -809,16 +822,16 @@ private:
       }
       dbgs() << "DMS: analyzing block " << blockname << "\n";
     );
-    DEBUG_WITH_TYPE("DMS-block-previous-state", dbgs() << "DMS:   this block previously had " << pbs->ptrs_beg.describe() << " at beginning and " << pbs->ptrs_end.describe() << " at end\n");
+    DEBUG_WITH_TYPE("DMS-block-previous-state", dbgs() << "DMS:   this block previously had " << pbs.ptrs_beg.describe() << " at beginning and " << pbs.ptrs_end.describe() << " at end\n");
 
     bool isEntryBlock = block.hasNPredecessors(0);  // technically a dead block could also have 0 predecessors, but we don't care what this analysis does with dead blocks. (If you run this pass after optimizations there shouldn't be dead blocks anyway.)
 
     // The current pointer statuses. As we go through the block, this gets
-    // updated; its state at the end of the block will become `pbs->ptrs_end`.
+    // updated; its state at the end of the block will become `pbs.ptrs_end`.
     PointerStatuses ptr_statuses = isEntryBlock ?
       // for the entry block, we already correctly initialized the top-of-block
       // pointer statuses, so just retrieve those and return them
-      pbs->ptrs_beg :
+      pbs.ptrs_beg :
       // for all other blocks, compute the top-of-block pointer statuses based
       // on the block's predecessors
       computeTopOfBlockPointerStatuses(block);
@@ -826,12 +839,12 @@ private:
 
     if (!isEntryBlock) {
       // Let's check if that's any different from what we had last time
-      if (ptr_statuses.isEqualTo(pbs->ptrs_beg)) {
+      if (ptr_statuses.isEqualTo(pbs.ptrs_beg)) {
         // no change. Unless we're adding dynamic instrumentation, there's no
         // need to actually analyze this block. Just return the `StaticResults`
         // we got last time.
         LLVM_DEBUG(dbgs() << "DMS:   top-of-block statuses haven't changed\n");
-        if (!dynamic_results && !add_spatial_sw_checks) return AnalyzeBlockResult { false, pbs->static_results };
+        if (!dynamic_results && !add_spatial_sw_checks) return AnalyzeBlockResult { false, pbs.static_results };
         // (you could be concerned that this check could pass on the first
         // iteration if the top-of-block statuses happen to be equal to the
         // initial state of a `PointerStatuses`; and then we wouldn't ever
@@ -842,7 +855,7 @@ private:
       } else {
         // save the top-of-block ptr_statuses so we can do the above check on
         // the next iteration
-        pbs->ptrs_beg = ptr_statuses;
+        pbs.ptrs_beg = ptr_statuses;
       }
     }
 
@@ -1229,7 +1242,7 @@ private:
             SmallVector<std::pair<BoundsInfo*, BasicBlock*>, 4> incoming_binfos;
             for (const Use& use : phi.incoming_values()) {
               BasicBlock* bb = phi.getIncomingBlock(use);
-              auto& ptr_statuses_end_of_bb = block_states[bb]->ptrs_end;
+              auto& ptr_statuses_end_of_bb = block_states.lookup(bb).ptrs_end;
               const Value* value = use.get();
               incoming_statuses.push_back(std::make_pair(
                 ptr_statuses_end_of_bb.getStatus(value),
@@ -1654,12 +1667,12 @@ private:
     // Now that we've processed all the instructions, we have the final
     // statuses of pointers as of the end of the block
     DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-    const bool changed = !ptr_statuses.isEqualTo(pbs->ptrs_end);
+    const bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end);
     if (changed) {
       DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   this was a change\n");
     }
-    pbs->ptrs_end = std::move(ptr_statuses);
-    pbs->static_results = static_results;
+    pbs.ptrs_end = std::move(ptr_statuses);
+    pbs.static_results = static_results;
     return AnalyzeBlockResult { changed, static_results };
   }
 
