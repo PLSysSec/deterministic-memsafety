@@ -1716,22 +1716,12 @@ private:
           if (binfo.static_info()->fails()) {
             // we check the dynamic kind, if it is DYN_CLEAN or
             // DYN_BLEMISHED16 then we do nothing, else we SW-fail
-            auto pair = splitBlock(Builder, statuses);
-            BasicBlock* A = pair.first;
-            BasicBlock* B = pair.second;
-            BasicBlock* boundsfail = boundsCheckFailBB();
-            // replace A's terminator with a condbr jumping to either
-            // `boundsfail` or B as appropriate
-            BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
-            IRBuilder<> Builder(A, A_end);
-            Value* doesnt_need_check = Builder.CreateLogicalOr(
-              Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
-              Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
+            Value* needs_check = Builder.CreateLogicalAnd(
+              Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
+              Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
             );
-            Builder.CreateCondBr(doesnt_need_check, B, boundsfail);
-            assert(wellFormed(*A));
-            assert(wellFormed(*B));
-            assert(wellFormed(*boundsfail));
+            BasicBlock* boundsfail = boundsCheckFailBB();
+            insertCondJumpTo(needs_check, boundsfail, Builder, statuses);
             return true;
           } else {
             // do nothing: static bounds check passes, so we don't need to
@@ -1739,25 +1729,16 @@ private:
             return false;
           }
         } else {
-          auto pair = splitBlock(Builder, statuses);
-          BasicBlock* A = pair.first;
-          BasicBlock* B = pair.second;
           BasicBlock* boundscheck = BasicBlock::Create(F.getContext(), "", &F);
+          Value* needs_check = Builder.CreateLogicalAnd(
+            Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
+            Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
+          );
+          BasicBlock* cont = insertCondJumpTo(needs_check, boundscheck, Builder, statuses);
           IRBuilder<> BoundsCheckBuilder(boundscheck, boundscheck->getFirstInsertionPt());
-          Instruction* br = BoundsCheckBuilder.CreateBr(B);
+          Instruction* br = BoundsCheckBuilder.CreateBr(cont);
           BoundsCheckBuilder.SetInsertPoint(br);
           sw_bounds_check(addr, binfo, BoundsCheckBuilder, statuses);
-          // replace A's terminator with a condbr jumping to either
-          // `boundscheck` or B as appropriate
-          BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
-          IRBuilder<> Builder(A, A_end);
-          Value* doesnt_need_check = Builder.CreateLogicalOr(
-            Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
-            Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
-          );
-          Builder.CreateCondBr(doesnt_need_check, B, boundscheck);
-          assert(wellFormed(*A));
-          assert(wellFormed(*B));
           assert(wellFormed(*boundscheck));
           return true;
         }
@@ -1846,16 +1827,7 @@ private:
     Value* HighFail = Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_insts));
     bounds_insts.insert(cast<Instruction>(HighFail));
     Value* Fail = Builder.CreateLogicalOr(LowFail, HighFail);
-    auto pair = splitBlock(Builder, statuses);
-    BasicBlock* A = pair.first;
-    BasicBlock* B = pair.second;
-    BasicBlock* boundsfail = boundsCheckFailBB();
-    BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
-    IRBuilder<> NewBuilder(A, A_end);
-    NewBuilder.CreateCondBr(Fail, boundsfail, B);
-    assert(wellFormed(*A));
-    assert(wellFormed(*B));
-    assert(wellFormed(*boundsfail));
+    insertCondJumpTo(Fail, boundsCheckFailBB(), Builder, statuses);
   }
 
   /// Insert dynamic instructions indicating a bounds-check failure, at the
@@ -1881,23 +1853,26 @@ private:
     return boundsfail;
   }
 
-  /// Split the basic block at the Builder's current insertion point.
+  /// Let the Builder's current block be A.
+  /// Split A at the Builder's current insertion point. Everything before
+  /// the Builder's insertion point stays in A, while everything after it
+  /// is moved to a new block B.
+  /// At the end of A, insert a conditional jump based on `cond`.
+  /// If `cond` is true, execution jumps to `true_bb`; else, it continues
+  /// in B.
   ///
   /// `statuses`: the `PointerStatuses` at the Builder's current insertion
-  /// point. This function will update the PerBlockState for the split block
-  /// accordingly.
+  /// point. This function will update the PerBlockState for B and `true_bb`
+  /// accordingly. It assumes that `true_bb` has been newly created and thus
+  /// doesn't have any (other) predecessors.
   ///
-  /// Returns a pair A,B where:
-  ///   - A holds everything before the Builder's insertion point, and
-  ///     an unconditional-br terminator to B
-  ///   - B holds everything after the Builder's insertion point, including
-  ///     the old terminator
   /// To be safe, assume that `Builder` is invalidated by this function.
   ///
-  /// If it matters, B is the new block; we remove instructions from the
-  /// existing block A and give them to B. I.e., A will be pointer-equal
-  /// to the old pre-split block.
-  std::pair<BasicBlock*, BasicBlock*> splitBlock(
+  /// Returns the new block B, where execution continues if it doesn't branch
+  /// to `true_bb`.
+  BasicBlock* insertCondJumpTo(
+    Value* cond,
+    BasicBlock* true_bb,
     IRBuilder<>& Builder,
     const PointerStatuses& statuses
   ) {
@@ -1906,9 +1881,20 @@ private:
     BasicBlock* B = A->splitBasicBlock(I);
     // To be safe, assume that `Builder` is invalidated by the above operation
     // (docs say that the iterator `I` is invalidated).
-    PerBlockState& B_pbs = block_states.lookup(B);
-    B_pbs.ptrs_beg = PointerStatuses(statuses);
-    return std::pair<BasicBlock*, BasicBlock*>(A, B);
+
+    // replace A's terminator with a condbr jumping to either
+    // `true_bb` or B as appropriate
+    BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
+    IRBuilder<> NewBuilder(A, A_end);
+    NewBuilder.CreateCondBr(cond, true_bb, B);
+
+    assert(wellFormed(*A));
+    assert(wellFormed(*B));
+
+    block_states.lookup(B).ptrs_beg = PointerStatuses(statuses);
+    block_states.lookup(true_bb).ptrs_beg = PointerStatuses(statuses);
+
+    return B;
   }
 
   DynamicResults initializeDynamicResults() {
