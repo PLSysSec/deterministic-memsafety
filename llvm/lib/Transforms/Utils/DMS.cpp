@@ -1242,16 +1242,17 @@ private:
           IRBuilder<> Builder(&inst);
           if (phi.getType()->isPointerTy()) {
             SmallVector<std::pair<PointerStatus, BasicBlock*>, 4> incoming_statuses;
-            SmallVector<std::pair<BoundsInfo*, BasicBlock*>, 4> incoming_binfos;
+            SmallVector<std::tuple<Value*, BoundsInfo*, BasicBlock*>, 4> incoming_binfos;
             for (const Use& use : phi.incoming_values()) {
               BasicBlock* bb = phi.getIncomingBlock(use);
               auto& ptr_statuses_end_of_bb = block_states.lookup(bb).ptrs_end;
-              const Value* value = use.get();
+              Value* value = use.get();
               incoming_statuses.push_back(std::make_pair(
                 ptr_statuses_end_of_bb.getStatus(value),
                 bb
               ));
-              incoming_binfos.push_back(std::make_pair(
+              incoming_binfos.push_back(std::make_tuple(
+                value,
                 new BoundsInfo(bounds_info.lookup(value)),
                 bb
               ));
@@ -1354,8 +1355,8 @@ private:
             bool any_incoming_bounds_are_dynamic = false;
             bool any_incoming_bounds_are_unknown = false;
             bool any_incoming_bounds_are_notdefinedyet = false;
-            for (auto& pair : incoming_binfos) {
-              const BoundsInfo* incoming_binfo = pair.first;
+            for (auto& tuple : incoming_binfos) {
+              const BoundsInfo* incoming_binfo = std::get<1>(tuple);
               if (incoming_binfo->is_dynamic()) {
                 any_incoming_bounds_are_dynamic = true;
               }
@@ -1386,9 +1387,9 @@ private:
                   if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->base.ptr))) {
                     assert(prev_iteration_dyninfo->base.offset == 0);
                     assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
-                    for (auto& pair : incoming_binfos) {
-                      const BoundsInfo* incoming_binfo = pair.first;
-                      BasicBlock* incoming_bb = pair.second;
+                    for (auto& tuple : incoming_binfos) {
+                      const BoundsInfo* incoming_binfo = std::get<1>(tuple);
+                      BasicBlock* incoming_bb = std::get<2>(tuple);
                       const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
                       switch (incoming_binfo->get_kind()) {
                         case BoundsInfo::NOTDEFINEDYET:
@@ -1428,9 +1429,9 @@ private:
                   if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->max.ptr))) {
                     assert(prev_iteration_dyninfo->max.offset == 0);
                     assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
-                    for (auto& pair : incoming_binfos) {
-                      const BoundsInfo* incoming_binfo = pair.first;
-                      BasicBlock* incoming_bb = pair.second;
+                    for (auto& tuple : incoming_binfos) {
+                      const BoundsInfo* incoming_binfo = std::get<1>(tuple);
+                      BasicBlock* incoming_bb = std::get<2>(tuple);
                       const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
                       switch (incoming_binfo->get_kind()) {
                         case BoundsInfo::NOTDEFINEDYET:
@@ -1474,14 +1475,15 @@ private:
                 if (!base_phi) {
                   base_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
                   bounds_insts.insert(base_phi);
-                  for (auto& pair : incoming_binfos) {
-                    const BoundsInfo* incoming_binfo = pair.first;
-                    BasicBlock* incoming_bb = pair.second;
+                  for (auto& tuple : incoming_binfos) {
+                    Value* incoming_ptr = std::get<0>(tuple);
+                    const BoundsInfo* incoming_binfo = std::get<1>(tuple);
+                    BasicBlock* incoming_bb = std::get<2>(tuple);
                     // if dynamic instructions are necessary to compute phi
                     // incoming value, insert them at the end of the
                     // corresponding block, not here
                     IRBuilder<> IncomingBlockBuilder(incoming_bb->getTerminator());
-                    Value* base = incoming_binfo->base_as_llvm_value(&phi, IncomingBlockBuilder, bounds_insts);
+                    Value* base = incoming_binfo->base_as_llvm_value(incoming_ptr, IncomingBlockBuilder, bounds_insts);
                     assert(base);
                     base_phi->addIncoming(base, incoming_bb);
                   }
@@ -1490,14 +1492,15 @@ private:
                 if (!max_phi) {
                   max_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
                   bounds_insts.insert(max_phi);
-                  for (auto& pair : incoming_binfos) {
-                    const BoundsInfo* incoming_binfo = pair.first;
-                    BasicBlock* incoming_bb = pair.second;
+                  for (auto& tuple : incoming_binfos) {
+                    Value* incoming_ptr = std::get<0>(tuple);
+                    const BoundsInfo* incoming_binfo = std::get<1>(tuple);
+                    BasicBlock* incoming_bb = std::get<2>(tuple);
                     // if dynamic instructions are necessary to compute phi
                     // incoming value, insert them at the end of the
                     // corresponding block, not here
                     IRBuilder<> IncomingBlockBuilder(incoming_bb->getTerminator());
-                    Value* max = incoming_binfo->max_as_llvm_value(&phi, IncomingBlockBuilder, bounds_insts);
+                    Value* max = incoming_binfo->max_as_llvm_value(incoming_ptr, IncomingBlockBuilder, bounds_insts);
                     assert(max);
                     max_phi->addIncoming(max, incoming_bb);
                   }
@@ -1514,7 +1517,7 @@ private:
                 any_merge_inputs_changed = true;
               if (!any_merge_inputs_changed) {
                 for (unsigned i = 0; i < incoming_binfos.size(); i++) {
-                  if (*prev_iteration_binfo.merge_inputs[i] != *incoming_binfos[i].first) {
+                  if (*prev_iteration_binfo.merge_inputs[i] != *std::get<1>(incoming_binfos[i])) {
                     any_merge_inputs_changed = true;
                     break;
                   }
@@ -1524,15 +1527,15 @@ private:
                 // have to update the boundsinfo
                 BoundsInfo merged_binfo = BoundsInfo::infinite(); // just the initial value we start the merge with
                 assert(phi.getNumIncomingValues() >= 1);
-                for (auto& pair : incoming_binfos) {
-                  const BoundsInfo* binfo = pair.first;
+                for (auto& tuple : incoming_binfos) {
+                  const BoundsInfo* binfo = std::get<1>(tuple);
                   merged_binfo = BoundsInfo::merge(merged_binfo, *binfo, &phi, Builder, bounds_insts);
                 }
                 bounds_info[&phi] = merged_binfo;
               }
             }
-            for (auto& pair : incoming_binfos) {
-              const BoundsInfo* binfo = pair.first;
+            for (auto& tuple : incoming_binfos) {
+              const BoundsInfo* binfo = std::get<1>(tuple);
               delete binfo;
             }
           }
