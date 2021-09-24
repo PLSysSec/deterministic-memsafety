@@ -1822,11 +1822,10 @@ private:
     const PointerStatuses& statuses
   ) {
     ptr = castToCharStar(ptr, Builder, bounds_insts);
-    Value* LowFail = Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder, bounds_insts));
-    bounds_insts.insert(cast<Instruction>(LowFail));
-    Value* HighFail = Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_insts));
-    bounds_insts.insert(cast<Instruction>(HighFail));
-    Value* Fail = Builder.CreateLogicalOr(LowFail, HighFail);
+    Value* Fail = Builder.CreateLogicalOr(
+      Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder, bounds_insts)),
+      Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_insts))
+    );
     insertCondJumpTo(Fail, boundsCheckFailBB(), Builder, statuses);
   }
 
