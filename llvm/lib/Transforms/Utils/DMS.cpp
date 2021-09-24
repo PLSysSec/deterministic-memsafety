@@ -1019,7 +1019,7 @@ private:
           // insert a bounds check before the store, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&store)) {
             IRBuilder<> BeforeStore(&store);
-            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore);
+            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses, BeforeStore);
             checked_insts.insert(&store);
           }
           // now, the pointer used as an address becomes clean
@@ -1034,7 +1034,7 @@ private:
           // insert a bounds check before the load, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&load)) {
             IRBuilder<> BeforeLoad(&load);
-            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), BeforeLoad);
+            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses, BeforeLoad);
             checked_insts.insert(&load);
           }
           // now, the pointer becomes clean
@@ -1678,15 +1678,19 @@ private:
   }
 
   /// If necessary, add a dynamic spatial safety check for the dereference of
-  /// `addr`, assuming `addr` has status `status`.
+  /// `addr`.
   /// If dynamic instructions need to be inserted, use `Builder`.
+  ///
+  /// `statuses` should have the up-to-date status for `addr` and all other
+  /// pointers at the `Builder`'s current insertion point.
   ///
   /// Currently this assumes that dereferencing BLEMISHED16 pointers does not
   /// need a SW check, but all other BLEMISHED pointers need checks.
   ///
   /// Returns `true` if the current basic block was split and thus is done being
   /// processed. (Note this is _not_ the same as, if a SW check was inserted.)
-  bool maybeAddSpatialSWCheck(Value* addr, PointerStatus status, IRBuilder<>& Builder) {
+  bool maybeAddSpatialSWCheck(Value* addr, const PointerStatuses& statuses, IRBuilder<>& Builder) {
+    PointerStatus status = statuses.getStatus(addr);
     switch (status.kind) {
       case PointerKind::CLEAN:
         // no check required
@@ -1699,12 +1703,12 @@ private:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        return sw_bounds_check(addr, binfo, Builder);
+        return sw_bounds_check(addr, binfo, Builder, statuses);
       }
       case PointerKind::UNKNOWN: {
         dbgs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        return sw_bounds_check(addr, binfo, Builder);
+        return sw_bounds_check(addr, binfo, Builder, statuses);
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
@@ -1712,28 +1716,21 @@ private:
           if (binfo.static_info()->fails()) {
             // we check the dynamic kind, if it is DYN_CLEAN or
             // DYN_BLEMISHED16 then we do nothing, else we SW-fail
-            BasicBlock* bb = Builder.GetInsertBlock();
-            BasicBlock::iterator I = Builder.GetInsertPoint();
-            BasicBlock* new_bb = bb->splitBasicBlock(I);
-            // at this point, `bb` holds everything before the pointer
-            // dereference, and an unconditional-br terminator to `new_bb`.
-            // `new_bb` holds the dereference and everything following,
-            // including the old terminator.
-            // To be safe, we assume that `Builder` is invalidated by the
-            // above operation (docs say that the iterator `I` is
-            // invalidated).
+            auto pair = splitBlock(Builder, statuses);
+            BasicBlock* A = pair.first;
+            BasicBlock* B = pair.second;
             BasicBlock* boundsfail = boundsCheckFailBB();
-            // replace `bb`'s terminator with a condbr jumping to either
-            // `boundsfail` or `new_bb` as appropriate
-            BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
-            IRBuilder<> Builder(bb, bbend);
+            // replace A's terminator with a condbr jumping to either
+            // `boundsfail` or B as appropriate
+            BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
+            IRBuilder<> Builder(A, A_end);
             Value* doesnt_need_check = Builder.CreateLogicalOr(
               Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
               Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
             );
-            Builder.CreateCondBr(doesnt_need_check, new_bb, boundsfail);
-            assert(wellFormed(*bb));
-            assert(wellFormed(*new_bb));
+            Builder.CreateCondBr(doesnt_need_check, B, boundsfail);
+            assert(wellFormed(*A));
+            assert(wellFormed(*B));
             assert(wellFormed(*boundsfail));
             return true;
           } else {
@@ -1742,32 +1739,25 @@ private:
             return false;
           }
         } else {
-          BasicBlock* bb = Builder.GetInsertBlock();
-          BasicBlock::iterator I = Builder.GetInsertPoint();
-          BasicBlock* new_bb = bb->splitBasicBlock(I);
-          // at this point, `bb` holds everything before the pointer
-          // dereference, and an unconditional-br terminator to `new_bb`.
-          // `new_bb` holds the dereference and everything following,
-          // including the old terminator.
-          // To be safe, we assume that `Builder` is invalidated by the
-          // above operation (docs say that the iterator `I` is
-          // invalidated).
+          auto pair = splitBlock(Builder, statuses);
+          BasicBlock* A = pair.first;
+          BasicBlock* B = pair.second;
           BasicBlock* boundscheck = BasicBlock::Create(F.getContext(), "", &F);
           IRBuilder<> BoundsCheckBuilder(boundscheck, boundscheck->getFirstInsertionPt());
-          Instruction* br = BoundsCheckBuilder.CreateBr(new_bb);
+          Instruction* br = BoundsCheckBuilder.CreateBr(B);
           BoundsCheckBuilder.SetInsertPoint(br);
-          sw_bounds_check(addr, binfo, BoundsCheckBuilder);
-          // replace `bb`'s terminator with a condbr jumping to either
-          // `boundscheck` or `new_bb` as appropriate
-          BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
-          IRBuilder<> Builder(bb, bbend);
+          sw_bounds_check(addr, binfo, BoundsCheckBuilder, statuses);
+          // replace A's terminator with a condbr jumping to either
+          // `boundscheck` or B as appropriate
+          BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
+          IRBuilder<> Builder(A, A_end);
           Value* doesnt_need_check = Builder.CreateLogicalOr(
             Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
             Builder.CreateICmpEQ(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
           );
-          Builder.CreateCondBr(doesnt_need_check, new_bb, boundscheck);
-          assert(wellFormed(*bb));
-          assert(wellFormed(*new_bb));
+          Builder.CreateCondBr(doesnt_need_check, B, boundscheck);
+          assert(wellFormed(*A));
+          assert(wellFormed(*B));
           assert(wellFormed(*boundscheck));
           return true;
         }
@@ -1786,12 +1776,16 @@ private:
   /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
   /// that is necessary.
   ///
+  /// `statuses`: the `PointerStatuses` at the Builder's current insertion
+  /// point
+  ///
   /// Returns `true` if the current basic block was split and thus is done being
   /// processed.
   bool sw_bounds_check(
     Value* ptr,
     const BoundsInfo& binfo,
-    IRBuilder<>& Builder
+    IRBuilder<>& Builder,
+    const PointerStatuses& statuses
   ) {
     switch (binfo.get_kind()) {
       case BoundsInfo::NOTDEFINEDYET:
@@ -1807,7 +1801,7 @@ private:
         return false;
       case BoundsInfo::DYNAMIC:
       case BoundsInfo::DYNAMIC_MERGED:
-        sw_bounds_check(ptr, *binfo.dynamic_info(), Builder);
+        sw_bounds_check(ptr, *binfo.dynamic_info(), Builder, statuses);
         return true;
       default:
         llvm_unreachable("Missing BoundsInfo.kind case");
@@ -1837,10 +1831,14 @@ private:
   /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
   /// that is necessary. To be safe, you should assume `Builder` is invalidated
   /// when this function returns.
+  ///
+  /// `statuses`: the `PointerStatuses` at the Builder's current insertion
+  /// point
   void sw_bounds_check(
     Value* ptr,
     const BoundsInfo::DynamicBoundsInfo& binfo,
-    IRBuilder<>& Builder
+    IRBuilder<>& Builder,
+    const PointerStatuses& statuses
   ) {
     ptr = castToCharStar(ptr, Builder, bounds_insts);
     Value* LowFail = Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder, bounds_insts));
@@ -1848,21 +1846,15 @@ private:
     Value* HighFail = Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_insts));
     bounds_insts.insert(cast<Instruction>(HighFail));
     Value* Fail = Builder.CreateLogicalOr(LowFail, HighFail);
-    BasicBlock* bb = Builder.GetInsertBlock();
-    BasicBlock::iterator I = Builder.GetInsertPoint();
-    BasicBlock* new_bb = bb->splitBasicBlock(I);
-    // at this point, `bb` holds everything before the pointer
-    // dereference, and an unconditional-br terminator to `new_bb`.
-    // `new_bb` holds the dereference and everything following,
-    // including the old terminator.
-    // To be safe, we assume that `Builder` is invalidated by the above
-    // operation (docs say that the iterator `I` is invalidated).
+    auto pair = splitBlock(Builder, statuses);
+    BasicBlock* A = pair.first;
+    BasicBlock* B = pair.second;
     BasicBlock* boundsfail = boundsCheckFailBB();
-    BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
-    IRBuilder<> NewBuilder(bb, bbend);
-    NewBuilder.CreateCondBr(Fail, boundsfail, new_bb);
-    assert(wellFormed(*bb));
-    assert(wellFormed(*new_bb));
+    BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
+    IRBuilder<> NewBuilder(A, A_end);
+    NewBuilder.CreateCondBr(Fail, boundsfail, B);
+    assert(wellFormed(*A));
+    assert(wellFormed(*B));
     assert(wellFormed(*boundsfail));
   }
 
@@ -1887,6 +1879,36 @@ private:
     BoundsFailBuilder.CreateUnreachable();
     assert(wellFormed(*boundsfail));
     return boundsfail;
+  }
+
+  /// Split the basic block at the Builder's current insertion point.
+  ///
+  /// `statuses`: the `PointerStatuses` at the Builder's current insertion
+  /// point. This function will update the PerBlockState for the split block
+  /// accordingly.
+  ///
+  /// Returns a pair A,B where:
+  ///   - A holds everything before the Builder's insertion point, and
+  ///     an unconditional-br terminator to B
+  ///   - B holds everything after the Builder's insertion point, including
+  ///     the old terminator
+  /// To be safe, assume that `Builder` is invalidated by this function.
+  ///
+  /// If it matters, B is the new block; we remove instructions from the
+  /// existing block A and give them to B. I.e., A will be pointer-equal
+  /// to the old pre-split block.
+  std::pair<BasicBlock*, BasicBlock*> splitBlock(
+    IRBuilder<>& Builder,
+    const PointerStatuses& statuses
+  ) {
+    BasicBlock* A = Builder.GetInsertBlock();
+    BasicBlock::iterator I = Builder.GetInsertPoint();
+    BasicBlock* B = A->splitBasicBlock(I);
+    // To be safe, assume that `Builder` is invalidated by the above operation
+    // (docs say that the iterator `I` is invalidated).
+    PerBlockState& B_pbs = block_states.lookup(B);
+    B_pbs.ptrs_beg = PointerStatuses(statuses);
+    return std::pair<BasicBlock*, BasicBlock*>(A, B);
   }
 
   DynamicResults initializeDynamicResults() {
