@@ -122,20 +122,6 @@ public:
         return false;
       }
     }
-
-    /// Insert a SW bounds check of `ptr` against the bounds information in this
-    /// `StaticBoundsInfo`.
-    ///
-    /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
-    /// that is necessary.
-    ///
-    /// `bounds_insts`: If we insert any instructions into the program, we'll
-    /// also add them to `bounds_insts`, see notes there
-    void sw_bounds_check(
-      Value* ptr,
-      IRBuilder<>& Builder,
-      DenseSet<const Instruction*>& bounds_insts
-    ) const;
   };
 
   /// Represents a pointer value as an LLVM pointer, with an optional
@@ -194,20 +180,6 @@ public:
     bool operator!=(const DynamicBoundsInfo& other) const {
       return !(*this == other);
     }
-
-    /// Insert a SW bounds check of `ptr` against the bounds information in this
-    /// `DynamicBoundsInfo`.
-    ///
-    /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
-    /// that is necessary.
-    ///
-    /// `bounds_insts`: If we insert any instructions into the program, we'll
-    /// also add them to `bounds_insts`, see notes there
-    void sw_bounds_check(
-      Value* ptr,
-      IRBuilder<>& Builder,
-      DenseSet<const Instruction*>& bounds_insts
-    ) const;
   };
 
   /// Get the StaticBoundsInfo, or NULL if not `is_static()`
@@ -389,23 +361,6 @@ public:
     DenseSet<const Instruction*>& bounds_insts
   );
 
-  /// Insert a SW bounds check of `ptr` against the bounds information in this
-  /// `BoundsInfo`.
-  ///
-  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
-  /// that is necessary.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
-  ///
-  /// Returns `true` if the current basic block was split and thus is done being
-  /// processed.
-  bool sw_bounds_check(
-    Value* ptr,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
-  ) const;
-
 private:
   /// This should really be a union.  But C++ complains hard about implicitly
   /// deleted copy constructors, implicitly deleted assignment operators, etc
@@ -463,18 +418,6 @@ private:
   );
 };
 
-/// Create a new BasicBlock containing code indicating a bounds-check failure.
-/// The BasicBlock will be inserted in the given `Function`.
-/// We can dynamically jump to this block to report a bounds-check failure.
-/// Returns the BasicBlock.
-///
-/// `bounds_insts`: As we insert instructions into the program, we'll also add
-/// them to `bounds_insts`, see notes there
-BasicBlock* boundsCheckFailBB(
-	Function* F,
-	DenseSet<const Instruction*>& bounds_insts
-);
-
 /// Insert dynamic instructions to store bounds info for the given `ptr`.
 ///
 /// Insert dynamic instructions using the given `IRBuilder`.
@@ -502,9 +445,18 @@ BoundsInfo::DynamicBoundsInfo load_dynamic_boundsinfo(
   DenseSet<const Instruction*>& bounds_insts
 );
 
-/// Returns `true` if the block is well-formed. For this function's purposes,
-/// "well-formed" means it has exactly one terminator instruction and that
-/// instruction is at the end.
-bool wellFormed(const BasicBlock& bb);
+/// Casts the given input pointer `ptr` to the LLVM type `i8*`.
+/// The input pointer can be any pointer type, including `i8*` (in which case
+/// this will return the pointer unchanged).
+///
+/// `Builder`: the IRBuilder to use to insert dynamic instructions.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+Value* castToCharStar(
+	Value* ptr,
+	IRBuilder<>& Builder,
+	DenseSet<const Instruction*>& bounds_insts
+);
 
 } // end namespace

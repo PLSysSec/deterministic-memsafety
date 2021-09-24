@@ -31,6 +31,7 @@ const APInt minusone = APInt(/* bits = */ 64, /* val = */ -1);
 template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 static void setInsertPointToAfterInst(IRBuilder<>& Builder, Instruction* inst);
+static bool wellFormed(const BasicBlock& bb);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool isAllocatingCall(const CallBase &call);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
@@ -1698,12 +1699,12 @@ private:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        return binfo.sw_bounds_check(addr, Builder, bounds_insts);
+        return sw_bounds_check(addr, binfo, Builder);
       }
       case PointerKind::UNKNOWN: {
         dbgs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        return binfo.sw_bounds_check(addr, Builder, bounds_insts);
+        return sw_bounds_check(addr, binfo, Builder);
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
@@ -1721,7 +1722,7 @@ private:
             // To be safe, we assume that `Builder` is invalidated by the
             // above operation (docs say that the iterator `I` is
             // invalidated).
-            BasicBlock* boundsfail = boundsCheckFailBB(&F, bounds_insts);
+            BasicBlock* boundsfail = boundsCheckFailBB();
             // replace `bb`'s terminator with a condbr jumping to either
             // `boundsfail` or `new_bb` as appropriate
             BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
@@ -1755,7 +1756,7 @@ private:
           IRBuilder<> BoundsCheckBuilder(boundscheck, boundscheck->getFirstInsertionPt());
           Instruction* br = BoundsCheckBuilder.CreateBr(new_bb);
           BoundsCheckBuilder.SetInsertPoint(br);
-          binfo.sw_bounds_check(addr, BoundsCheckBuilder, bounds_insts);
+          sw_bounds_check(addr, binfo, BoundsCheckBuilder);
           // replace `bb`'s terminator with a condbr jumping to either
           // `boundscheck` or `new_bb` as appropriate
           BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
@@ -1777,6 +1778,115 @@ private:
         llvm_unreachable("Missing PointerKind case");
     }
     llvm_unreachable("Should return before we get here");
+  }
+
+  /// Insert a SW bounds check of `ptr` against the bounds information in the
+  /// given `BoundsInfo`.
+  ///
+  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+  /// that is necessary.
+  ///
+  /// Returns `true` if the current basic block was split and thus is done being
+  /// processed.
+  bool sw_bounds_check(
+    Value* ptr,
+    const BoundsInfo& binfo,
+    IRBuilder<>& Builder
+  ) {
+    switch (binfo.get_kind()) {
+      case BoundsInfo::NOTDEFINEDYET:
+        llvm_unreachable("Can't sw_bounds_check with NOTDEFINEDYET bounds");
+      case BoundsInfo::UNKNOWN:
+        dbgs() << "warning: bounds info unknown for " << ptr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
+        return false;
+      case BoundsInfo::INFINITE:
+        // bounds check passes by default
+        return false;
+      case BoundsInfo::STATIC:
+        sw_bounds_check(ptr, *binfo.static_info(), Builder);
+        return false;
+      case BoundsInfo::DYNAMIC:
+      case BoundsInfo::DYNAMIC_MERGED:
+        sw_bounds_check(ptr, *binfo.dynamic_info(), Builder);
+        return true;
+      default:
+        llvm_unreachable("Missing BoundsInfo.kind case");
+    }
+  }
+
+  /// Insert a SW bounds check of `ptr` against the bounds information in the
+  /// given `StaticBoundsInfo`.
+  ///
+  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+  /// that is necessary.
+  void sw_bounds_check(
+    Value* ptr,
+    const BoundsInfo::StaticBoundsInfo& binfo,
+    IRBuilder<>& Builder
+  ) {
+    // implementation doesn't actually need `ptr`
+    if (binfo.fails()) {
+      insertBoundsCheckFail(Builder);
+    }
+    assert(wellFormed(*Builder.GetInsertBlock()));
+  }
+
+  /// Insert a SW bounds check of `ptr` against the bounds information in the
+  /// given `DynamicBoundsInfo`.
+  ///
+  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+  /// that is necessary. To be safe, you should assume `Builder` is invalidated
+  /// when this function returns.
+  void sw_bounds_check(
+    Value* ptr,
+    const BoundsInfo::DynamicBoundsInfo& binfo,
+    IRBuilder<>& Builder
+  ) {
+    ptr = castToCharStar(ptr, Builder, bounds_insts);
+    Value* LowFail = Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder, bounds_insts));
+    bounds_insts.insert(cast<Instruction>(LowFail));
+    Value* HighFail = Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_insts));
+    bounds_insts.insert(cast<Instruction>(HighFail));
+    Value* Fail = Builder.CreateLogicalOr(LowFail, HighFail);
+    BasicBlock* bb = Builder.GetInsertBlock();
+    BasicBlock::iterator I = Builder.GetInsertPoint();
+    BasicBlock* new_bb = bb->splitBasicBlock(I);
+    // at this point, `bb` holds everything before the pointer
+    // dereference, and an unconditional-br terminator to `new_bb`.
+    // `new_bb` holds the dereference and everything following,
+    // including the old terminator.
+    // To be safe, we assume that `Builder` is invalidated by the above
+    // operation (docs say that the iterator `I` is invalidated).
+    BasicBlock* boundsfail = boundsCheckFailBB();
+    BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
+    IRBuilder<> NewBuilder(bb, bbend);
+    NewBuilder.CreateCondBr(Fail, boundsfail, new_bb);
+    assert(wellFormed(*bb));
+    assert(wellFormed(*new_bb));
+    assert(wellFormed(*boundsfail));
+  }
+
+  /// Insert dynamic instructions indicating a bounds-check failure, at the
+  /// program point indicated by the given `Builder`
+  void insertBoundsCheckFail(IRBuilder<>& Builder) {
+    Module* mod = F.getParent();
+    FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
+    FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
+    Value* call = Builder.CreateCall(Abort);
+    bounds_insts.insert(cast<Instruction>(call));
+  }
+
+  /// Create a new BasicBlock containing code indicating a bounds-check failure.
+  /// The BasicBlock will be inserted in the `Function` we're currently analyzing.
+  /// We can dynamically jump to this block to report a bounds-check failure.
+  /// Returns the BasicBlock.
+  BasicBlock* boundsCheckFailBB() {
+    BasicBlock* boundsfail = BasicBlock::Create(F.getContext(), "", &F);
+    IRBuilder<> BoundsFailBuilder(boundsfail, boundsfail->getFirstInsertionPt());
+    insertBoundsCheckFail(BoundsFailBuilder);
+    BoundsFailBuilder.CreateUnreachable();
+    assert(wellFormed(*boundsfail));
+    return boundsfail;
   }
 
   DynamicResults initializeDynamicResults() {
@@ -2441,6 +2551,18 @@ static void setInsertPointToAfterInst(IRBuilder<>& Builder, Instruction* inst) {
   auto ip = Builder.GetInsertPoint();
   ip++;
   Builder.SetInsertPoint(bb, ip);
+}
+
+/// Returns `true` if the block is well-formed. For this function's purposes,
+/// "well-formed" means it has exactly one terminator instruction and that
+/// instruction is at the end.
+static bool wellFormed(const BasicBlock& bb) {
+  const Instruction* terminator = bb.getTerminator();
+  if (!terminator) return false;
+  for (const Instruction& I : bb) {
+    if (I.isTerminator() && &I != terminator) return false;
+  }
+  return true;
 }
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {

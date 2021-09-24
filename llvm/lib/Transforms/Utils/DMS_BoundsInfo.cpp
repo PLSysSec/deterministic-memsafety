@@ -134,7 +134,7 @@ BoundsInfo BoundsInfo::merge(
 ///
 /// `bounds_insts`: If we insert any instructions into the program, we'll
 /// also add them to `bounds_insts`, see notes there
-static Value* castToCharStar(
+Value* llvm::castToCharStar(
 	Value* ptr,
 	IRBuilder<>& Builder,
 	DenseSet<const Instruction*>& bounds_insts
@@ -258,138 +258,6 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 	return merged;
 }
 
-
-/// Insert dynamic instructions indicating a bounds-check failure, at the
-/// program point indicated by the given `Builder`
-///
-/// `bounds_insts`: As we insert instructions into the program, we'll also add
-/// them to `bounds_insts`, see notes there
-static void insertBoundsCheckFail(
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
-) {
-	Module* mod = Builder.GetInsertBlock()->getModule();
-	FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
-	FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
-	Value* call = Builder.CreateCall(Abort);
-	bounds_insts.insert(cast<Instruction>(call));
-}
-
-/// Create a new BasicBlock containing code indicating a bounds-check failure.
-/// The BasicBlock will be inserted in the given `Function`.
-/// We can dynamically jump to this block to report a bounds-check failure.
-/// Returns the BasicBlock.
-///
-/// `bounds_insts`: As we insert instructions into the program, we'll also add
-/// them to `bounds_insts`, see notes there
-BasicBlock* llvm::boundsCheckFailBB(
-	Function* F,
-	DenseSet<const Instruction*>& bounds_insts
-) {
-	BasicBlock* boundsfail = BasicBlock::Create(F->getContext(), "", F);
-	IRBuilder<> BoundsFailBuilder(boundsfail, boundsfail->getFirstInsertionPt());
-	insertBoundsCheckFail(BoundsFailBuilder, bounds_insts);
-	BoundsFailBuilder.CreateUnreachable();
-	assert(wellFormed(*boundsfail));
-	return boundsfail;
-}
-
-/// Insert a SW bounds check of `ptr` against the bounds information in this
-/// `BoundsInfo`.
-///
-/// `Builder` is the IRBuilder to use to insert dynamic instructions, if
-/// that is necessary. To be safe, you should assume `Builder` is invalidated
-/// when this function returns.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
-///
-/// Returns `true` if the current basic block was split and thus is done being
-/// processed.
-bool BoundsInfo::sw_bounds_check(
-	Value* ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
-) const {
-	switch (kind) {
-		case NOTDEFINEDYET:
-			llvm_unreachable("Can't sw_bounds_check with NOTDEFINEDYET bounds");
-		case UNKNOWN:
-			dbgs() << "warning: bounds info unknown for " << ptr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
-			return false;
-		case INFINITE:
-			// bounds check passes by default
-			return false;
-		case STATIC:
-			static_info()->sw_bounds_check(ptr, Builder, bounds_insts);
-			return false;
-		case DYNAMIC:
-		case DYNAMIC_MERGED:
-			dynamic_info()->sw_bounds_check(ptr, Builder, bounds_insts);
-			return true;
-		default:
-			llvm_unreachable("Missing BoundsInfo.kind case");
-	}
-}
-
-/// Insert a SW bounds check of `ptr` against the bounds information in this
-/// `StaticBoundsInfo`.
-///
-/// `Builder` is the IRBuilder to use to insert dynamic instructions, if
-/// that is necessary.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
-void BoundsInfo::StaticBoundsInfo::sw_bounds_check(
-	Value* ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
-) const {
-	// implementation doesn't actually need `ptr`
-	if (fails()) {
-		insertBoundsCheckFail(Builder, bounds_insts);
-	}
-	assert(wellFormed(*Builder.GetInsertBlock()));
-}
-
-/// Insert a SW bounds check of `ptr` against the bounds information in this
-/// `DynamicBoundsInfo`.
-///
-/// `Builder` is the IRBuilder to use to insert dynamic instructions, if
-/// that is necessary. To be safe, you should assume `Builder` is invalidated
-/// when this function returns.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
-void BoundsInfo::DynamicBoundsInfo::sw_bounds_check(
-	Value* ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
-) const {
-	ptr = castToCharStar(ptr, Builder, bounds_insts);
-	Value* LowFail = Builder.CreateICmpULT(ptr, base.as_llvm_value(Builder, bounds_insts));
-	bounds_insts.insert(cast<Instruction>(LowFail));
-	Value* HighFail = Builder.CreateICmpUGT(ptr, max.as_llvm_value(Builder, bounds_insts));
-	bounds_insts.insert(cast<Instruction>(HighFail));
-	Value* Fail = Builder.CreateLogicalOr(LowFail, HighFail);
-	BasicBlock* bb = Builder.GetInsertBlock();
-	BasicBlock::iterator I = Builder.GetInsertPoint();
-	BasicBlock* new_bb = bb->splitBasicBlock(I);
-	// at this point, `bb` holds everything before the pointer
-	// dereference, and an unconditional-br terminator to `new_bb`.
-	// `new_bb` holds the dereference and everything following,
-	// including the old terminator.
-	// To be safe, we assume that `Builder` is invalidated by the above
-	// operation (docs say that the iterator `I` is invalidated).
-	BasicBlock* boundsfail = boundsCheckFailBB(bb->getParent(), bounds_insts);
-	BasicBlock::iterator bbend = bb->getTerminator()->eraseFromParent();
-	IRBuilder<> NewBuilder(bb, bbend);
-	NewBuilder.CreateCondBr(Fail, boundsfail, new_bb);
-	assert(wellFormed(*bb));
-	assert(wellFormed(*new_bb));
-	assert(wellFormed(*boundsfail));
-}
-
 /// Insert dynamic instructions to store bounds info for the given `ptr`.
 /// `ptr` can be of any pointer type.
 ///
@@ -445,16 +313,4 @@ BoundsInfo::DynamicBoundsInfo llvm::load_dynamic_boundsinfo(
 	Value* max = Builder.CreateExtractValue(dynbounds, 1);
 	bounds_insts.insert(cast<Instruction>(max));
 	return BoundsInfo::DynamicBoundsInfo(base, max);
-}
-
-/// Returns `true` if the block is well-formed. For this function's purposes,
-/// "well-formed" means it has exactly one terminator instruction and that
-/// instruction is at the end.
-bool llvm::wellFormed(const BasicBlock& bb) {
-  const Instruction* terminator = bb.getTerminator();
-  if (!terminator) return false;
-  for (const Instruction& I : bb) {
-    if (I.isTerminator() && &I != terminator) return false;
-  }
-  return true;
 }
