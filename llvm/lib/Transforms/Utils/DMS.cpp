@@ -862,6 +862,10 @@ private:
 
     StaticResults static_results = { 0 };
 
+    // Blocks which have been created/inserted during this call to
+    // `analyze_block`
+    SmallVector<BasicBlock*, 4> new_blocks;
+
     // Count an operation occurring in the given `category` with the given `kind`.
     // `ip` is the insert point: if dynamic instructions must be inserted (to do
     // dynamic counting), they will be inserted before the Instruction `ip`
@@ -1019,7 +1023,7 @@ private:
           // insert a bounds check before the store, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&store)) {
             IRBuilder<> BeforeStore(&store);
-            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses, BeforeStore);
+            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses, BeforeStore, new_blocks);
             checked_insts.insert(&store);
           }
           // now, the pointer used as an address becomes clean
@@ -1034,7 +1038,7 @@ private:
           // insert a bounds check before the load, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&load)) {
             IRBuilder<> BeforeLoad(&load);
-            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses, BeforeLoad);
+            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses, BeforeLoad, new_blocks);
             checked_insts.insert(&load);
           }
           // now, the pointer becomes clean
@@ -1668,12 +1672,24 @@ private:
     // Now that we've processed all the instructions, we have the final
     // statuses of pointers as of the end of the block
     DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-    const bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end);
+    bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end);
     if (changed) {
       DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   this was a change\n");
     }
     pbs.ptrs_end = std::move(ptr_statuses);
     pbs.static_results = static_results;
+
+    // If any new blocks were created/inserted during this call to
+    // `analyze_block`, let's also analyze the new blocks before returning.
+    // This ensures that invariants are maintained, in the sense that other
+    // blocks may expect that analysis has been completed for all their
+    // predecessors before they are analyzed themselves.
+    for (BasicBlock* new_block : new_blocks) {
+      AnalyzeBlockResult res = analyze_block(*new_block, dynamic_results, add_spatial_sw_checks);
+      changed |= res.end_of_block_statuses_changed;
+      static_results += res.static_results;
+    }
+
     return AnalyzeBlockResult { changed, static_results };
   }
 
@@ -1684,12 +1700,19 @@ private:
   /// `statuses` should have the up-to-date status for `addr` and all other
   /// pointers at the `Builder`'s current insertion point.
   ///
+  /// If we create/insert any new blocks, they will be added to `new_blocks`.
+  ///
   /// Currently this assumes that dereferencing BLEMISHED16 pointers does not
   /// need a SW check, but all other BLEMISHED pointers need checks.
   ///
   /// Returns `true` if the current basic block was split and thus is done being
   /// processed. (Note this is _not_ the same as, if a SW check was inserted.)
-  bool maybeAddSpatialSWCheck(Value* addr, const PointerStatuses& statuses, IRBuilder<>& Builder) {
+  bool maybeAddSpatialSWCheck(
+    Value* addr,
+    const PointerStatuses& statuses,
+    IRBuilder<>& Builder,
+    SmallVector<BasicBlock*, 4>& new_blocks
+  ) {
     PointerStatus status = statuses.getStatus(addr);
     switch (status.kind) {
       case PointerKind::CLEAN:
@@ -1703,12 +1726,12 @@ private:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        return sw_bounds_check(addr, binfo, Builder, statuses);
+        return sw_bounds_check(addr, binfo, Builder, statuses, new_blocks);
       }
       case PointerKind::UNKNOWN: {
         dbgs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
         const BoundsInfo& binfo = bounds_info.lookup(addr);
-        return sw_bounds_check(addr, binfo, Builder, statuses);
+        return sw_bounds_check(addr, binfo, Builder, statuses, new_blocks);
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_info.lookup(addr);
@@ -1720,8 +1743,9 @@ private:
               Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
               Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
             );
-            BasicBlock* boundsfail = boundsCheckFailBB();
-            insertCondJumpTo(needs_check, boundsfail, Builder, statuses);
+            BasicBlock* failbb = boundsCheckFailBB();
+            new_blocks.push_back(failbb);
+            insertCondJumpTo(needs_check, failbb, Builder, statuses, new_blocks);
             return true;
           } else {
             // do nothing: static bounds check passes, so we don't need to
@@ -1730,15 +1754,16 @@ private:
           }
         } else {
           BasicBlock* boundscheck = BasicBlock::Create(F.getContext(), "", &F);
+          new_blocks.push_back(boundscheck);
           Value* needs_check = Builder.CreateLogicalAnd(
             Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
             Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
           );
-          BasicBlock* cont = insertCondJumpTo(needs_check, boundscheck, Builder, statuses);
+          BasicBlock* cont = insertCondJumpTo(needs_check, boundscheck, Builder, statuses, new_blocks);
           IRBuilder<> BoundsCheckBuilder(boundscheck, boundscheck->getFirstInsertionPt());
           Instruction* br = BoundsCheckBuilder.CreateBr(cont);
           BoundsCheckBuilder.SetInsertPoint(br);
-          sw_bounds_check(addr, binfo, BoundsCheckBuilder, statuses);
+          sw_bounds_check(addr, binfo, BoundsCheckBuilder, statuses, new_blocks);
           assert(wellFormed(*boundscheck));
           return true;
         }
@@ -1760,13 +1785,16 @@ private:
   /// `statuses`: the `PointerStatuses` at the Builder's current insertion
   /// point
   ///
+  /// If we create/insert any new blocks, they will be added to `new_blocks`.
+  ///
   /// Returns `true` if the current basic block was split and thus is done being
   /// processed.
   bool sw_bounds_check(
     Value* ptr,
     const BoundsInfo& binfo,
     IRBuilder<>& Builder,
-    const PointerStatuses& statuses
+    const PointerStatuses& statuses,
+    SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     switch (binfo.get_kind()) {
       case BoundsInfo::NOTDEFINEDYET:
@@ -1782,7 +1810,7 @@ private:
         return false;
       case BoundsInfo::DYNAMIC:
       case BoundsInfo::DYNAMIC_MERGED:
-        sw_bounds_check(ptr, *binfo.dynamic_info(), Builder, statuses);
+        sw_bounds_check(ptr, *binfo.dynamic_info(), Builder, statuses, new_blocks);
         return true;
       default:
         llvm_unreachable("Missing BoundsInfo.kind case");
@@ -1815,18 +1843,23 @@ private:
   ///
   /// `statuses`: the `PointerStatuses` at the Builder's current insertion
   /// point
+  ///
+  /// If we create/insert any new blocks, they will be added to `new_blocks`.
   void sw_bounds_check(
     Value* ptr,
     const BoundsInfo::DynamicBoundsInfo& binfo,
     IRBuilder<>& Builder,
-    const PointerStatuses& statuses
+    const PointerStatuses& statuses,
+    SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     ptr = castToCharStar(ptr, Builder, bounds_insts);
     Value* Fail = Builder.CreateLogicalOr(
       Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder, bounds_insts)),
       Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_insts))
     );
-    insertCondJumpTo(Fail, boundsCheckFailBB(), Builder, statuses);
+    BasicBlock* failbb = boundsCheckFailBB();
+    new_blocks.push_back(failbb);
+    insertCondJumpTo(Fail, failbb, Builder, statuses, new_blocks);
   }
 
   /// Insert dynamic instructions indicating a bounds-check failure, at the
@@ -1865,6 +1898,9 @@ private:
   /// accordingly. It assumes that `true_bb` has been newly created and thus
   /// doesn't have any (other) predecessors.
   ///
+  /// Since block B is created/inserted, this function also adds it to
+  /// `new_blocks`.
+  ///
   /// To be safe, assume that `Builder` is invalidated by this function.
   ///
   /// Returns the new block B, where execution continues if it doesn't branch
@@ -1873,11 +1909,13 @@ private:
     Value* cond,
     BasicBlock* true_bb,
     IRBuilder<>& Builder,
-    const PointerStatuses& statuses
+    const PointerStatuses& statuses,
+    SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     BasicBlock* A = Builder.GetInsertBlock();
     BasicBlock::iterator I = Builder.GetInsertPoint();
     BasicBlock* B = A->splitBasicBlock(I);
+    new_blocks.push_back(B);
     // To be safe, assume that `Builder` is invalidated by the above operation
     // (docs say that the iterator `I` is invalidated).
 
