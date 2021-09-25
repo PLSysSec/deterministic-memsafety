@@ -20,6 +20,7 @@ add_llvm_component_library(LLVMTransformUtils
   DemoteRegToStack.cpp
   DMS.cpp
   DMS_BoundsInfo.cpp
+  DMS_DynamicResults.cpp
   DMS_Induction.cpp
   DMS_PointerStatus.cpp
   EntryExitInstrumenter.cpp
