@@ -1591,14 +1591,8 @@ private:
                 if (bounds_info.count(&call) == 0) {
                   IRBuilder<> AfterCall(&block);
                   setInsertPointToAfterInst(AfterCall, &call);
-                  Value* callPlusBytes = AfterCall.CreateAdd(&call, allocationBytes);
-                  if (callPlusBytes != &call) {
-                    bounds_insts.insert(cast<Instruction>(callPlusBytes));
-                  }
-                  Value* max = AfterCall.CreateSub(callPlusBytes, AfterCall.getInt64(1));
-                  if (max != callPlusBytes) {
-                    bounds_insts.insert(cast<Instruction>(max));
-                  }
+                  Value* callPlusBytes = add_offset_to_ptr(&call, allocationBytes, AfterCall, bounds_insts);
+                  Value* max = add_offset_to_ptr(callPlusBytes, minusone, AfterCall, bounds_insts);
                   bounds_info[&call] = BoundsInfo::dynamic_bounds(&call, max);
                 }
               }

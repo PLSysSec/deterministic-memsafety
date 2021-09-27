@@ -155,12 +155,12 @@ Value* llvm::castToCharStar(
 ///
 /// `bounds_insts`: If we insert any instructions into the program, we'll
 /// also add them to `bounds_insts`, see notes there
-Value* BoundsInfo::add_offset_to_ptr(
+Value* llvm::add_offset_to_ptr(
 	Value* ptr,
-	APInt offset,
+	const APInt offset,
 	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts)
-{
+	DenseSet<const Instruction*>& bounds_insts
+) {
 	Value* casted = castToCharStar(ptr, Builder, bounds_insts);
 	if (offset == 0) {
 		return casted;
@@ -171,6 +171,30 @@ Value* BoundsInfo::add_offset_to_ptr(
 		}
 		return GEP;
 	}
+}
+
+/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
+/// the resulting pointer.
+/// The input pointer can be any pointer type, the output pointer will
+/// have type `i8*`.
+/// `offset` should be a non-pointer value -- ie, the number of bytes.
+///
+/// `Builder`: the IRBuilder to use to insert dynamic instructions.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+Value* llvm::add_offset_to_ptr(
+  Value* ptr,
+  Value* offset,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+) {
+	Value* casted = castToCharStar(ptr, Builder, bounds_insts);
+	Value* GEP = Builder.CreateGEP(Builder.getInt8Ty(), casted, offset);
+	if (GEP != casted) {
+		bounds_insts.insert(cast<Instruction>(GEP));
+	}
+	return GEP;
 }
 
 /// `cur_ptr` is the pointer which these bounds are for.

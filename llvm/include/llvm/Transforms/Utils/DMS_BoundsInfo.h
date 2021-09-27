@@ -7,6 +7,53 @@ extern const llvm::APInt minusone;
 
 namespace llvm {
 
+/// Casts the given input pointer `ptr` to the LLVM type `i8*`.
+/// The input pointer can be any pointer type, including `i8*` (in which case
+/// this will return the pointer unchanged).
+///
+/// `Builder`: the IRBuilder to use to insert dynamic instructions.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+Value* castToCharStar(
+	Value* ptr,
+	IRBuilder<>& Builder,
+	DenseSet<const Instruction*>& bounds_insts
+);
+
+/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
+/// the resulting pointer.
+/// The input pointer can be any pointer type, the output pointer will
+/// have type `i8*`.
+///
+/// `Builder`: the IRBuilder to use to insert dynamic instructions.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+Value* add_offset_to_ptr(
+  Value* ptr,
+  const APInt offset,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+);
+
+/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
+/// the resulting pointer.
+/// The input pointer can be any pointer type, the output pointer will
+/// have type `i8*`.
+/// `offset` should be a non-pointer value -- ie, the number of bytes.
+///
+/// `Builder`: the IRBuilder to use to insert dynamic instructions.
+///
+/// `bounds_insts`: If we insert any instructions into the program, we'll
+/// also add them to `bounds_insts`, see notes there
+Value* add_offset_to_ptr(
+  Value* ptr,
+  Value* offset,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+);
+
 /// Holds the bounds information for a single pointer, if it is known.
 /// Unlike the PointerStatus, which can be different at different program
 /// points for the same pointer, the BoundsInfo is the same at all program
@@ -376,22 +423,6 @@ private:
   Kind kind;
   StaticOrDynamic info;
 
-  /// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
-  /// the resulting pointer.
-  /// The input pointer can be any pointer type, the output pointer will
-  /// have type `i8*`.
-  ///
-  /// `Builder`: the IRBuilder to use to insert dynamic instructions.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
-  static Value* add_offset_to_ptr(
-    Value* ptr,
-    APInt offset,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
-  );
-
   /// `cur_ptr` is the pointer which these bounds are for.
   ///
   /// `Builder` is the IRBuilder to use to insert dynamic instructions.
@@ -443,20 +474,6 @@ BoundsInfo::DynamicBoundsInfo load_dynamic_boundsinfo(
   Value* ptr,
   IRBuilder<>& Builder,
   DenseSet<const Instruction*>& bounds_insts
-);
-
-/// Casts the given input pointer `ptr` to the LLVM type `i8*`.
-/// The input pointer can be any pointer type, including `i8*` (in which case
-/// this will return the pointer unchanged).
-///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
-Value* castToCharStar(
-	Value* ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
 );
 
 } // end namespace
