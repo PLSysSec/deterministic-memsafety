@@ -46,6 +46,8 @@ command, where `<option>` is one of:
   etc, and print those counts when the program finishes.
 * `dynamic-stdout`: same as `dynamic`, but prints dynamic statistics to stdout
   instead of to a file in `./dms_dynamic_counts/`.
+* `bounds`: modifies the code to actually insert SW bounds checks on every
+  pointer dereference, except for CLEAN or BLEMISHED16 pointers.
 
 You can also specify more than one of these options, comma-separated: e.g.,
 `-fdms=static,dynamic`.
@@ -65,7 +67,7 @@ To get detailed debugging information, add the `-debug` flag.
 ### Dynamic DMS pass:
 
 From the `llvm` directory: `./build/bin/opt -passes=<pass> file.ll -o=file_instrumented.bc`
-where `<pass>` is either `dynamic-dms` or `dynamic-stdout-dms`.
+where `<pass>` is either `dynamic-dms`, `dynamic-stdout-dms`, or `bounds-dms`.
 (Again, you can use either a `.ll` or `.bc` file as input.)
 To get `.ll` _output_ instead of `.bc`, add the `-S` flag (and, to avoid
 confusion, change the extension of the output filename).

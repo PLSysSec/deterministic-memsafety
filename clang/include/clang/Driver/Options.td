@@ -1116,8 +1116,8 @@ def fasm : Flag<["-"], "fasm">, Group<f_Group>;
 def fdms : CommaJoined<["-"], "fdms=">, Group<f_Group>,
   Flags<[CC1Option]>, // CodeGenOpts<"DMS">,
   MetaVarName<"<option>">,
-  HelpText<"DMS analysis to use: choose from static, dynamic, dynamic-stdout, and/or paranoid-static. You may choose multiple values for <option> by separating them with commas, e.g. -fdms=static,dynamic">,
-  Values<"static,dynamic,dynamic-stdout,paranoid-static">,
+  HelpText<"DMS analysis to use: choose from static, dynamic, dynamic-stdout, bounds, and/or paranoid-static. You may choose multiple values for <option> by separating them with commas, e.g. -fdms=static,dynamic">,
+  Values<"static,dynamic,dynamic-stdout,bounds,paranoid-static">,
   MarshallingInfoStringVector<CodeGenOpts<"DMS">>;
 
 def fassume_sane_operator_new : Flag<["-"], "fassume-sane-operator-new">, Group<f_Group>;

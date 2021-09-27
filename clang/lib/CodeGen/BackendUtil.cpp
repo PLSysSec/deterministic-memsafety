@@ -1448,6 +1448,14 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
             MPM.addPass(createModuleToFunctionPassAdaptor(
               DynamicStdoutDMSPass()));
           });
+      } else if (opt == "bounds") {
+        assert(!have_dynamic && "DMS: can't specify both \"bounds\" and a dynamic option");
+        have_dynamic = true;
+        PB.registerOptimizerLastEPCallback(
+          [](ModulePassManager &MPM, OptimizationLevel Level) {
+            MPM.addPass(createModuleToFunctionPassAdaptor(
+              BoundsChecksDMSPass()));
+          });
       } else {
         assert(false && "DMS: unrecognized option");
       }
