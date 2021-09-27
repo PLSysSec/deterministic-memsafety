@@ -1591,12 +1591,12 @@ private:
           }
           // now classify the returned pointer, if the return value is a pointer
           if (call.getType()->isPointerTy()) {
-            // If this is an allocating call (eg, a call to `malloc`), then the
-            // returned pointer is CLEAN
             IRBuilder<> Builder(&block);
             setInsertPointToAfterInst(Builder, &call);
             IsAllocatingCall IAC = isAllocatingCall(call, Builder, bounds_insts);
             if (IAC.isAllocatingCall) {
+              // If this is an allocating call (eg, a call to `malloc`), then the
+              // returned pointer is CLEAN
               ptr_statuses.mark_clean(&call);
               if (ConstantInt* allocationSize = dyn_cast<ConstantInt>(IAC.allocationSize)) {
                 // allocating a constant number of bytes.
