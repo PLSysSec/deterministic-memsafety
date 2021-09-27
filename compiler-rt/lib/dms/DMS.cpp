@@ -2,11 +2,13 @@
 
 /// Interpreted as in DynamicBoundsInfo in the LLVM pass
 struct DynamicBounds {
+  bool infinite; // if `true`, then consider this to be infinite bounds; `base` and `max` may not be valid
   void* base;
   void* max;
 
-  DynamicBounds() : base(NULL), max(NULL) {}
-  DynamicBounds(void* base, void* max) : base(base), max(max) {}
+  DynamicBounds() : infinite(false), base(NULL), max(NULL) {}
+  DynamicBounds(void* base, void* max) : infinite(false), base(base), max(max) {}
+  DynamicBounds(bool infinite) : infinite(infinite), base(NULL), max(NULL) {}
 };
 
 // -- above this line, mirror all changes to dms_interface.h -- //
@@ -26,6 +28,13 @@ namespace __dms {
 void __dms_store_bounds(void* ptr, void* base, void* max) {
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
   *h = DynamicBounds(base, max);
+}
+
+/// Mark that the dynamic bounds for `ptr` should be considered infinite.
+/// `ptr` should be an UNENCODED value, ie with all upper bits clear.
+void __dms_store_infinite_bounds(void* ptr) {
+  BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
+  *h = DynamicBounds(true);
 }
 
 /// Get the (previously stored) dynamic bounds for `ptr`.

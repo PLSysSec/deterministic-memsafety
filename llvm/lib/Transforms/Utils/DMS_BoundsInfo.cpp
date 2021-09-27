@@ -10,6 +10,9 @@ using namespace llvm;
 static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
 /// Mangled name of the store_bounds function
 static const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
+/// Mangled name of the store_infinite_bounds function
+/// TODO: real mangled name
+static const char* store_bounds_inf_func = "__dms_store_infinite_bounds";
 
 /// `cur_ptr`: the pointer value for which these bounds apply.
 /// Can be any pointer type.
@@ -302,15 +305,32 @@ void llvm::store_dynamic_boundsinfo(
   IRBuilder<>& Builder,
   DenseSet<const Instruction*>& bounds_insts
 ) {
+	assert(ptr);
+	assert(ptr->getType()->isPointerTy());
 	Module* mod = Builder.GetInsertBlock()->getModule();
 	Type* CharStarTy = Builder.getInt8PtrTy();
-	FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
-	FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
 	Value* base = binfo.base_as_llvm_value(ptr, Builder, bounds_insts);
 	Value* max = binfo.max_as_llvm_value(ptr, Builder, bounds_insts);
 	Value* ptr_as_charstar = castToCharStar(ptr, Builder, bounds_insts);
-	Value* call = Builder.CreateCall(StoreBounds, {ptr_as_charstar, base, max});
-	bounds_insts.insert(cast<Instruction>(call));
+	if (base && max) {
+		FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
+		FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
+		Value* call = Builder.CreateCall(StoreBounds, {ptr_as_charstar, base, max});
+		bounds_insts.insert(cast<Instruction>(call));
+	} else if (binfo.get_kind() == BoundsInfo::INFINITE) {
+		FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
+		FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
+		Value* call = Builder.CreateCall(StoreBoundsInf, {ptr_as_charstar});
+		bounds_insts.insert(cast<Instruction>(call));
+	} else if (binfo.get_kind() == BoundsInfo::UNKNOWN) {
+		LLVM_DEBUG(dbgs() << "DMS:   warning: bounds info unknown for " << ptr->getNameOrAsOperand() << "; considering it as infinite bounds\n");
+		FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
+		FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
+		Value* call = Builder.CreateCall(StoreBoundsInf, {ptr_as_charstar});
+		bounds_insts.insert(cast<Instruction>(call));
+	} else {
+		llvm_unreachable("base and/or max are NULL, but boundsinfo is not INFINITE or UNKNOWN");
+	}
 }
 
 /// Insert dynamic instructions to load bounds info for the given `ptr`.
@@ -327,6 +347,8 @@ BoundsInfo::DynamicBoundsInfo llvm::load_dynamic_boundsinfo(
   IRBuilder<>& Builder,
   DenseSet<const Instruction*>& bounds_insts
 ) {
+	assert(ptr);
+	assert(ptr->getType()->isPointerTy());
 	Module* mod = Builder.GetInsertBlock()->getModule();
 	Type* CharStarTy = Builder.getInt8PtrTy();
 	Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
