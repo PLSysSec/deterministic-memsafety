@@ -375,7 +375,8 @@ public:
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())),
       blocks_in_function(F.getBasicBlockList().size()),
       pointer_encoding_is_complete(false),
-      block_states(BlockStates(F, DL, settings.trust_llvm_struct_types))
+      block_states(BlockStates(F, DL, settings.trust_llvm_struct_types)),
+      boundscheckfail_bb(NULL)
   {
     initialize_bounds_info();
   }
@@ -1854,17 +1855,24 @@ private:
     bounds_insts.insert(cast<Instruction>(call));
   }
 
-  /// Create a new BasicBlock containing code indicating a bounds-check failure.
-  /// The BasicBlock will be inserted in the `Function` we're currently analyzing.
-  /// We can dynamically jump to this block to report a bounds-check failure.
-  /// Returns the BasicBlock.
+  /// Private member of `DMSAnalysis` holding the BasicBlock created by
+  /// `boundsCheckFailBB()`; or NULL if it hasn't been created yet
+  BasicBlock* boundscheckfail_bb;
+
+  /// Get a BasicBlock containing code indicating a bounds-check failure.
+  /// Returns an existing BasicBlock if `boundsCheckFailBB()` was already called
+  /// for this function;
+  /// else, inserts a new BasicBlock in the `Function` we're currently analyzing.
+  /// In either case, we can dynamically jump to this block to report a
+  /// bounds-check failure.
   BasicBlock* boundsCheckFailBB() {
-    BasicBlock* boundsfail = BasicBlock::Create(F.getContext(), "", &F);
-    IRBuilder<> BoundsFailBuilder(boundsfail, boundsfail->getFirstInsertionPt());
-    insertBoundsCheckFail(BoundsFailBuilder);
-    BoundsFailBuilder.CreateUnreachable();
-    assert(wellFormed(*boundsfail));
-    return boundsfail;
+    if (boundscheckfail_bb) return boundscheckfail_bb;
+    boundscheckfail_bb = BasicBlock::Create(F.getContext(), "boundscheckfail", &F);
+    IRBuilder<> Builder(boundscheckfail_bb, boundscheckfail_bb->getFirstInsertionPt());
+    insertBoundsCheckFail(Builder);
+    Builder.CreateUnreachable();
+    assert(wellFormed(*boundscheckfail_bb));
+    return boundscheckfail_bb;
   }
 
   /// Let the Builder's current block be A.
