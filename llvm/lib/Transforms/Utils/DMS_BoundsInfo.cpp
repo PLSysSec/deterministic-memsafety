@@ -4,6 +4,8 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "DMS-bounds-info"
+
 /// Mangled name of the get_bounds function
 static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
 /// Mangled name of the store_bounds function
@@ -139,9 +141,14 @@ Value* llvm::castToCharStar(
 	IRBuilder<>& Builder,
 	DenseSet<const Instruction*>& bounds_insts
 ) {
+	assert(ptr->getType()->isPointerTy());
 	Value* casted = Builder.CreatePointerCast(ptr, Builder.getInt8PtrTy());
 	if (casted != ptr) {
-		bounds_insts.insert(cast<Instruction>(casted));
+		if (Instruction* cast_inst = dyn_cast<Instruction>(casted)) {
+			bounds_insts.insert(cast_inst);
+		} else {
+			LLVM_DEBUG(dbgs() << "DMS:   warning: expected CreatePointerCast to return either identity or a cast instruction, but it returned something else\n");
+		}
 	}
 	return casted;
 }
@@ -165,11 +172,7 @@ Value* llvm::add_offset_to_ptr(
 	if (offset == 0) {
 		return casted;
 	} else {
-		Value* GEP = Builder.CreateGEP(Builder.getInt8Ty(), casted, Builder.getInt(offset));
-		if (GEP != casted) {
-			bounds_insts.insert(cast<Instruction>(GEP));
-		}
-		return GEP;
+		return add_offset_to_ptr(casted, Builder.getInt(offset), Builder, bounds_insts);
 	}
 }
 
@@ -192,7 +195,11 @@ Value* llvm::add_offset_to_ptr(
 	Value* casted = castToCharStar(ptr, Builder, bounds_insts);
 	Value* GEP = Builder.CreateGEP(Builder.getInt8Ty(), casted, offset);
 	if (GEP != casted) {
-		bounds_insts.insert(cast<Instruction>(GEP));
+		if (Instruction* GEP_inst = dyn_cast<Instruction>(GEP)) {
+			bounds_insts.insert(GEP_inst);
+		} else {
+			LLVM_DEBUG(dbgs() << "DMS:   warning: expected CreateGEP to return either identity or a GEP instruction, but it returned something else\n");
+		}
 	}
 	return GEP;
 }

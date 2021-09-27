@@ -94,7 +94,10 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
     //     - is inside the loop
     bool success = false;
     const Loop* geploop = loopinfo.getLoopFor(gep.getParent());
-    assert(geploop && "GEP should be in a loop");
+    if (!geploop) {
+      LLVM_DEBUG(dbgs() << "DMS:     expected GEP to be in a loop, but it's not... weird\n");
+      return no_induction_pattern;
+    }
     for (const User* user : gep.users()) {
       if (isa<LoadInst>(user) || isa<StoreInst>(user)) {
         const Instruction* inst = cast<Instruction>(user);
