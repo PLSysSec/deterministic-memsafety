@@ -32,8 +32,27 @@ static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::o
 static void setInsertPointToAfterInst(IRBuilder<>& Builder, Instruction* inst);
 static bool wellFormed(const BasicBlock& bb);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
-static bool isAllocatingCall(const CallBase &call);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
+
+/// Struct exists because we can't use C++17's std::optional.
+/// Return value of `isAllocatingCall`.
+struct IsAllocatingCall {
+  /// Is it an allocating call
+  bool isAllocatingCall;
+  /// If it's an allocating call, this is the allocation size in bytes.
+  /// If it's not an allocating call, this field is invalid (and may be NULL).
+  Value* allocationSize;
+
+  static IsAllocatingCall not_allocating() { return IsAllocatingCall { false, NULL }; }
+  static IsAllocatingCall allocating(Value* size) { return IsAllocatingCall { true, size }; }
+};
+/// If computing the allocation size requires inserting dynamic instructions,
+/// use `Builder` and add those instructions to `bounds_insts` (see notes there)
+static IsAllocatingCall isAllocatingCall(
+  const CallBase &call,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+);
 
 /// Return type for `classifyGEPResult`.
 struct GEPResultClassification {
@@ -1573,15 +1592,16 @@ private:
           if (call.getType()->isPointerTy()) {
             // If this is an allocating call (eg, a call to `malloc`), then the
             // returned pointer is CLEAN
-            if (isAllocatingCall(call)) {
+            IRBuilder<> Builder(&block);
+            setInsertPointToAfterInst(Builder, &call);
+            IsAllocatingCall IAC = isAllocatingCall(call, Builder, bounds_insts);
+            if (IAC.isAllocatingCall) {
               ptr_statuses.mark_clean(&call);
-              assert(call.getNumArgOperands() == 1);
-              Value* allocationBytes = call.getArgOperand(0);
-              if (ConstantInt* allocationBytes_const = dyn_cast<ConstantInt>(allocationBytes)) {
+              if (ConstantInt* allocationSize = dyn_cast<ConstantInt>(IAC.allocationSize)) {
                 // allocating a constant number of bytes.
                 // we know the bounds of the allocation statically.
                 bounds_info[&call] = BoundsInfo::static_bounds(
-                  zero, allocationBytes_const->getValue() - 1
+                  zero, allocationSize->getValue() - 1
                 );
               } else {
                 // allocating a dynamic number of bytes.
@@ -1589,10 +1609,8 @@ private:
                 // bound. Only insert that the first time -- the bounds info
                 // here should not change from iteration to iteration
                 if (bounds_info.count(&call) == 0) {
-                  IRBuilder<> AfterCall(&block);
-                  setInsertPointToAfterInst(AfterCall, &call);
-                  Value* callPlusBytes = add_offset_to_ptr(&call, allocationBytes, AfterCall, bounds_insts);
-                  Value* max = add_offset_to_ptr(callPlusBytes, minusone, AfterCall, bounds_insts);
+                  Value* callPlusBytes = add_offset_to_ptr(&call, IAC.allocationSize, Builder, bounds_insts);
+                  Value* max = add_offset_to_ptr(callPlusBytes, minusone, Builder, bounds_insts);
                   bounds_info[&call] = BoundsInfo::dynamic_bounds(&call, max);
                 }
               }
@@ -2354,24 +2372,41 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
   return true;
 }
 
-static bool isAllocatingCall(const CallBase &call) {
+/// If computing the allocation size requires inserting dynamic instructions,
+/// use `Builder` and add those instructions to `bounds_insts` (see notes there)
+static IsAllocatingCall isAllocatingCall(
+  const CallBase &call,
+  IRBuilder<>& Builder,
+  DenseSet<const Instruction*>& bounds_insts
+) {
   Function* callee = call.getCalledFunction();
   if (!callee) {
     // we assume indirect calls aren't allocating
-    return false;
+    return IsAllocatingCall::not_allocating();
   }
   if (!callee->hasName()) {
     // we assume anonymous functions aren't allocating
-    return false;
+    return IsAllocatingCall::not_allocating();
   }
   StringRef name = callee->getName();
-  if (name == "malloc"
-    || name == "realloc"
-    || name == "calloc"
-    || name == "zalloc") {
-    return true;
+  if (name == "malloc") {
+    return IsAllocatingCall::allocating(call.getArgOperand(0));
+  } else if (name == "realloc") {
+    return IsAllocatingCall::allocating(call.getArgOperand(1));
+  } else if (name == "calloc") {
+    Value* allocationSize = Builder.CreateMul(
+      call.getArgOperand(0),
+      call.getArgOperand(1)
+    );
+    if (allocationSize != call.getArgOperand(0) && allocationSize != call.getArgOperand(1)) {
+      if (const Instruction* allocationSize_inst = dyn_cast<Instruction>(allocationSize)) {
+        bounds_insts.insert(allocationSize_inst);
+      }
+    }
+  } else if (name == "aligned_alloc") {
+    return IsAllocatingCall::allocating(call.getArgOperand(1));
   }
-  return false;
+  return IsAllocatingCall::not_allocating();
 }
 
 /// Is the given call one of the ones which we "should count" for stats
