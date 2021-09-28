@@ -642,6 +642,38 @@ private:
   /// the next iteration.
   DenseSet<const Instruction*> checked_insts;
 
+  /// Value type for the below map
+  class BoundsStoringCall final {
+  public:
+    /// Call instruction responsible for storing the bounds info
+    Instruction* call_inst;
+    /// Copy of the BoundsInfo which that Call instruction is storing
+    BoundsInfo binfo;
+
+    BoundsStoringCall() : call_inst(NULL), binfo(BoundsInfo()) {}
+    BoundsStoringCall(Instruction* call_inst, BoundsInfo binfo) : call_inst(call_inst), binfo(binfo) {}
+
+    // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
+    // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
+    friend void swap(BoundsStoringCall& A, BoundsStoringCall& B) noexcept {
+      std::swap(A.call_inst, B.call_inst);
+      BoundsInfo::swap(A.binfo, B.binfo);
+    }
+    BoundsStoringCall(BoundsStoringCall&& other) noexcept : BoundsStoringCall() {
+      swap(*this, other);
+    }
+    BoundsStoringCall& operator=(BoundsStoringCall rhs) noexcept {
+      swap(*this, rhs);
+      return *this;
+    }
+  };
+
+  /// This maps Store instructions (which store pointers) to `BoundsStoringCall`s.
+  /// The intent is that on a subsequent iteration, if the BoundsInfo for the
+  /// stored pointer has changed, we can remove the Call instruction and
+  /// generate a new one.
+  DenseMap<const StoreInst*, BoundsStoringCall> store_bounds_calls;
+
   /// For the Instructions in this set, don't count them for stats or do any
   /// other operations with them. They aren't from the original program, they
   /// were inserted by us to facilitate tracking bounds. The results of these
@@ -927,10 +959,31 @@ private:
             COUNT_OP_AS_STATUS(store_vals, storedVal_status, &inst, "Storing a pointer");
             // we store the bounds info so that when this pointer is later
             // loaded, we can get the bounds info back
-            IRBuilder<> Builder(&block);
-            setInsertPointToAfterInst(Builder, &store);
             BoundsInfo& binfo = bounds_info[storedVal];
-            store_dynamic_boundsinfo(storedVal, binfo, Builder, bounds_insts);
+            bool need_regenerate_bounds_store;
+            if (store_bounds_calls.count(&store) > 0) {
+              // there is already a Call instruction storing bounds info for
+              // this stored pointer. Make sure that the bounds info it's
+              // storing hasn't changed.
+              BoundsStoringCall& BSC = store_bounds_calls[&store];
+              if (*&binfo == BSC.binfo) {
+                // bounds info is up to date; nothing to do
+                need_regenerate_bounds_store = false;
+              } else {
+                // whoops, bounds info has changed. remove the old Call
+                // instruction storing the bounds info, and generate a new one
+                BSC.call_inst->eraseFromParent();
+                need_regenerate_bounds_store = true;
+              }
+            } else {
+              need_regenerate_bounds_store = true;
+            }
+            if (need_regenerate_bounds_store) {
+              IRBuilder<> Builder(&block);
+              setInsertPointToAfterInst(Builder, &store);
+              Instruction* new_bounds_call = store_dynamic_boundsinfo(storedVal, binfo, Builder, bounds_insts);
+              store_bounds_calls[&store] = BoundsStoringCall(new_bounds_call, BoundsInfo(binfo));
+            }
             // make sure the stored pointer is masked as necessary
             if (pointer_encoding_is_complete) {
               // update the mask if necessary, based on our knowledge of the

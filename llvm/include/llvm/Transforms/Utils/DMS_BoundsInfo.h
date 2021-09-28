@@ -319,7 +319,7 @@ public:
   }
   // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
   // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
-  friend void swap(BoundsInfo& A, BoundsInfo& B) noexcept {
+  /*friend*/ static void swap(BoundsInfo& A, BoundsInfo& B) noexcept {
     std::swap(A.kind, B.kind);
     std::swap(A.info, B.info);
     std::swap(A.merge_inputs, B.merge_inputs);
@@ -455,7 +455,9 @@ private:
 ///
 /// `bounds_insts`: If we insert any instructions into the program, we'll
 /// also add them to `bounds_insts`, see notes there
-void store_dynamic_boundsinfo(
+///
+/// Returns the Call instruction if one was inserted, or else NULL
+Instruction* store_dynamic_boundsinfo(
   Value* ptr,
   const BoundsInfo& binfo,
   IRBuilder<>& Builder,
