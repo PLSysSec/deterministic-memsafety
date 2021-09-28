@@ -309,15 +309,8 @@ void llvm::store_dynamic_boundsinfo(
 	assert(ptr->getType()->isPointerTy());
 	Module* mod = Builder.GetInsertBlock()->getModule();
 	Type* CharStarTy = Builder.getInt8PtrTy();
-	Value* base = binfo.base_as_llvm_value(ptr, Builder, bounds_insts);
-	Value* max = binfo.max_as_llvm_value(ptr, Builder, bounds_insts);
 	Value* ptr_as_charstar = castToCharStar(ptr, Builder, bounds_insts);
-	if (base && max) {
-		FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
-		FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
-		Value* call = Builder.CreateCall(StoreBounds, {ptr_as_charstar, base, max});
-		bounds_insts.insert(cast<Instruction>(call));
-	} else if (binfo.get_kind() == BoundsInfo::INFINITE) {
+	if (binfo.get_kind() == BoundsInfo::INFINITE) {
 		FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
 		FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
 		Value* call = Builder.CreateCall(StoreBoundsInf, {ptr_as_charstar});
@@ -329,7 +322,16 @@ void llvm::store_dynamic_boundsinfo(
 		Value* call = Builder.CreateCall(StoreBoundsInf, {ptr_as_charstar});
 		bounds_insts.insert(cast<Instruction>(call));
 	} else {
-		llvm_unreachable("base and/or max are NULL, but boundsinfo is not INFINITE or UNKNOWN");
+		Value* base = binfo.base_as_llvm_value(ptr, Builder, bounds_insts);
+		Value* max = binfo.max_as_llvm_value(ptr, Builder, bounds_insts);
+		if (base && max) {
+			FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
+			FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
+			Value* call = Builder.CreateCall(StoreBounds, {ptr_as_charstar, base, max});
+			bounds_insts.insert(cast<Instruction>(call));
+		} else {
+			llvm_unreachable("base and/or max are NULL, but boundsinfo is not INFINITE or UNKNOWN");
+		}
 	}
 }
 

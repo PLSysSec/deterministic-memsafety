@@ -2331,7 +2331,7 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
   SmallVector<Constant*, 8> seen_indices;
   for (const Use& idx : gep.indices()) {
     if (!current_ty) {
-      LLVM_DEBUG(dbgs() << "current_ty is null - probably getIndexedType() returned null\n");
+      DEBUG_WITH_TYPE("DMS-trustworthy-indices", dbgs() << "current_ty is null - probably getIndexedType() returned null\n");
       return false;
     }
     if (ConstantInt* c = dyn_cast<ConstantInt>(idx.get())) {
