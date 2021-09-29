@@ -1,3 +1,6 @@
+#ifndef DMS_POINTERSTATUS_H
+#define DMS_POINTERSTATUS_H
+
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Value.h"
@@ -160,3 +163,5 @@ private:
   /// See comments on PointerStatus::merge.
   static llvm::Value* merge_two_dynamic(llvm::Value* dynamic_kind_a, llvm::Value* dynamic_kind_b, llvm::Instruction* insertion_pt);
 };
+
+#endif

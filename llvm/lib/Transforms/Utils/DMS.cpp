@@ -1,5 +1,6 @@
 #include "llvm/Transforms/Utils/DMS.h"
 #include "llvm/Transforms/Utils/DMS_BoundsInfo.h"
+#include "llvm/Transforms/Utils/DMS_common.h"
 #include "llvm/Transforms/Utils/DMS_DynamicResults.h"
 #include "llvm/Transforms/Utils/DMS_Induction.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
@@ -29,48 +30,18 @@ const APInt minusone = APInt(/* bits = */ 64, /* val = */ -1);
 
 template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
-static void setInsertPointToAfterInst(IRBuilder<>& Builder, Instruction* inst);
 static bool wellFormed(const BasicBlock& bb);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
 
-/// Struct exists because we can't use C++17's std::optional.
-/// Return value of `isAllocatingCall`.
-struct IsAllocatingCall {
-  /// Is it an allocating call
-  bool isAllocatingCall;
-  /// If it's an allocating call, this is the allocation size in bytes.
-  /// If it's not an allocating call, this field is invalid (and may be NULL).
-  Value* allocationSize;
-
-  static IsAllocatingCall not_allocating() { return IsAllocatingCall { false, NULL }; }
-  static IsAllocatingCall allocating(Value* size) { return IsAllocatingCall { true, size }; }
-};
 /// If computing the allocation size requires inserting dynamic instructions,
-/// use `Builder` and add those instructions to `bounds_insts` (see notes there)
+/// use `Builder` and add those instructions to `bounds_insts`
 static IsAllocatingCall isAllocatingCall(
   const CallBase &call,
   IRBuilder<>& Builder,
   DenseSet<const Instruction*>& bounds_insts
 );
 
-/// Return type for `classifyGEPResult`.
-struct GEPResultClassification {
-  /// Classification of the result of the given `gep`.
-  PointerStatus classification;
-  /// Was the total offset of the GEP considered a constant?
-  /// (If `override_constant_offset` is non-NULL, this will always be `true`, of
-  /// course.)
-  bool offset_is_constant;
-  /// If `offset_is_constant` is `true`, then this holds the value of the
-  /// constant offset.
-  /// (If `override_constant_offset` is non-NULL, `classifyGEPResult` will
-  /// copy that value to `constant_offset`.)
-  APInt constant_offset;
-  /// If `constant_offset` is nonzero, do we consider it as zero anyways because
-  /// it is a "trustworthy" struct offset?
-  bool trustworthy_struct_offset;
-};
 /// Classify the `PointerStatus` of the result of the given `gep`, assuming that its
 /// input pointer is `input_status`.
 /// This looks only at the `GetElementPtrInst` itself, and thus does not try to
@@ -376,10 +347,9 @@ public:
       blocks_in_function(F.getBasicBlockList().size()),
       pointer_encoding_is_complete(false),
       block_states(BlockStates(F, DL, settings.trust_llvm_struct_types)),
+      bounds_infos(BoundsInfos(F, DL)),
       boundscheckfail_bb(NULL)
-  {
-    initialize_bounds_info();
-  }
+  {}
 
   struct StaticCounts {
     unsigned clean;
@@ -642,79 +612,8 @@ private:
   /// the next iteration.
   DenseSet<const Instruction*> checked_insts;
 
-  /// Value type for the below map
-  class BoundsStoringCall final {
-  public:
-    /// Call instruction responsible for storing the bounds info
-    Instruction* call_inst;
-    /// Copy of the BoundsInfo which that Call instruction is storing
-    BoundsInfo binfo;
-
-    BoundsStoringCall() : call_inst(NULL), binfo(BoundsInfo()) {}
-    BoundsStoringCall(Instruction* call_inst, BoundsInfo binfo) : call_inst(call_inst), binfo(binfo) {}
-
-    // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
-    // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
-    friend void swap(BoundsStoringCall& A, BoundsStoringCall& B) noexcept {
-      std::swap(A.call_inst, B.call_inst);
-      BoundsInfo::swap(A.binfo, B.binfo);
-    }
-    BoundsStoringCall(BoundsStoringCall&& other) noexcept : BoundsStoringCall() {
-      swap(*this, other);
-    }
-    BoundsStoringCall& operator=(BoundsStoringCall rhs) noexcept {
-      swap(*this, rhs);
-      return *this;
-    }
-  };
-
-  /// This maps Store instructions (which store pointers) to `BoundsStoringCall`s.
-  /// The intent is that on a subsequent iteration, if the BoundsInfo for the
-  /// stored pointer has changed, we can remove the Call instruction and
-  /// generate a new one.
-  DenseMap<const StoreInst*, BoundsStoringCall> store_bounds_calls;
-
-  /// For the Instructions in this set, don't count them for stats or do any
-  /// other operations with them. They aren't from the original program, they
-  /// were inserted by us to facilitate tracking bounds. The results of these
-  /// instructions will be used only in bounds checks, if ever; if they are
-  /// pointers, they will never be dereferenced.
-  ///
-  /// We don't necessarily add all the instructions we insert for bounds
-  /// purposes to this set. But, the intent is that we at minimum add all the
-  /// pointer-producing instructions, and all the calls.
-  DenseSet<const Instruction*> bounds_insts;
-
-  /// Maps a pointer to its bounds info, if we know anything about its bounds
-  /// info.
-  /// For pointers not appearing in this map, we don't know anything about their
-  /// bounds.
-  DenseMap<const Value*, BoundsInfo> bounds_info;
-
-  void initialize_bounds_info() {
-    // For now, if any function parameters are pointers, mark their bounds info
-    // as UNKNOWN
-    for (const Argument& arg : F.args()) {
-      if (arg.getType()->isPointerTy()) {
-        bounds_info[&arg] = BoundsInfo::unknown();
-      }
-    }
-
-    // Mark appropriate bounds info for global variables. We know this bounds
-    // information statically
-    for (const GlobalValue& gv : F.getParent()->global_values()) {
-      assert(gv.getType()->isPointerTy());
-      Type* globalType = gv.getValueType();
-      if (globalType->isSized()) {
-        auto allocationSize = DL.getTypeStoreSize(globalType).getFixedSize();
-        bounds_info[&gv] = BoundsInfo::static_bounds(
-          zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-        );
-      } else {
-        bounds_info[&gv] = BoundsInfo::unknown();
-      }
-    }
-  }
+  /// Bounds information for all pointers in the function.
+  BoundsInfos bounds_infos;
 
   /// Instruments the code for dynamic counts.
   /// This must only be called after the analysis is complete (pointer statuses
@@ -931,8 +830,8 @@ private:
     // produce pointers
     // (and of course we want to statically count a few other kinds of events)
     for (Instruction &inst : block) {
-      if (bounds_insts.count(&inst)) {
-        // see notes on bounds_insts
+      if (bounds_infos.added_insts.count(&inst)) {
+        // see notes on added_insts
         continue;
       }
       bool block_done = false;
@@ -958,33 +857,7 @@ private:
             PointerStatus storedVal_status = ptr_statuses.getStatus(storedVal);
             COUNT_OP_AS_STATUS(store_vals, storedVal_status, &inst, "Storing a pointer");
             if (settings.add_sw_spatial_checks) {
-              // we store the bounds info so that when this pointer is later
-              // loaded, we can get the bounds info back
-              BoundsInfo& binfo = bounds_info[storedVal];
-              bool need_regenerate_bounds_store;
-              if (store_bounds_calls.count(&store) > 0) {
-                // there is already a Call instruction storing bounds info for
-                // this stored pointer. Make sure that the bounds info it's
-                // storing hasn't changed.
-                BoundsStoringCall& BSC = store_bounds_calls[&store];
-                if (*&binfo == BSC.binfo) {
-                  // bounds info is up to date; nothing to do
-                  need_regenerate_bounds_store = false;
-                } else {
-                  // whoops, bounds info has changed. remove the old Call
-                  // instruction storing the bounds info, and generate a new one
-                  BSC.call_inst->eraseFromParent();
-                  need_regenerate_bounds_store = true;
-                }
-              } else {
-                need_regenerate_bounds_store = true;
-              }
-              if (need_regenerate_bounds_store) {
-                IRBuilder<> Builder(&block);
-                setInsertPointToAfterInst(Builder, &store);
-                Instruction* new_bounds_call = store_dynamic_boundsinfo(storedVal, binfo, Builder, bounds_insts);
-                store_bounds_calls[&store] = BoundsStoringCall(new_bounds_call, BoundsInfo(binfo));
-              }
+              bounds_infos.propagate_bounds(store);
             }
             // make sure the stored pointer is masked as necessary
             if (pointer_encoding_is_complete) {
@@ -1105,7 +978,7 @@ private:
                 // fixpoint won't change the bounds info here), so we don't
                 // need to change anything now. we computed the bounds info
                 // when we did the pointer encoding.
-                assert(bounds_info.count(&load) > 0);
+                assert(bounds_infos.is_binfo_present(&load));
               }
             } else if (settings.do_pointer_encoding) {
               // insert the instructions to interpret the encoded pointer
@@ -1117,7 +990,7 @@ private:
               Value* new_val_as_ptr = AfterLoad.CreateIntToPtr(new_val, load.getType());
               // replace all uses of `load` with the modified loaded ptr, except
               // of course the use which we just inserted (which generates
-              // `val_as_int`), and any uses in `bounds_insts`
+              // `val_as_int`), and any uses in `bounds_infos.added_insts`
               load.replaceUsesWithIf(
                 new_val_as_ptr,
                 [val_as_int](Use &U){ return U.getUser() != val_as_int; }
@@ -1141,8 +1014,8 @@ private:
                 // pointer, we could/should wait until it is needed for a SW
                 // bounds check. I'm envisioning some type of laziness solution
                 // inside BoundsInfo.
-                BoundsInfo::DynamicBoundsInfo loadedInfo = load_dynamic_boundsinfo(new_val_as_ptr, AfterLoad, bounds_insts);
-                bounds_info[&load] = BoundsInfo(std::move(loadedInfo));
+                BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(new_val_as_ptr, AfterLoad, bounds_infos.added_insts);
+                bounds_infos.mark_as(&load, BoundsInfo(std::move(loadedInfo)));
               }
             } else {
               // when not `do_pointer_encoding`, we're allowed to pass NULL
@@ -1156,11 +1029,11 @@ private:
                 // pointer, we could/should wait until it is needed for a SW
                 // bounds check. I'm envisioning some type of laziness solution
                 // inside BoundsInfo.
-                if (bounds_info.count(&load) == 0) {
+                if (!bounds_infos.is_binfo_present(&load)) {
                   IRBuilder<> AfterLoad(&block);
                   setInsertPointToAfterInst(AfterLoad, &load);
-                  BoundsInfo::DynamicBoundsInfo loadedInfo = load_dynamic_boundsinfo(&load, AfterLoad, bounds_insts);
-                  bounds_info[&load] = BoundsInfo(std::move(loadedInfo));
+                  BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(&load, AfterLoad, bounds_infos.added_insts);
+                  bounds_infos.mark_as(&load, BoundsInfo(std::move(loadedInfo)));
                 }
               }
             }
@@ -1168,15 +1041,11 @@ private:
           break;
         }
         case Instruction::Alloca: {
+          AllocaInst& alloca = cast<AllocaInst>(inst);
           // result of an alloca is a clean pointer
-          ptr_statuses.mark_clean(&inst);
+          ptr_statuses.mark_clean(&alloca);
           if (settings.add_sw_spatial_checks) {
-            // we know the bounds of the allocation statically
-            PointerType* resultType = cast<PointerType>(inst.getType());
-            auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
-            bounds_info[&inst] = BoundsInfo::static_bounds(
-              zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-            );
+            bounds_infos.propagate_bounds(alloca);
           }
           break;
         }
@@ -1206,48 +1075,7 @@ private:
             COUNT_OP_AS_STATUS(pointer_arith_const, input_status, &gep, "GEP on a pointer");
           }
           if (settings.add_sw_spatial_checks) {
-            // propagate the input pointer's bounds to the new pointer. We let
-            // the new pointer still have access to the whole allocation
-            const BoundsInfo& binfo = bounds_info.lookup(input_ptr);
-            switch (binfo.get_kind()) {
-              case BoundsInfo::NOTDEFINEDYET:
-                llvm_unreachable("GEP input ptr's BoundsInfo should be defined (at least UNKNOWN)");
-              case BoundsInfo::UNKNOWN:
-                bounds_info[&gep] = binfo;
-                break;
-              case BoundsInfo::INFINITE:
-                bounds_info[&gep] = binfo;
-                break;
-              case BoundsInfo::STATIC: {
-                const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
-                if (grc.offset_is_constant) {
-                  bounds_info[&gep] = BoundsInfo::static_bounds(
-                    static_info->low_offset + grc.constant_offset,
-                    static_info->high_offset - grc.constant_offset
-                  );
-                } else {
-                  // bounds of the new pointer aren't known statically
-                  // and actually, we don't care what the dynamic GEP offset is:
-                  // it doesn't change the `base` and `max` of the allocation
-                  const BoundsInfo::StaticBoundsInfo* input_static_info = binfo.static_info();
-                  // `base` is `input_ptr` minus the input pointer's low_offset
-                  const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, -input_static_info->low_offset);
-                  // `max` is `input_ptr` plus the input pointer's high_offset
-                  const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, input_static_info->high_offset);
-                  bounds_info[&gep] = BoundsInfo::dynamic_bounds(base, max);
-                }
-                break;
-              }
-              case BoundsInfo::DYNAMIC:
-              case BoundsInfo::DYNAMIC_MERGED:
-              {
-                // regardless of the GEP offset, the `base` and `max` don't change
-                bounds_info[&gep] = binfo;
-                break;
-              }
-              default:
-                llvm_unreachable("Missing BoundsInfo.kind case");
-            }
+            bounds_infos.propagate_bounds(gep, grc);
           }
           break;
         }
@@ -1257,9 +1085,7 @@ private:
             const Value* input_ptr = bitcast.getOperand(0);
             ptr_statuses.mark_as(&bitcast, ptr_statuses.getStatus(input_ptr));
             if (settings.add_sw_spatial_checks) {
-              // also propagate bounds info
-              const BoundsInfo& binfo = bounds_info.lookup(input_ptr);
-              bounds_info[&bitcast] = binfo;
+              bounds_infos.propagate_bounds_id(inst);
             }
           }
           break;
@@ -1268,9 +1094,7 @@ private:
           const Value* input_ptr = inst.getOperand(0);
           ptr_statuses.mark_as(&inst, ptr_statuses.getStatus(input_ptr));
           if (settings.add_sw_spatial_checks) {
-            // also propagate bounds info
-            const BoundsInfo& binfo = bounds_info.lookup(input_ptr);
-            bounds_info[&inst] = binfo;
+            bounds_infos.propagate_bounds_id(inst);
           }
           break;
         }
@@ -1278,31 +1102,11 @@ private:
           SelectInst& select = cast<SelectInst>(inst);
           if (select.getType()->isPointerTy()) {
             // output is clean if both inputs are clean; etc
-            const Value* true_input = select.getTrueValue();
-            const Value* false_input = select.getFalseValue();
-            const PointerStatus true_status = ptr_statuses.getStatus(true_input);
-            const PointerStatus false_status = ptr_statuses.getStatus(false_input);
+            const PointerStatus true_status = ptr_statuses.getStatus(select.getTrueValue());
+            const PointerStatus false_status = ptr_statuses.getStatus(select.getFalseValue());
             ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status, &inst));
             if (settings.add_sw_spatial_checks) {
-              // also propagate bounds info
-              const BoundsInfo& binfo1 = bounds_info.lookup(true_input);
-              const BoundsInfo& binfo2 = bounds_info.lookup(false_input);
-              const BoundsInfo& prev_iteration_binfo = bounds_info.lookup(&select);
-              if (
-                prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC_MERGED
-                && prev_iteration_binfo.merge_inputs.size() == 2
-                && *prev_iteration_binfo.merge_inputs[0] == binfo1
-                && *prev_iteration_binfo.merge_inputs[1] == binfo2
-              ) {
-                // no need to update
-              } else {
-                // the merge may need to insert instructions that use the final
-                // value of the select, so we need a builder pointing after the
-                // select
-                IRBuilder<> AfterSelect(&block);
-                setInsertPointToAfterInst(AfterSelect, &select);
-                bounds_info[&select] = BoundsInfo::merge(binfo1, binfo2, &select, AfterSelect, bounds_insts);
-              }
+              bounds_infos.propagate_bounds(select);
             }
           }
           break;
@@ -1312,7 +1116,6 @@ private:
           IRBuilder<> Builder(&inst);
           if (phi.getType()->isPointerTy()) {
             SmallVector<std::pair<PointerStatus, BasicBlock*>, 4> incoming_statuses;
-            SmallVector<std::tuple<Value*, BoundsInfo*, BasicBlock*>, 4> incoming_binfos;
             for (const Use& use : phi.incoming_values()) {
               BasicBlock* bb = phi.getIncomingBlock(use);
               auto& ptr_statuses_end_of_bb = block_states.lookup(bb).ptrs_end;
@@ -1321,13 +1124,6 @@ private:
                 ptr_statuses_end_of_bb.getStatus(value),
                 bb
               ));
-              if (settings.add_sw_spatial_checks) {
-                incoming_binfos.push_back(std::make_tuple(
-                  value,
-                  new BoundsInfo(bounds_info.lookup(value)),
-                  bb
-                ));
-              }
             }
             // check for an entry in dynamic_phi_to_status_phi
             auto it = dynamic_phi_to_status_phi.find(&phi);
@@ -1421,201 +1217,13 @@ private:
               }
             }
             if (settings.add_sw_spatial_checks) {
-              // also propagate bounds info
-              IRBuilder<> Builder(&block, block.getFirstInsertionPt());
-              const BoundsInfo& prev_iteration_binfo = bounds_info.lookup(&phi);
-              assert(incoming_binfos.size() >= 1);
-              bool any_incoming_bounds_are_dynamic = false;
-              bool any_incoming_bounds_are_unknown = false;
-              bool any_incoming_bounds_are_notdefinedyet = false;
-              for (auto& tuple : incoming_binfos) {
-                const BoundsInfo* incoming_binfo = std::get<1>(tuple);
-                if (incoming_binfo->is_dynamic()) {
-                  any_incoming_bounds_are_dynamic = true;
-                }
-                if (incoming_binfo->get_kind() == BoundsInfo::UNKNOWN) {
-                  any_incoming_bounds_are_unknown = true;
-                }
-                if (incoming_binfo->get_kind() == BoundsInfo::NOTDEFINEDYET) {
-                  any_incoming_bounds_are_notdefinedyet = true;
-                }
-              }
-              if (any_incoming_bounds_are_unknown) {
-                bounds_info[&phi] = BoundsInfo::unknown();
-              } else if (any_incoming_bounds_are_dynamic) {
-                if (any_incoming_bounds_are_notdefinedyet) {
-                  // in this case, just mark UNKNOWN for this iteration; we'll
-                  // insert PHIs and compute the proper dynamic bounds in the next
-                  // iteration, when everything is defined
-                  bounds_info[&phi] = BoundsInfo::unknown();
-                } else {
-                  // in this case, we'll use PHIs to select the proper dynamic
-                  // `base` and `max`, much as we used PHIs for the dynamic_kind
-                  // above.
-                  // Of course, if we already inserted PHIs in a previous iteration,
-                  // let's not insert them again.
-                  PHINode* base_phi = NULL;
-                  PHINode* max_phi = NULL;
-                  if (const BoundsInfo::DynamicBoundsInfo* prev_iteration_dyninfo = prev_iteration_binfo.dynamic_info()) {
-                    if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->base.ptr))) {
-                      assert(prev_iteration_dyninfo->base.offset == 0);
-                      assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
-                      for (auto& tuple : incoming_binfos) {
-                        const BoundsInfo* incoming_binfo = std::get<1>(tuple);
-                        BasicBlock* incoming_bb = std::get<2>(tuple);
-                        const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
-                        switch (incoming_binfo->get_kind()) {
-                          case BoundsInfo::NOTDEFINEDYET:
-                          case BoundsInfo::UNKNOWN:
-                          case BoundsInfo::INFINITE:
-                            llvm_unreachable("Bad incoming_binfo.kind here");
-                          case BoundsInfo::STATIC:
-                            // for now we just assume that static bounds don't
-                            // change from iteration to iteration
-                            break;
-                          case BoundsInfo::DYNAMIC:
-                          case BoundsInfo::DYNAMIC_MERGED:
-                          {
-                            const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
-                            if (incoming_dyninfo->base.offset != 0) {
-                              // need to recalculate base_phi
-                              base_phi = NULL;
-                              break;
-                            }
-                            const Value* incoming_base = incoming_dyninfo->base.ptr;
-                            if (incoming_base != old_base) {
-                              // need to recalculate base_phi
-                              base_phi = NULL;
-                              break;
-                            }
-                            // if we get here, this incoming block is still good and doesn't need recalculating
-                            break;
-                          }
-                          default:
-                            llvm_unreachable("Missing BoundsInfo.kind case");
-                        }
-                        if (!base_phi) break;
-                      }
-                    } else {
-                      // prev_iteration base was not a phi. we'll have to insert a fresh phi
-                    }
-                    if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->max.ptr))) {
-                      assert(prev_iteration_dyninfo->max.offset == 0);
-                      assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
-                      for (auto& tuple : incoming_binfos) {
-                        const BoundsInfo* incoming_binfo = std::get<1>(tuple);
-                        BasicBlock* incoming_bb = std::get<2>(tuple);
-                        const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
-                        switch (incoming_binfo->get_kind()) {
-                          case BoundsInfo::NOTDEFINEDYET:
-                          case BoundsInfo::UNKNOWN:
-                          case BoundsInfo::INFINITE:
-                            llvm_unreachable("Bad incoming_binfo.kind here");
-                          case BoundsInfo::STATIC:
-                            // for now we just assume that static bounds don't
-                            // change from iteration to iteration
-                            break;
-                          case BoundsInfo::DYNAMIC:
-                          case BoundsInfo::DYNAMIC_MERGED:
-                          {
-                            const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
-                            if (incoming_dyninfo->max.offset != 0) {
-                              // need to recalculate max_phi
-                              max_phi = NULL;
-                              break;
-                            }
-                            const Value* incoming_max = incoming_dyninfo->max.ptr;
-                            if (incoming_max != old_max) {
-                              // need to recalculate max_phi
-                              max_phi = NULL;
-                              break;
-                            }
-                            // if we get here, this incoming block is still good and doesn't need recalculating
-                            break;
-                          }
-                          default:
-                            llvm_unreachable("Missing BoundsInfo.kind case");
-                        }
-                        if (!max_phi) break;
-                      }
-                    } else {
-                      // prev_iteration max was not a phi. we'll have to insert a fresh phi
-                    }
-                  } else {
-                    // prev_iteration boundsinfo was not dynamic. we'll have to insert fresh phis
-                  }
-                  if (!base_phi) {
-                    base_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
-                    bounds_insts.insert(base_phi);
-                    for (auto& tuple : incoming_binfos) {
-                      Value* incoming_ptr = std::get<0>(tuple);
-                      const BoundsInfo* incoming_binfo = std::get<1>(tuple);
-                      BasicBlock* incoming_bb = std::get<2>(tuple);
-                      // if dynamic instructions are necessary to compute phi
-                      // incoming value, insert them at the end of the
-                      // corresponding block, not here
-                      IRBuilder<> IncomingBlockBuilder(incoming_bb->getTerminator());
-                      Value* base = incoming_binfo->base_as_llvm_value(incoming_ptr, IncomingBlockBuilder, bounds_insts);
-                      assert(base);
-                      base_phi->addIncoming(base, incoming_bb);
-                    }
-                    assert(base_phi->isComplete());
-                  }
-                  if (!max_phi) {
-                    max_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
-                    bounds_insts.insert(max_phi);
-                    for (auto& tuple : incoming_binfos) {
-                      Value* incoming_ptr = std::get<0>(tuple);
-                      const BoundsInfo* incoming_binfo = std::get<1>(tuple);
-                      BasicBlock* incoming_bb = std::get<2>(tuple);
-                      // if dynamic instructions are necessary to compute phi
-                      // incoming value, insert them at the end of the
-                      // corresponding block, not here
-                      IRBuilder<> IncomingBlockBuilder(incoming_bb->getTerminator());
-                      Value* max = incoming_binfo->max_as_llvm_value(incoming_ptr, IncomingBlockBuilder, bounds_insts);
-                      assert(max);
-                      max_phi->addIncoming(max, incoming_bb);
-                    }
-                    assert(max_phi->isComplete());
-                  }
-                  bounds_info[&phi] = BoundsInfo::dynamic_bounds(base_phi, max_phi);
-                }
-              } else {
-                // no incoming bounds are dynamic. let's just merge them statically
-                bool any_merge_inputs_changed = false;
-                if (prev_iteration_binfo.get_kind() != BoundsInfo::DYNAMIC_MERGED)
-                  any_merge_inputs_changed = true;
-                if (prev_iteration_binfo.merge_inputs.size() != incoming_binfos.size())
-                  any_merge_inputs_changed = true;
-                if (!any_merge_inputs_changed) {
-                  for (unsigned i = 0; i < incoming_binfos.size(); i++) {
-                    if (*prev_iteration_binfo.merge_inputs[i] != *std::get<1>(incoming_binfos[i])) {
-                      any_merge_inputs_changed = true;
-                      break;
-                    }
-                  }
-                }
-                if (any_merge_inputs_changed) {
-                  // have to update the boundsinfo
-                  BoundsInfo merged_binfo = BoundsInfo::infinite(); // just the initial value we start the merge with
-                  assert(phi.getNumIncomingValues() >= 1);
-                  for (auto& tuple : incoming_binfos) {
-                    const BoundsInfo* binfo = std::get<1>(tuple);
-                    merged_binfo = BoundsInfo::merge(merged_binfo, *binfo, &phi, Builder, bounds_insts);
-                  }
-                  bounds_info[&phi] = merged_binfo;
-                }
-              }
-            }
-            for (auto& tuple : incoming_binfos) {
-              const BoundsInfo* binfo = std::get<1>(tuple);
-              delete binfo;
+              bounds_infos.propagate_bounds(phi);
             }
           }
           break;
         }
         case Instruction::IntToPtr: {
-          const IntToPtrInst& inttoptr = cast<IntToPtrInst>(inst);
+          IntToPtrInst& inttoptr = cast<IntToPtrInst>(inst);
           auto it = inttoptr_status_and_bounds_overrides.find(&inttoptr);
           if (it != inttoptr_status_and_bounds_overrides.end()) {
             // there's an override in place for this IntToPtr.
@@ -1626,7 +1234,7 @@ private:
             assert(status.kind != PointerKind::NOTDEFINEDYET);
             ptr_statuses.mark_as(&inttoptr, status);
             if (settings.add_sw_spatial_checks) {
-              bounds_info[&inttoptr] = bounds_info[it->getSecond()];
+              bounds_infos.mark_as(&inttoptr, bounds_infos.get_binfo(it->getSecond()));
             }
           } else {
             // no override in place for this IntToPtr.
@@ -1637,16 +1245,7 @@ private:
             }
             ptr_statuses.mark_as(&inttoptr, settings.inttoptr_kind);
             if (settings.add_sw_spatial_checks) {
-              // if we're considering it a clean ptr, then also assume it
-              // is valid for the entire size of the data its type claims it
-              // points to
-              if (settings.inttoptr_kind == PointerKind::CLEAN) {
-                PointerType* resultType = cast<PointerType>(inttoptr.getType());
-                auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
-                bounds_info[&inttoptr] = BoundsInfo::static_bounds(
-                  zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-                );
-              }
+              bounds_infos.propagate_bounds(inttoptr, settings.inttoptr_kind);
             }
           }
           break;
@@ -1671,36 +1270,17 @@ private:
           if (call.getType()->isPointerTy()) {
             IRBuilder<> Builder(&block);
             setInsertPointToAfterInst(Builder, &call);
-            IsAllocatingCall IAC = isAllocatingCall(call, Builder, bounds_insts);
-            if (IAC.isAllocatingCall) {
+            IsAllocatingCall IAC = isAllocatingCall(call, Builder, bounds_infos.added_insts);
+            if (IAC.is_allocating) {
               // If this is an allocating call (eg, a call to `malloc`), then the
               // returned pointer is CLEAN
               ptr_statuses.mark_clean(&call);
-              if (settings.add_sw_spatial_checks) {
-                if (ConstantInt* allocationSize = dyn_cast<ConstantInt>(IAC.allocationSize)) {
-                  // allocating a constant number of bytes.
-                  // we know the bounds of the allocation statically.
-                  bounds_info[&call] = BoundsInfo::static_bounds(
-                    zero, allocationSize->getValue() - 1
-                  );
-                } else {
-                  // allocating a dynamic number of bytes.
-                  // We need a dynamic addition instruction to compute the upper
-                  // bound. Only insert that the first time -- the bounds info
-                  // here should not change from iteration to iteration
-                  if (bounds_info.count(&call) == 0) {
-                    Value* callPlusBytes = add_offset_to_ptr(&call, IAC.allocationSize, Builder, bounds_insts);
-                    Value* max = add_offset_to_ptr(callPlusBytes, minusone, Builder, bounds_insts);
-                    bounds_info[&call] = BoundsInfo::dynamic_bounds(&call, max);
-                  }
-                }
-              }
             } else {
               // For now, mark pointers returned from other calls as UNKNOWN
               ptr_statuses.mark_unknown(&call);
-              if (settings.add_sw_spatial_checks) {
-                bounds_info[&call] = BoundsInfo::unknown();
-              }
+            }
+            if (settings.add_sw_spatial_checks) {
+              bounds_infos.propagate_bounds(call, IAC);
             }
           }
           break;
@@ -1718,7 +1298,7 @@ private:
           // So for now, we'll just mark UNKNOWN and move on
           ptr_statuses.mark_unknown(&inst);
           if (settings.add_sw_spatial_checks) {
-            bounds_info[&inst] = BoundsInfo::unknown();
+            bounds_infos.mark_as(&inst, BoundsInfo::unknown());
           }
           break;
         }
@@ -1726,7 +1306,7 @@ private:
           // same comments apply as for ExtractValue, basically
           ptr_statuses.mark_unknown(&inst);
           if (settings.add_sw_spatial_checks) {
-            bounds_info[&inst] = BoundsInfo::unknown();
+            bounds_infos.mark_as(&inst, BoundsInfo::unknown());
           }
           break;
         }
@@ -1802,16 +1382,16 @@ private:
       case PointerKind::BLEMISHED64:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
-        const BoundsInfo& binfo = bounds_info.lookup(addr);
+        const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
         return sw_bounds_check(addr, binfo, Builder, new_blocks);
       }
       case PointerKind::UNKNOWN: {
         dbgs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
-        const BoundsInfo& binfo = bounds_info.lookup(addr);
+        const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
         return sw_bounds_check(addr, binfo, Builder, new_blocks);
       }
       case PointerKind::DYNAMIC: {
-        const BoundsInfo& binfo = bounds_info.lookup(addr);
+        const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
         if (binfo.get_kind() == BoundsInfo::STATIC) {
           if (binfo.static_info()->fails()) {
             // we check the dynamic kind, if it is DYN_CLEAN or
@@ -1921,10 +1501,10 @@ private:
     IRBuilder<>& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
-    ptr = castToCharStar(ptr, Builder, bounds_insts);
+    ptr = castToCharStar(ptr, Builder, bounds_infos.added_insts);
     Value* Fail = Builder.CreateLogicalOr(
-      Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder, bounds_insts)),
-      Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_insts))
+      Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder, bounds_infos.added_insts)),
+      Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_infos.added_insts))
     );
     BasicBlock* failbb = boundsCheckFailBB();
     new_blocks.push_back(failbb);
@@ -1937,8 +1517,8 @@ private:
     Module* mod = F.getParent();
     FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
     FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
-    Value* call = Builder.CreateCall(Abort);
-    bounds_insts.insert(cast<Instruction>(call));
+    Instruction* call = Builder.CreateCall(Abort);
+    bounds_infos.added_insts.insert(call);
   }
 
   /// Private member of `DMSAnalysis` holding the BasicBlock created by
@@ -2388,16 +1968,6 @@ static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::o
   }
 }
 
-/// The given `Builder` will now be ready to insert instructions _after_ the
-/// given `inst`
-static void setInsertPointToAfterInst(IRBuilder<>& Builder, Instruction* inst) {
-  Builder.SetInsertPoint(inst);
-  BasicBlock* bb = Builder.GetInsertBlock();
-  auto ip = Builder.GetInsertPoint();
-  ip++;
-  Builder.SetInsertPoint(bb, ip);
-}
-
 /// Returns `true` if the block is well-formed. For this function's purposes,
 /// "well-formed" means it has exactly one terminator instruction and that
 /// instruction is at the end.
@@ -2467,7 +2037,7 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
 }
 
 /// If computing the allocation size requires inserting dynamic instructions,
-/// use `Builder` and add those instructions to `bounds_insts` (see notes there)
+/// use `Builder` and add those instructions to `bounds_insts`
 static IsAllocatingCall isAllocatingCall(
   const CallBase &call,
   IRBuilder<>& Builder,

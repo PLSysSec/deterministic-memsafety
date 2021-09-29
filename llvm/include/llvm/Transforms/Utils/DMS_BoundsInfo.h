@@ -1,6 +1,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Value.h"
+#include "llvm/Transforms/Utils/DMS_common.h"
 
 extern const llvm::APInt zero;
 extern const llvm::APInt minusone;
@@ -408,6 +409,36 @@ public:
     DenseSet<const Instruction*>& bounds_insts
   );
 
+  /// Insert dynamic instructions to store this bounds info.
+  ///
+  /// `cur_ptr` is the pointer which these bounds are for.
+  ///
+  /// `Builder` is the IRBuilder to use to insert dynamic instructions.
+  ///
+  /// `bounds_insts`: If we insert any instructions into the program, we'll
+  /// also add them to `bounds_insts`, see notes there
+  ///
+  /// Returns the Call instruction if one was inserted, or else NULL
+  Instruction* store_dynamic(
+    Value* cur_ptr,
+    IRBuilder<>& Builder,
+    DenseSet<const Instruction*>& bounds_insts
+  ) const;
+
+  /// Insert dynamic instructions to load bounds info for the given `ptr`.
+  /// Bounds info for this `ptr` should have been previously stored with
+  /// `store_dynamic()`.
+  ///
+  /// Insert dynamic instructions using the given `IRBuilder`.
+  ///
+  /// `bounds_insts`: If we insert any instructions into the program, we'll
+  /// also add them to `bounds_insts`, see notes there
+  static DynamicBoundsInfo load_dynamic(
+    Value* ptr,
+    IRBuilder<>& Builder,
+    DenseSet<const Instruction*>& bounds_insts
+  );
+
 private:
   /// This should really be a union.  But C++ complains hard about implicitly
   /// deleted copy constructors, implicitly deleted assignment operators, etc
@@ -449,33 +480,89 @@ private:
   );
 };
 
-/// Insert dynamic instructions to store bounds info for the given `ptr`.
-///
-/// Insert dynamic instructions using the given `IRBuilder`.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
-///
-/// Returns the Call instruction if one was inserted, or else NULL
-Instruction* store_dynamic_boundsinfo(
-  Value* ptr,
-  const BoundsInfo& binfo,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
-);
+/// Holds the bounds information for all pointers in the function.
+class BoundsInfos final {
+public:
+  BoundsInfos(const Function&, const DataLayout&);
 
-/// Insert dynamic instructions to load bounds info for the given `ptr`.
-/// Bounds info for this `ptr` should have been previously stored with
-/// `store_dynamic_boundsinfo`.
-///
-/// Insert dynamic instructions using the given `IRBuilder`.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
-BoundsInfo::DynamicBoundsInfo load_dynamic_boundsinfo(
-  Value* ptr,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
-);
+  /// Mark the given pointer as having the given bounds information.
+  void mark_as(const Value* ptr, const BoundsInfo binfo) {
+    map[ptr] = binfo;
+  }
+
+  /// Get the bounds information for the given pointer.
+  BoundsInfo get_binfo(const Value* ptr) {
+    return map.lookup(ptr);
+  }
+
+  /// Is there any bounds information for the given pointer?
+  bool is_binfo_present(const Value* ptr) {
+    return map.count(ptr) > 0;
+  }
+
+  void propagate_bounds(StoreInst&);
+  void propagate_bounds(AllocaInst&);
+  void propagate_bounds(GetElementPtrInst&, GEPResultClassification&);
+  void propagate_bounds(SelectInst&);
+  void propagate_bounds(IntToPtrInst&, PointerKind inttoptr_kind);
+  void propagate_bounds(PHINode&);
+  void propagate_bounds(CallBase& call, IsAllocatingCall& IAC);
+
+  /// Copy the bounds for the input pointer (must be operand 0) to the output
+  /// pointer
+  void propagate_bounds_id(Instruction& inst);
+
+  /// List of instructions which were added for the purpose of computing bounds
+  /// information. They aren't in the original program (so shouldn't count for
+  /// stats purposes). The results of these instructions will be used only in
+  /// bounds checks, if ever; if they are pointers, they will never be
+  /// dereferenced.
+  ///
+  /// We don't necessarily add all the instructions we insert for bounds
+  /// purposes to this set. But, the intent is that we at minimum add all the
+  /// pointer-producing instructions, and all the calls.
+  DenseSet<const Instruction*> added_insts;
+
+private:
+  /// Maps a pointer to its bounds info, if we know anything about its bounds
+  /// info.
+  /// For pointers not appearing in this map, we don't know anything about their
+  /// bounds.
+  DenseMap<const Value*, BoundsInfo> map;
+
+  const DataLayout& DL;
+
+  /// Value type for the below map
+  class BoundsStoringCall final {
+  public:
+    /// Call instruction responsible for storing the bounds info
+    Instruction* call_inst;
+    /// Copy of the BoundsInfo which that Call instruction is storing
+    BoundsInfo binfo;
+
+    BoundsStoringCall() : call_inst(NULL), binfo(BoundsInfo()) {}
+    BoundsStoringCall(Instruction* call_inst, BoundsInfo binfo) : call_inst(call_inst), binfo(binfo) {}
+
+    // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
+    // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
+    friend void swap(BoundsStoringCall& A, BoundsStoringCall& B) noexcept {
+      std::swap(A.call_inst, B.call_inst);
+      BoundsInfo::swap(A.binfo, B.binfo);
+    }
+    BoundsStoringCall(BoundsStoringCall&& other) noexcept : BoundsStoringCall() {
+      swap(*this, other);
+    }
+    BoundsStoringCall& operator=(BoundsStoringCall rhs) noexcept {
+      swap(*this, rhs);
+      return *this;
+    }
+  };
+
+  /// This maps Store instructions (which store pointers) to `BoundsStoringCall`s.
+  /// The intent is that on a subsequent iteration, if the BoundsInfo for the
+  /// stored pointer has changed, we can remove the Call instruction and
+  /// generate a new one.
+  DenseMap<const StoreInst*, BoundsStoringCall> store_bounds_calls;
+};
 
 } // end namespace
