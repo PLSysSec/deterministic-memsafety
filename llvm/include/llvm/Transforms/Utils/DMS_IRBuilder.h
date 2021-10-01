@@ -51,6 +51,24 @@ public:
 		SetInsertPoint(bb, I);
 	}
 
+	/// Casts the given input pointer `ptr` to the LLVM type `i8*`.
+	/// The input pointer can be any pointer type, including `i8*` (in which case
+	/// this will return the pointer unchanged).
+	Value* castToCharStar(Value* ptr);
+
+	/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
+	/// the resulting pointer.
+	/// The input pointer can be any pointer type, the output pointer will
+	/// have type `i8*`.
+	Value* add_offset_to_ptr(Value* ptr, const APInt offset);
+
+	/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
+	/// the resulting pointer.
+	/// The input pointer can be any pointer type, the output pointer will
+	/// have type `i8*`.
+	/// `offset` should be a non-pointer value -- ie, the number of bytes.
+	Value* add_offset_to_ptr(Value* ptr, Value* offset);
+
 private:
 	/// Make this `Builder` ready to insert instructions _after_ the given `inst`
 	void SetInsertPointToAfterInst(Instruction* inst);

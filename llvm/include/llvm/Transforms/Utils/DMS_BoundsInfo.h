@@ -9,38 +9,6 @@ extern const llvm::APInt minusone;
 
 namespace llvm {
 
-/// Casts the given input pointer `ptr` to the LLVM type `i8*`.
-/// The input pointer can be any pointer type, including `i8*` (in which case
-/// this will return the pointer unchanged).
-///
-/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
-Value* castToCharStar(Value* ptr, DMSIRBuilder& Builder);
-
-/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
-/// the resulting pointer.
-/// The input pointer can be any pointer type, the output pointer will
-/// have type `i8*`.
-///
-/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
-Value* add_offset_to_ptr(
-  Value* ptr,
-  const APInt offset,
-  DMSIRBuilder& Builder
-);
-
-/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
-/// the resulting pointer.
-/// The input pointer can be any pointer type, the output pointer will
-/// have type `i8*`.
-/// `offset` should be a non-pointer value -- ie, the number of bytes.
-///
-/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
-Value* add_offset_to_ptr(
-  Value* ptr,
-  Value* offset,
-  DMSIRBuilder& Builder
-);
-
 /// Holds the bounds information for a single pointer, if it is known.
 /// Unlike the PointerStatus, which can be different at different program
 /// points for the same pointer, the BoundsInfo is the same at all program
@@ -113,7 +81,7 @@ public:
     /// Returns the "base" (minimum inbounds pointer value) of the allocation,
     /// as an LLVM `Value` of type `i8*`.
     Value* base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
-      return add_offset_to_ptr(cur_ptr, -low_offset, Builder);
+      return Builder.add_offset_to_ptr(cur_ptr, -low_offset);
     }
 
     /// `cur_ptr`: the pointer value for which these static bounds apply.
@@ -123,7 +91,7 @@ public:
     /// Returns the "max" (maximum inbounds pointer value) of the allocation,
     /// as an LLVM `Value` of type `i8*`.
     Value* max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
-      return add_offset_to_ptr(cur_ptr, high_offset, Builder);
+      return Builder.add_offset_to_ptr(cur_ptr, high_offset);
     }
 
     /// Do the current bounds fail? Meaning, if we were to insert a SW bounds
@@ -160,7 +128,7 @@ public:
 
     /// Get the pointer value as an LLVM `Value` of type `i8*`.
     Value* as_llvm_value(DMSIRBuilder& Builder) const {
-      return add_offset_to_ptr(ptr, offset, Builder);
+      return Builder.add_offset_to_ptr(ptr, offset);
     }
 
     PointerWithOffset() : ptr(NULL), offset(zero) {}

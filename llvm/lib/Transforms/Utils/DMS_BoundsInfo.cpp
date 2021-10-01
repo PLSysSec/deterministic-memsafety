@@ -114,51 +114,6 @@ BoundsInfo BoundsInfo::merge(
 	llvm_unreachable("Missing case in BoundsInfo::merge");
 }
 
-/// Casts the given input pointer `ptr` to the LLVM type `i8*`.
-/// The input pointer can be any pointer type, including `i8*` (in which case
-/// this will return the pointer unchanged).
-///
-/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
-Value* llvm::castToCharStar(Value* ptr, DMSIRBuilder& Builder) {
-	assert(ptr->getType()->isPointerTy());
-	return Builder.CreatePointerCast(ptr, Builder.getInt8PtrTy());
-}
-
-/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
-/// the resulting pointer.
-/// The input pointer can be any pointer type, the output pointer will
-/// have type `i8*`.
-///
-/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
-Value* llvm::add_offset_to_ptr(
-	Value* ptr,
-	const APInt offset,
-	DMSIRBuilder& Builder
-) {
-	Value* casted = castToCharStar(ptr, Builder);
-	if (offset == 0) {
-		return casted;
-	} else {
-		return add_offset_to_ptr(casted, Builder.getInt(offset), Builder);
-	}
-}
-
-/// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
-/// the resulting pointer.
-/// The input pointer can be any pointer type, the output pointer will
-/// have type `i8*`.
-/// `offset` should be a non-pointer value -- ie, the number of bytes.
-///
-/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
-Value* llvm::add_offset_to_ptr(
-  Value* ptr,
-  Value* offset,
-  DMSIRBuilder& Builder
-) {
-	Value* casted = castToCharStar(ptr, Builder);
-	return Builder.CreateGEP(Builder.getInt8Ty(), casted, offset);
-}
-
 /// `cur_ptr` is the pointer which these bounds are for.
 /// Can be any pointer type.
 ///
@@ -241,7 +196,7 @@ Instruction* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) co
 	assert(cur_ptr->getType()->isPointerTy());
 	Module* mod = Builder.GetInsertBlock()->getModule();
 	Type* CharStarTy = Builder.getInt8PtrTy();
-	Value* cur_ptr_as_charstar = castToCharStar(cur_ptr, Builder);
+	Value* cur_ptr_as_charstar = Builder.castToCharStar(cur_ptr);
 	if (kind == BoundsInfo::INFINITE) {
 		FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
 		FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
@@ -278,7 +233,7 @@ BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(Value* ptr, DMSIRBuilder&
 	Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
 	FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
 	FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
-	Value* dynbounds = Builder.CreateCall(GetBounds, castToCharStar(ptr, Builder));
+	Value* dynbounds = Builder.CreateCall(GetBounds, Builder.castToCharStar(ptr));
 	Value* base = Builder.CreateExtractValue(dynbounds, 0);
 	Value* max = Builder.CreateExtractValue(dynbounds, 1);
 	return BoundsInfo::DynamicBoundsInfo(base, max);
@@ -665,8 +620,8 @@ void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
 			// here should not change from iteration to iteration
 			if (!is_binfo_present(&call)) {
 				DMSIRBuilder Builder(&call, DMSIRBuilder::AFTER, &added_insts);
-				Value* callPlusBytes = add_offset_to_ptr(&call, IAC.allocation_bytes, Builder);
-				Value* max = add_offset_to_ptr(callPlusBytes, minusone, Builder);
+				Value* callPlusBytes = Builder.add_offset_to_ptr(&call, IAC.allocation_bytes);
+				Value* max = Builder.add_offset_to_ptr(callPlusBytes, minusone);
 				map[&call] = BoundsInfo::dynamic_bounds(&call, max);
 			}
 		}
