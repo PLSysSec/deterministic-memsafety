@@ -55,6 +55,20 @@ static GEPResultClassification classifyGEPResult(
   DenseSet<const Instruction*>& added_insts
 );
 
+/// Same as `classifyGEPResult`, but caches its results. If you call this with
+/// the same arguments multiple times, you'll get the same result back.
+/// (Critically, this _won't_ insert dynamic instructions on subsequent calls
+/// with the same arguments, even if the first call required inserting dynamic
+/// instructions.)
+static GEPResultClassification classifyGEPResult_cached(
+  GetElementPtrInst &gep,
+  const PointerStatus input_status,
+  const DataLayout &DL,
+  const bool trust_llvm_struct_types,
+  const APInt* override_constant_offset,
+  DenseSet<const Instruction*>& added_insts
+);
+
 /// Conceptually stores the PointerKind of all currently valid pointers at a
 /// particular program point.
 class PointerStatuses {
@@ -170,7 +184,7 @@ public:
             // constant-GEP expression
             Instruction* inst = expr->getAsInstruction();
             GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-            return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL, added_insts).classification;
+            return classifyGEPResult_cached(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL, added_insts).classification;
           }
           default: {
             LLVM_DEBUG(dbgs() << "constant expression of unhandled opcode:\n");
@@ -769,16 +783,12 @@ private:
   ) {
     PerBlockState& pbs = block_states.lookup(&block);
 
-    LLVM_DEBUG(
-      StringRef blockname;
-      if (block.hasName()) {
-        blockname = block.getName();
-      } else {
-        blockname = "<anonymous>";
-      }
-      dbgs() << "DMS: analyzing block " << blockname << "\n";
-    );
+    LLVM_DEBUG(dbgs() << "DMS: analyzing block " << block.getNameOrAsOperand() << "\n");
     DEBUG_WITH_TYPE("DMS-block-previous-state", dbgs() << "DMS:   this block previously had " << pbs.ptrs_beg.describe() << " at beginning and " << pbs.ptrs_end.describe() << " at end\n");
+
+    // this is just so we can report how many new instructions were added
+    // during this call to analyze_block at the end
+    auto num_added_insts_before_analyze_block = added_insts.size();
 
     bool isEntryBlock = block.hasNPredecessors(0);  // technically a dead block could also have 0 predecessors, but we don't care what this analysis does with dead blocks. (If you run this pass after optimizations there shouldn't be dead blocks anyway.)
 
@@ -1094,7 +1104,7 @@ private:
             // we don't consider it an induction pattern if it had negative initial and/or induction offsets
             ipr.is_induction_pattern = false;
           }
-          GEPResultClassification grc = classifyGEPResult(
+          GEPResultClassification grc = classifyGEPResult_cached(
             gep, input_status, DL,
             settings.trust_llvm_struct_types,
             ipr.is_induction_pattern ? &ipr.induction_offset : NULL,
@@ -1368,7 +1378,7 @@ private:
     DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   at end of block, we now have " << ptr_statuses.describe() << "\n");
     bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end);
     if (changed) {
-      DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   this was a change\n");
+      LLVM_DEBUG(dbgs() << "DMS:   end-of-block pointer statuses have changed\n");
     }
     pbs.ptrs_end = std::move(ptr_statuses);
     pbs.static_results = static_results;
@@ -1377,6 +1387,19 @@ private:
       block.dump();
       llvm_unreachable("block not well-formed at end of analyze_block");
     }
+
+    LLVM_DEBUG(
+      auto num_new_insts = added_insts.size() - num_added_insts_before_analyze_block;
+      auto num_new_blocks = new_blocks.size();
+      dbgs() << "DMS: done analyzing block " << block.getNameOrAsOperand();
+      if (num_new_insts > 0) dbgs() << "; " << num_new_insts << " new instructions added";
+      if (num_new_blocks > 0) dbgs() << "; " << num_new_blocks << " new blocks added";
+      dbgs() << "\n";
+      if (num_new_insts > 0) {
+        dbgs() << "new block:\n";
+        block.dump();
+      }
+    );
 
     // If any new blocks were created/inserted during this call to
     // `analyze_block`, let's also analyze the new blocks before returning.
@@ -1977,6 +2000,83 @@ static GEPResultClassification classifyGEPResult(
     grc.classification = PointerStatus::dirty();
     return grc;
   }
+}
+
+/// Used only for `classifyGEPResult_cached`; see notes there
+struct GEPResultCacheKey {
+  GetElementPtrInst* gep;
+  PointerStatus input_status;
+  bool trust_llvm_struct_types;
+  const APInt* override_constant_offset;
+
+  GEPResultCacheKey(
+    GetElementPtrInst* gep,
+    PointerStatus input_status,
+    bool trust_llvm_struct_types,
+    const APInt* override_constant_offset
+  ) : gep(gep), input_status(input_status), trust_llvm_struct_types(trust_llvm_struct_types), override_constant_offset(override_constant_offset)
+  {}
+
+  bool operator==(const GEPResultCacheKey& other) const {
+    return
+      gep == other.gep &&
+      input_status == other.input_status &&
+      trust_llvm_struct_types == other.trust_llvm_struct_types &&
+      override_constant_offset == other.override_constant_offset;
+  }
+  bool operator!=(const GEPResultCacheKey& other) const {
+    return !(*this == other);
+  }
+};
+
+// it seems this is required in order for GEPResultCacheKey to be a key type in
+// a DenseMap
+namespace llvm {
+template<> struct DenseMapInfo<GEPResultCacheKey> {
+  static inline GEPResultCacheKey getEmptyKey() {
+    return GEPResultCacheKey(NULL, PointerStatus::notdefinedyet(), true, NULL);
+  }
+  static inline GEPResultCacheKey getTombstoneKey() {
+    return GEPResultCacheKey(
+      DenseMapInfo<GetElementPtrInst*>::getTombstoneKey(),
+      PointerStatus::notdefinedyet(),
+      true,
+      DenseMapInfo<const APInt*>::getTombstoneKey()
+    );
+  }
+  static unsigned getHashValue(const GEPResultCacheKey &Val) {
+    return
+      DenseMapInfo<GetElementPtrInst*>::getHashValue(Val.gep) ^
+      Val.input_status.kind ^
+      DenseMapInfo<const Value*>::getHashValue(Val.input_status.dynamic_kind) ^
+      (Val.trust_llvm_struct_types ? 0 : -1) ^
+      DenseMapInfo<const APInt*>::getHashValue(Val.override_constant_offset);
+  }
+  static bool isEqual(const GEPResultCacheKey &LHS, const GEPResultCacheKey &RHS) {
+    return LHS == RHS;
+  }
+};
+} // end namespace llvm
+
+/// Same as `classifyGEPResult`, but caches its results. If you call this with
+/// the same arguments multiple times, you'll get the same result back.
+/// (Critically, this _won't_ insert dynamic instructions on subsequent calls
+/// with the same arguments, even if the first call required inserting dynamic
+/// instructions.)
+static GEPResultClassification classifyGEPResult_cached(
+  GetElementPtrInst& gep,
+  const PointerStatus input_status,
+  const DataLayout &DL,
+  const bool trust_llvm_struct_types,
+  const APInt* override_constant_offset,
+  DenseSet<const Instruction*>& added_insts
+) {
+  static DenseMap<GEPResultCacheKey, GEPResultClassification> cache;
+  GEPResultCacheKey key(&gep, input_status, trust_llvm_struct_types, override_constant_offset);
+  if (cache.count(key) > 0) return cache[key];
+  GEPResultClassification res = classifyGEPResult(gep, input_status, DL, trust_llvm_struct_types, override_constant_offset, added_insts);
+  cache[key] = res;
+  return res;
 }
 
 /// Print a description of the pointers in `ptrs` to `out`. `desc` is an
