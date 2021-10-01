@@ -825,6 +825,11 @@ private:
       }
     }
 
+    DEBUG_WITH_TYPE("DMS-inst-processing",
+      auto num_new_insts = added_insts.size() - num_added_insts_before_analyze_block;
+      if (num_new_insts > 0) dbgs() << "DMS:   " << num_new_insts << " new instructions added in top-of-block processing\n";
+    );
+
     StaticResults static_results = { 0 };
 
     // Blocks which have been created/inserted during this call to
@@ -872,11 +877,16 @@ private:
     // produce pointers
     // (and of course we want to statically count a few other kinds of events)
     for (Instruction &inst : block) {
+      DEBUG_WITH_TYPE("DMS-inst-processing", dbgs() << "DMS:   processing instruction "; inst.dump());
       if (added_insts.count(&inst)) {
         // see notes on added_insts
+        DEBUG_WITH_TYPE("DMS-inst-processing", dbgs() << "DMS:     it's an added inst\n");
         continue;
       }
       bool block_done = false;
+      // this is just so we can report how many new instructions were added
+      // while processing this instruction
+      auto num_added_insts_before_processing_this_inst = added_insts.size();
       switch (inst.getOpcode()) {
         case Instruction::Store: {
           StoreInst& store = cast<StoreInst>(inst);
@@ -885,6 +895,7 @@ private:
           COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
           // insert a bounds check before the store, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&store)) {
+            DEBUG_WITH_TYPE("DMS-inst-processing", dbgs() << "DMS:   inserting a bounds check if necessary\n");
             DMSIRBuilder BeforeStore(&store, DMSIRBuilder::BEFORE, &added_insts);
             block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore, new_blocks);
             checked_insts.insert(&store);
@@ -1000,6 +1011,7 @@ private:
           COUNT_OP_AS_STATUS(load_addrs, ptr_statuses.getStatus(ptr), &inst, "Loading from pointer");
           // insert a bounds check before the load, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&load)) {
+            DEBUG_WITH_TYPE("DMS-inst-processing", dbgs() << "DMS:   inserting a bounds check if necessary\n");
             DMSIRBuilder BeforeLoad(&load, DMSIRBuilder::BEFORE, &added_insts);
             block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), BeforeLoad, new_blocks);
             checked_insts.insert(&load);
@@ -1370,6 +1382,10 @@ private:
           }
           break;
       }
+      DEBUG_WITH_TYPE("DMS-inst-processing",
+        auto num_new_insts = added_insts.size() - num_added_insts_before_processing_this_inst;
+        if (num_new_insts > 0) dbgs() << "DMS:   " << num_new_insts << " new instructions added while processing this instruction\n";
+      );
       if (block_done) break;
     }
 
