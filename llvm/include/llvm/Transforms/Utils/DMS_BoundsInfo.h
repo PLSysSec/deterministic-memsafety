@@ -1,7 +1,8 @@
 #include "llvm/ADT/APInt.h"
-#include "llvm/IR/IRBuilder.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Transforms/Utils/DMS_common.h"
+#include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 
 extern const llvm::APInt zero;
 extern const llvm::APInt minusone;
@@ -12,30 +13,19 @@ namespace llvm {
 /// The input pointer can be any pointer type, including `i8*` (in which case
 /// this will return the pointer unchanged).
 ///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
-Value* castToCharStar(
-	Value* ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
-);
+/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
+Value* castToCharStar(Value* ptr, DMSIRBuilder& Builder);
 
 /// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
 /// the resulting pointer.
 /// The input pointer can be any pointer type, the output pointer will
 /// have type `i8*`.
 ///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
+/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
 Value* add_offset_to_ptr(
   Value* ptr,
   const APInt offset,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
+  DMSIRBuilder& Builder
 );
 
 /// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
@@ -44,15 +34,11 @@ Value* add_offset_to_ptr(
 /// have type `i8*`.
 /// `offset` should be a non-pointer value -- ie, the number of bytes.
 ///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`, see notes there
+/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
 Value* add_offset_to_ptr(
   Value* ptr,
   Value* offset,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
+  DMSIRBuilder& Builder
 );
 
 /// Holds the bounds information for a single pointer, if it is known.
@@ -122,36 +108,22 @@ public:
 
     /// `cur_ptr`: the pointer value for which these static bounds apply.
     ///
-    /// `Builder`: the IRBuilder to use to insert dynamic instructions.
-    ///
-    /// `bounds_insts`: If we insert any instructions into the program, we'll
-    /// also add them to `bounds_insts`, see notes there
+    /// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
     ///
     /// Returns the "base" (minimum inbounds pointer value) of the allocation,
     /// as an LLVM `Value` of type `i8*`.
-    Value* base_as_llvm_value(
-      Value* cur_ptr,
-      IRBuilder<>& Builder,
-      DenseSet<const Instruction*>& bounds_insts
-    ) const {
-      return add_offset_to_ptr(cur_ptr, -low_offset, Builder, bounds_insts);
+    Value* base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
+      return add_offset_to_ptr(cur_ptr, -low_offset, Builder);
     }
 
     /// `cur_ptr`: the pointer value for which these static bounds apply.
     ///
-    /// `Builder`: the IRBuilder to use to insert dynamic instructions.
-    ///
-    /// `bounds_insts`: If we insert any instructions into the program, we'll
-    /// also add them to `bounds_insts`, see notes there
+    /// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
     ///
     /// Returns the "max" (maximum inbounds pointer value) of the allocation,
     /// as an LLVM `Value` of type `i8*`.
-    Value* max_as_llvm_value(
-      Value* cur_ptr,
-      IRBuilder<>& Builder,
-      DenseSet<const Instruction*>& bounds_insts
-    ) const {
-      return add_offset_to_ptr(cur_ptr, high_offset, Builder, bounds_insts);
+    Value* max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
+      return add_offset_to_ptr(cur_ptr, high_offset, Builder);
     }
 
     /// Do the current bounds fail? Meaning, if we were to insert a SW bounds
@@ -187,11 +159,8 @@ public:
     APInt offset;
 
     /// Get the pointer value as an LLVM `Value` of type `i8*`.
-    ///
-    /// `bounds_insts`: If we insert any instructions into the program, we'll
-    /// also add them to `bounds_insts`, see notes there
-    Value* as_llvm_value(IRBuilder<>& Builder, DenseSet<const Instruction*>& bounds_insts) const {
-      return add_offset_to_ptr(ptr, offset, Builder, bounds_insts);
+    Value* as_llvm_value(DMSIRBuilder& Builder) const {
+      return add_offset_to_ptr(ptr, offset, Builder);
     }
 
     PointerWithOffset() : ptr(NULL), offset(zero) {}
@@ -362,82 +331,50 @@ public:
 
   /// `cur_ptr`: the pointer value for which these bounds apply.
   ///
-  /// `Builder`: the IRBuilder to use to insert dynamic instructions.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
+  /// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
   ///
   /// Returns the "base" (minimum inbounds pointer value) of the allocation,
   /// as an LLVM `Value` of type `i8*`.
   /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
   /// The `kind` should not be NOTDEFINEDYET.
-  Value* base_as_llvm_value(
-    Value* cur_ptr,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
-  ) const;
+  Value* base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const;
 
   /// `cur_ptr`: the pointer value for which these bounds apply.
   ///
-  /// `Builder`: the IRBuilder to use to insert dynamic instructions.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
+  /// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
   ///
   /// Returns the "max" (maximum inbounds pointer value) of the allocation,
   /// as an LLVM `Value` of type `i8*`.
   /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
   /// The `kind` should not be NOTDEFINEDYET.
-  Value* max_as_llvm_value(
-    Value* cur_ptr,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
-  ) const;
+  Value* max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const;
 
   /// `cur_ptr` is the pointer which these bounds are for.
   ///
-  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
   /// that is necessary.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
   static BoundsInfo merge(
     const BoundsInfo& A,
     const BoundsInfo& B,
     Value* cur_ptr,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
+    DMSIRBuilder& Builder
   );
 
   /// Insert dynamic instructions to store this bounds info.
   ///
   /// `cur_ptr` is the pointer which these bounds are for.
   ///
-  /// `Builder` is the IRBuilder to use to insert dynamic instructions.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
+  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
   ///
   /// Returns the Call instruction if one was inserted, or else NULL
-  Instruction* store_dynamic(
-    Value* cur_ptr,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
-  ) const;
+  Instruction* store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const;
 
   /// Insert dynamic instructions to load bounds info for the given `ptr`.
   /// Bounds info for this `ptr` should have been previously stored with
   /// `store_dynamic()`.
   ///
-  /// Insert dynamic instructions using the given `IRBuilder`.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
-  static DynamicBoundsInfo load_dynamic(
-    Value* ptr,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
-  );
+  /// Insert dynamic instructions using the given `DMSIRBuilder`.
+  static DynamicBoundsInfo load_dynamic(Value* ptr, DMSIRBuilder& Builder);
 
 private:
   /// This should really be a union.  But C++ complains hard about implicitly
@@ -456,34 +393,26 @@ private:
 
   /// `cur_ptr` is the pointer which these bounds are for.
   ///
-  /// `Builder` is the IRBuilder to use to insert dynamic instructions.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
+  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
   static BoundsInfo merge_static_dynamic(
     const StaticBoundsInfo& static_info,
     const DynamicBoundsInfo& dynamic_info,
     Value* cur_ptr,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
+    DMSIRBuilder& Builder
   );
 
-  /// `Builder` is the IRBuilder to use to insert dynamic instructions.
-  ///
-  /// `bounds_insts`: If we insert any instructions into the program, we'll
-  /// also add them to `bounds_insts`, see notes there
+  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
   static BoundsInfo merge_dynamic_dynamic(
     const DynamicBoundsInfo& a_info,
     const DynamicBoundsInfo& b_info,
-    IRBuilder<>& Builder,
-    DenseSet<const Instruction*>& bounds_insts
+    DMSIRBuilder& Builder
   );
 };
 
 /// Holds the bounds information for all pointers in the function.
 class BoundsInfos final {
 public:
-  BoundsInfos(const Function&, const DataLayout&);
+  BoundsInfos(const Function&, const DataLayout&, DenseSet<const Instruction*>&);
 
   /// Mark the given pointer as having the given bounds information.
   void mark_as(const Value* ptr, const BoundsInfo binfo) {
@@ -512,17 +441,6 @@ public:
   /// pointer
   void propagate_bounds_id(Instruction& inst);
 
-  /// List of instructions which were added for the purpose of computing bounds
-  /// information. They aren't in the original program (so shouldn't count for
-  /// stats purposes). The results of these instructions will be used only in
-  /// bounds checks, if ever; if they are pointers, they will never be
-  /// dereferenced.
-  ///
-  /// We don't necessarily add all the instructions we insert for bounds
-  /// purposes to this set. But, the intent is that we at minimum add all the
-  /// pointer-producing instructions, and all the calls.
-  DenseSet<const Instruction*> added_insts;
-
 private:
   /// Maps a pointer to its bounds info, if we know anything about its bounds
   /// info.
@@ -531,6 +449,10 @@ private:
   DenseMap<const Value*, BoundsInfo> map;
 
   const DataLayout& DL;
+
+  /// Reference to the `added_insts` where we note any instructions added for
+  /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
+  DenseSet<const Instruction*>& added_insts;
 
   /// Value type for the below map
   class BoundsStoringCall final {

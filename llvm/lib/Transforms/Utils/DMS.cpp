@@ -3,6 +3,7 @@
 #include "llvm/Transforms/Utils/DMS_common.h"
 #include "llvm/Transforms/Utils/DMS_DynamicResults.h"
 #include "llvm/Transforms/Utils/DMS_Induction.h"
+#include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
 
 #include "llvm/ADT/APInt.h"
@@ -15,7 +16,6 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/Debug.h"
 
@@ -35,12 +35,8 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
 
 /// If computing the allocation size requires inserting dynamic instructions,
-/// use `Builder` and add those instructions to `bounds_insts`
-static IsAllocatingCall isAllocatingCall(
-  const CallBase &call,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
-);
+/// use `Builder`
+static IsAllocatingCall isAllocatingCall(const CallBase &call, DMSIRBuilder& Builder);
 
 /// Classify the `PointerStatus` of the result of the given `gep`, assuming that its
 /// input pointer is `input_status`.
@@ -50,17 +46,31 @@ static IsAllocatingCall isAllocatingCall(
 ///
 /// `override_constant_offset`: if this is not NULL, then ignore the GEP's indices
 /// and classify it as if the offset were the given compile-time constant.
-static GEPResultClassification classifyGEPResult(GetElementPtrInst &gep, const PointerStatus input_status, const DataLayout &DL, const bool trust_llvm_struct_types, const APInt* override_constant_offset);
+static GEPResultClassification classifyGEPResult(
+  GetElementPtrInst &gep,
+  const PointerStatus input_status,
+  const DataLayout &DL,
+  const bool trust_llvm_struct_types,
+  const APInt* override_constant_offset,
+  DenseSet<const Instruction*>& added_insts
+);
 
 /// Conceptually stores the PointerKind of all currently valid pointers at a
 /// particular program point.
 class PointerStatuses {
+private:
+  /// Maps a pointer to its status.
+  /// Pointers not appearing in this map are considered NOTDEFINEDYET.
+  /// As a corollary, hopefully all pointers which are currently live do appear
+  /// in this map.
+  SmallDenseMap<const Value*, PointerStatus, 8> map;
+
 public:
-  PointerStatuses(const DataLayout &DL, const bool trust_llvm_struct_types)
-    : DL(DL), trust_llvm_struct_types(trust_llvm_struct_types) {}
+  PointerStatuses(const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
+    : DL(DL), trust_llvm_struct_types(trust_llvm_struct_types), added_insts(added_insts) {}
 
   PointerStatuses(const PointerStatuses& other)
-    : DL(other.DL), trust_llvm_struct_types(other.trust_llvm_struct_types), map(other.map) {}
+    : map(other.map), DL(other.DL), trust_llvm_struct_types(other.trust_llvm_struct_types), added_insts(other.added_insts) {}
 
   PointerStatuses operator=(const PointerStatuses& other) {
     assert(DL == other.DL);
@@ -160,7 +170,7 @@ public:
             // constant-GEP expression
             Instruction* inst = expr->getAsInstruction();
             GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-            return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL).classification;
+            return classifyGEPResult(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL, added_insts).classification;
           }
           default: {
             LLVM_DEBUG(dbgs() << "constant expression of unhandled opcode:\n");
@@ -234,16 +244,14 @@ public:
   /// use the `PointerStatus` `merge` function to combine the two results.
   /// Recall that any pointer not appearing in the `map` is considered NOTDEFINEDYET.
   ///
-  /// `insertion_pt`: If we need to insert new dynamic instructions to handle
-  /// a dynamic merge, insert them before this Instruction.
+  /// If we need to insert dynamic instructions to handle the merge, use
+  /// `Builder`.
   /// We will only potentially need to do this if at least one of the statuses
-  /// is DYNAMIC with a non-null `dynamic_kind`. If none of the statuses is
-  /// DYNAMIC with a non-null `dynamic_kind`, then this parameter is ignored
-  /// (and may be NULL).
-  static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b, Instruction* insertion_pt) {
+  /// is DYNAMIC with a non-null `dynamic_kind`.
+  static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b, DMSIRBuilder& Builder) {
     assert(a.DL == b.DL);
     assert(a.trust_llvm_struct_types == b.trust_llvm_struct_types);
-    PointerStatuses merged(a.DL, a.trust_llvm_struct_types);
+    PointerStatuses merged(a.DL, a.trust_llvm_struct_types, a.added_insts);
     for (const auto& pair : a.map) {
       const Value* ptr = pair.getFirst();
       const PointerStatus status_in_a = pair.getSecond();
@@ -253,7 +261,7 @@ public:
         PointerStatus::notdefinedyet() :
         // defined in b, get the status
         it->getSecond();
-      merged.mark_as(ptr, PointerStatus::merge(status_in_a, status_in_b, insertion_pt));
+      merged.mark_as(ptr, PointerStatus::merge(status_in_a, status_in_b, Builder));
     }
     // at this point we've handled all the pointers which were defined in a.
     // what's left is the pointers which were defined in b and NOTDEFINEDYET in a
@@ -263,7 +271,7 @@ public:
       const auto& it = a.map.find(ptr);
       if (it == a.map.end()) {
         // implicitly NOTDEFINEDYET in a
-        merged.mark_as(ptr, PointerStatus::merge(PointerStatus::notdefinedyet(), status_in_b, insertion_pt));
+        merged.mark_as(ptr, PointerStatus::merge(PointerStatus::notdefinedyet(), status_in_b, Builder));
       }
     }
     return merged;
@@ -272,11 +280,10 @@ public:
 private:
   const DataLayout &DL;
   const bool trust_llvm_struct_types;
-  /// Maps a pointer to its status.
-  /// Pointers not appearing in this map are considered NOTDEFINEDYET.
-  /// As a corollary, hopefully all pointers which are currently live do appear
-  /// in this map.
-  SmallDenseMap<const Value*, PointerStatus, 8> map;
+
+  /// Reference to the `added_insts` where we note any instructions added for
+  /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
+  DenseSet<const Instruction*>& added_insts;
 };
 
 template<typename K, typename V, unsigned N>
@@ -346,8 +353,8 @@ public:
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())),
       blocks_in_function(F.getBasicBlockList().size()),
       pointer_encoding_is_complete(false),
-      block_states(BlockStates(F, DL, settings.trust_llvm_struct_types)),
-      bounds_infos(BoundsInfos(F, DL)),
+      block_states(BlockStates(F, DL, settings.trust_llvm_struct_types, added_insts)),
+      bounds_infos(BoundsInfos(F, DL, added_insts)),
       boundscheckfail_bb(NULL)
   {}
 
@@ -521,14 +528,27 @@ private:
   /// pointers stored in memory.
   bool pointer_encoding_is_complete;
 
+  /// List of instructions which were added for the purpose of computing status
+  /// or bounds information. They aren't in the original program (so shouldn't
+  /// count for stats purposes). The results of these instructions will be used
+  /// only to determine dynamic pointer statuses and/or bounds, if ever; if they
+  /// are pointers, they will never be dereferenced.
+  ///
+  /// We don't necessarily add all the instructions we insert for status/bounds
+  /// purposes to this set. But, the intent is that we at minimum add all the
+  /// pointer-producing instructions, and all the calls.
+  DenseSet<const Instruction*> added_insts;
+
   /// This holds the per-block state for the analysis. One instance of this
   /// class is kept per block in the function.
   class PerBlockState final {
   public:
-    PerBlockState(const DataLayout &DL, const bool trust_llvm_struct_types)
-      : ptrs_beg(PointerStatuses(DL, trust_llvm_struct_types)),
-        ptrs_end(PointerStatuses(DL, trust_llvm_struct_types)),
-        static_results(StaticResults { 0 }) {}
+    PerBlockState(const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
+      : ptrs_beg(PointerStatuses(DL, trust_llvm_struct_types, added_insts)),
+        ptrs_end(PointerStatuses(DL, trust_llvm_struct_types, added_insts)),
+        static_results(StaticResults { 0 }),
+        added_insts(added_insts)
+      {}
 
     /// The status of all pointers at the _beginning_ of the block.
     PointerStatuses ptrs_beg;
@@ -536,13 +556,21 @@ private:
     PointerStatuses ptrs_end;
     /// The `StaticResults` which we got last time we analyzed this block.
     DMSAnalysis::StaticResults static_results;
+
+  private:
+    /// Reference to the `added_insts` where we note any instructions added for
+    /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
+    DenseSet<const Instruction*>& added_insts;
   };
 
   /// This holds the per-block states for all blocks
   class BlockStates final {
+  private:
+    DenseMap<const BasicBlock*, PerBlockState*> block_states;
+
   public:
-    explicit BlockStates(const Function& F, const DataLayout &DL, const bool trust_llvm_struct_types)
-      : DL(DL), trust_llvm_struct_types(trust_llvm_struct_types)
+    explicit BlockStates(const Function& F, const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
+      : DL(DL), trust_llvm_struct_types(trust_llvm_struct_types), added_insts(added_insts)
     {
       // For now, if any function parameters are pointers,
       // mark them UNKNOWN in the function's entry block
@@ -569,7 +597,7 @@ private:
       if (block_states.count(block) > 0) {
         return *block_states[block];
       } else {
-        PerBlockState* pbs = new PerBlockState(DL, trust_llvm_struct_types);
+        PerBlockState* pbs = new PerBlockState(DL, trust_llvm_struct_types, added_insts);
         block_states[block] = pbs;
         return *pbs;
       }
@@ -583,9 +611,12 @@ private:
     }
 
   private:
-    DenseMap<const BasicBlock*, PerBlockState*> block_states;
     const DataLayout& DL;
     const bool trust_llvm_struct_types;
+
+    /// Reference to the `added_insts` where we note any instructions added for
+    /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
+    DenseSet<const Instruction*>& added_insts;
   };
 
   BlockStates block_states;
@@ -694,6 +725,7 @@ private:
   PointerStatuses computeTopOfBlockPointerStatuses(BasicBlock &block) {
     assert(block.hasNPredecessorsOrMore(1));
     auto preds = pred_begin(&block);
+    DMSIRBuilder Builder(&block, DMSIRBuilder::BEGINNING, &added_insts);
     const BasicBlock* firstPred = *preds;
     const PerBlockState& firstPred_pbs = block_states.lookup(firstPred);
     // we start with all of the ptr_statuses at the end of our first predecessor,
@@ -704,7 +736,7 @@ private:
       const BasicBlock* otherPred = *it;
       const PerBlockState& otherPred_pbs = block_states.lookup(otherPred);
       DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   next predecessor has " << otherPred_pbs.ptrs_end.describe() << " at end\n");
-      ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs.ptrs_end, &block.front());
+      ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs.ptrs_end, Builder);
     }
     return ptr_statuses;
   }
@@ -830,7 +862,7 @@ private:
     // produce pointers
     // (and of course we want to statically count a few other kinds of events)
     for (Instruction &inst : block) {
-      if (bounds_infos.added_insts.count(&inst)) {
+      if (added_insts.count(&inst)) {
         // see notes on added_insts
         continue;
       }
@@ -843,7 +875,7 @@ private:
           COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
           // insert a bounds check before the store, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&store)) {
-            IRBuilder<> BeforeStore(&store);
+            DMSIRBuilder BeforeStore(&store, DMSIRBuilder::BEFORE, &added_insts);
             block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore, new_blocks);
             checked_insts.insert(&store);
           }
@@ -872,8 +904,7 @@ private:
               // Compute the updated mask, i.e. the one that we should be
               // using based on our most up-to-date knowledge of status of
               // `storedVal`
-              IRBuilder<> Builder(storedVal_inst);
-              Value* new_mask = storedVal_status.to_dynamic_kind_mask(Builder);
+              Value* new_mask = storedVal_status.to_dynamic_kind_mask(F.getContext());
 
               // `maskedVal` is the integer resulting from applying the mask
               Value* maskedVal = storedVal_inst->getOperand(0);
@@ -914,6 +945,7 @@ private:
                 } else {
                   // old mask was constant 0, new one is not. We need to insert
                   // a new `Or` instruction to apply the new mask
+                  DMSIRBuilder Builder(storedVal_inst, DMSIRBuilder::BEFORE, &added_insts);
                   Value* new_maskedVal = Builder.CreateOr(maskedVal, new_mask);
                   // update storedVal_inst to use this new masked value as its input
                   storedVal_inst->setOperand(0, new_maskedVal);
@@ -932,8 +964,8 @@ private:
               // be 0 for valid pointers.)
               LLVM_DEBUG(dbgs() << "DMS:   encoding a stored pointer\n");
               // create `new_storedVal` which has the appropriate bits set
-              IRBuilder<> Builder(&store);
-              Value* mask = storedVal_status.to_dynamic_kind_mask(Builder);
+              DMSIRBuilder Builder(&store, DMSIRBuilder::BEFORE, NULL); // we explicitly don't want to add these to inserted_insts; we still want to track and process them in future iterations
+              Value* mask = storedVal_status.to_dynamic_kind_mask(F.getContext());
               Value* storedVal_as_int = Builder.CreatePtrToInt(storedVal, Builder.getInt64Ty());
               Value* new_storedVal = Builder.CreateOr(storedVal_as_int, mask);
               Value* new_storedVal_as_ptr = Builder.CreateIntToPtr(new_storedVal, storedVal->getType());
@@ -958,7 +990,7 @@ private:
           COUNT_OP_AS_STATUS(load_addrs, ptr_statuses.getStatus(ptr), &inst, "Loading from pointer");
           // insert a bounds check before the load, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&load)) {
-            IRBuilder<> BeforeLoad(&load);
+            DMSIRBuilder BeforeLoad(&load, DMSIRBuilder::BEFORE, &added_insts);
             block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), BeforeLoad, new_blocks);
             checked_insts.insert(&load);
           }
@@ -982,15 +1014,14 @@ private:
               }
             } else if (settings.do_pointer_encoding) {
               // insert the instructions to interpret the encoded pointer
-              IRBuilder<> AfterLoad(&block);
-              setInsertPointToAfterInst(AfterLoad, &load);
+              DMSIRBuilder AfterLoad(&load, DMSIRBuilder::AFTER, NULL); // we explicitly don't want to add these to inserted_insts; we still want to track and process them in future iterations
               Value* val_as_int = AfterLoad.CreatePtrToInt(&load, AfterLoad.getInt64Ty());
               Value* dynamic_kind = AfterLoad.CreateAnd(val_as_int, DynamicKindMasks::dynamic_kind_mask);
               Value* new_val = AfterLoad.CreateAnd(val_as_int, ~DynamicKindMasks::dynamic_kind_mask);
               Value* new_val_as_ptr = AfterLoad.CreateIntToPtr(new_val, load.getType());
               // replace all uses of `load` with the modified loaded ptr, except
               // of course the use which we just inserted (which generates
-              // `val_as_int`), and any uses in `bounds_infos.added_insts`
+              // `val_as_int`)
               load.replaceUsesWithIf(
                 new_val_as_ptr,
                 [val_as_int](Use &U){ return U.getUser() != val_as_int; }
@@ -1014,7 +1045,7 @@ private:
                 // pointer, we could/should wait until it is needed for a SW
                 // bounds check. I'm envisioning some type of laziness solution
                 // inside BoundsInfo.
-                BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(new_val_as_ptr, AfterLoad, bounds_infos.added_insts);
+                BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(new_val_as_ptr, AfterLoad);
                 bounds_infos.mark_as(&load, BoundsInfo(std::move(loadedInfo)));
               }
             } else {
@@ -1030,9 +1061,8 @@ private:
                 // bounds check. I'm envisioning some type of laziness solution
                 // inside BoundsInfo.
                 if (!bounds_infos.is_binfo_present(&load)) {
-                  IRBuilder<> AfterLoad(&block);
-                  setInsertPointToAfterInst(AfterLoad, &load);
-                  BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(&load, AfterLoad, bounds_infos.added_insts);
+                  DMSIRBuilder AfterLoad(&load, DMSIRBuilder::AFTER, &added_insts);
+                  BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(&load, AfterLoad);
                   bounds_infos.mark_as(&load, BoundsInfo(std::move(loadedInfo)));
                 }
               }
@@ -1067,7 +1097,8 @@ private:
           GEPResultClassification grc = classifyGEPResult(
             gep, input_status, DL,
             settings.trust_llvm_struct_types,
-            ipr.is_induction_pattern ? &ipr.induction_offset : NULL
+            ipr.is_induction_pattern ? &ipr.induction_offset : NULL,
+            added_insts
           );
           ptr_statuses.mark_as(&gep, grc.classification);
           // if we added a nonzero constant to a pointer, count that for stats purposes
@@ -1104,7 +1135,8 @@ private:
             // output is clean if both inputs are clean; etc
             const PointerStatus true_status = ptr_statuses.getStatus(select.getTrueValue());
             const PointerStatus false_status = ptr_statuses.getStatus(select.getFalseValue());
-            ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status, &inst));
+            DMSIRBuilder Builder(&select, DMSIRBuilder::BEFORE, &added_insts);
+            ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status, Builder));
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(select);
             }
@@ -1113,7 +1145,8 @@ private:
         }
         case Instruction::PHI: {
           PHINode& phi = cast<PHINode>(inst);
-          IRBuilder<> Builder(&inst);
+          DMSIRBuilder BeforePhi(&phi, DMSIRBuilder::BEFORE, &added_insts);
+          DMSIRBuilder AfterPhi(&block, DMSIRBuilder::BEGINNING, &added_insts);
           if (phi.getType()->isPointerTy()) {
             SmallVector<std::pair<PointerStatus, BasicBlock*>, 4> incoming_statuses;
             for (const Use& use : phi.incoming_values()) {
@@ -1148,11 +1181,7 @@ private:
                     status_phi->setIncomingValueForBlock(incoming_bb, incoming_status.dynamic_kind);
                   }
                 } else {
-                  Value* new_dynamic_kind = incoming_status.to_dynamic_kind_mask(Builder);
-                  assert(new_dynamic_kind && "when pointer_encoding_is_complete, we shouldn't have dynamic_kind == NULL");
-                  // since incoming_status.kind isn't DYNAMIC, new_dynamic_kind
-                  // should be a ConstantInt
-                  ConstantInt* new_mask = cast<ConstantInt>(new_dynamic_kind);
+                  ConstantInt* new_mask = incoming_status.to_constant_dynamic_kind_mask(F.getContext());
                   if (const ConstantInt* old_mask = cast<const ConstantInt>(old_incoming_kind)) {
                     if (new_mask->getValue() == old_mask->getValue()) {
                       // up to date, nothing to do
@@ -1196,11 +1225,16 @@ private:
                 }
               }
               if (pointer_encoding_is_complete && !all_incoming_status_are_static) {
-                PHINode* status_phi = Builder.CreatePHI(Builder.getInt64Ty(), phi.getNumIncomingValues());
+                PHINode* status_phi = BeforePhi.CreatePHI(BeforePhi.getInt64Ty(), phi.getNumIncomingValues());
                 for (auto& pair : incoming_statuses) {
                   PointerStatus& incoming_status = pair.first;
                   BasicBlock* incoming_bb = pair.second;
-                  Value* dynamic_kind = incoming_status.to_dynamic_kind_mask(Builder);
+                  if (incoming_status.kind == PointerKind::NOTDEFINEDYET) {
+                    LLVM_DEBUG(dbgs() << "pointer_encoding_is_complete, but the pointer incoming from " << incoming_bb->getNameOrAsOperand() << " in phi " << phi.getNameOrAsOperand() << " is NOTDEFINEDYET\n");
+                    LLVM_DEBUG(F.dump());
+                    llvm_unreachable("assertion failure: see above message");
+                  }
+                  Value* dynamic_kind = incoming_status.to_dynamic_kind_mask(F.getContext());
                   assert(dynamic_kind && "when pointer_encoding_is_complete, we shouldn't have dynamic_kind == NULL");
                   status_phi->addIncoming(dynamic_kind, incoming_bb);
                 }
@@ -1211,7 +1245,9 @@ private:
                 PointerStatus merged_status = PointerStatus::clean();
                 for (auto& pair : incoming_statuses) {
                   PointerStatus& incoming_status = pair.first;
-                  merged_status = PointerStatus::merge(merged_status, incoming_status, &inst);
+                  // if dynamic instructions are necessary to perform the merge,
+                  // insert them after the phi
+                  merged_status = PointerStatus::merge(merged_status, incoming_status, AfterPhi);
                 }
                 ptr_statuses.mark_as(&phi, merged_status);
               }
@@ -1268,9 +1304,8 @@ private:
           }
           // now classify the returned pointer, if the return value is a pointer
           if (call.getType()->isPointerTy()) {
-            IRBuilder<> Builder(&block);
-            setInsertPointToAfterInst(Builder, &call);
-            IsAllocatingCall IAC = isAllocatingCall(call, Builder, bounds_infos.added_insts);
+            DMSIRBuilder Builder(&call, DMSIRBuilder::AFTER, &added_insts);
+            IsAllocatingCall IAC = isAllocatingCall(call, Builder);
             if (IAC.is_allocating) {
               // If this is an allocating call (eg, a call to `malloc`), then the
               // returned pointer is CLEAN
@@ -1338,6 +1373,11 @@ private:
     pbs.ptrs_end = std::move(ptr_statuses);
     pbs.static_results = static_results;
 
+    if (!wellFormed(block)) {
+      block.dump();
+      llvm_unreachable("block not well-formed at end of analyze_block");
+    }
+
     // If any new blocks were created/inserted during this call to
     // `analyze_block`, let's also analyze the new blocks before returning.
     // This ensures that invariants are maintained, in the sense that other
@@ -1368,7 +1408,7 @@ private:
   bool maybeAddSpatialSWCheck(
     Value* addr,
     const PointerStatus status,
-    IRBuilder<>& Builder,
+    DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     switch (status.kind) {
@@ -1417,7 +1457,7 @@ private:
             Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
           );
           BasicBlock* cont = insertCondJumpTo(needs_check, boundscheck, Builder, new_blocks);
-          IRBuilder<> BoundsCheckBuilder(boundscheck, boundscheck->getFirstInsertionPt());
+          DMSIRBuilder BoundsCheckBuilder(boundscheck, DMSIRBuilder::BEGINNING, &added_insts);
           Instruction* br = BoundsCheckBuilder.CreateBr(cont);
           BoundsCheckBuilder.SetInsertPoint(br);
           sw_bounds_check(addr, binfo, BoundsCheckBuilder, new_blocks);
@@ -1436,7 +1476,7 @@ private:
   /// Insert a SW bounds check of `ptr` against the bounds information in the
   /// given `BoundsInfo`.
   ///
-  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
   /// that is necessary.
   ///
   /// If we create/insert any new blocks, they will be added to `new_blocks`.
@@ -1446,7 +1486,7 @@ private:
   bool sw_bounds_check(
     Value* ptr,
     const BoundsInfo& binfo,
-    IRBuilder<>& Builder,
+    DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     switch (binfo.get_kind()) {
@@ -1473,12 +1513,12 @@ private:
   /// Insert a SW bounds check of `ptr` against the bounds information in the
   /// given `StaticBoundsInfo`.
   ///
-  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
   /// that is necessary.
   void sw_bounds_check(
     Value* ptr,
     const BoundsInfo::StaticBoundsInfo& binfo,
-    IRBuilder<>& Builder
+    DMSIRBuilder& Builder
   ) {
     // implementation doesn't actually need `ptr`
     if (binfo.fails()) {
@@ -1490,7 +1530,7 @@ private:
   /// Insert a SW bounds check of `ptr` against the bounds information in the
   /// given `DynamicBoundsInfo`.
   ///
-  /// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
   /// that is necessary. To be safe, you should assume `Builder` is invalidated
   /// when this function returns.
   ///
@@ -1498,13 +1538,13 @@ private:
   void sw_bounds_check(
     Value* ptr,
     const BoundsInfo::DynamicBoundsInfo& binfo,
-    IRBuilder<>& Builder,
+    DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
-    ptr = castToCharStar(ptr, Builder, bounds_infos.added_insts);
+    ptr = castToCharStar(ptr, Builder);
     Value* Fail = Builder.CreateLogicalOr(
-      Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder, bounds_infos.added_insts)),
-      Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder, bounds_infos.added_insts))
+      Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder)),
+      Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder))
     );
     BasicBlock* failbb = boundsCheckFailBB();
     new_blocks.push_back(failbb);
@@ -1513,12 +1553,11 @@ private:
 
   /// Insert dynamic instructions indicating a bounds-check failure, at the
   /// program point indicated by the given `Builder`
-  void insertBoundsCheckFail(IRBuilder<>& Builder) {
+  void insertBoundsCheckFail(DMSIRBuilder& Builder) {
     Module* mod = F.getParent();
     FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
     FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
-    Instruction* call = Builder.CreateCall(Abort);
-    bounds_infos.added_insts.insert(call);
+    Builder.CreateCall(Abort);
   }
 
   /// Private member of `DMSAnalysis` holding the BasicBlock created by
@@ -1534,7 +1573,7 @@ private:
   BasicBlock* boundsCheckFailBB() {
     if (boundscheckfail_bb) return boundscheckfail_bb;
     boundscheckfail_bb = BasicBlock::Create(F.getContext(), "boundscheckfail", &F);
-    IRBuilder<> Builder(boundscheckfail_bb, boundscheckfail_bb->getFirstInsertionPt());
+    DMSIRBuilder Builder(boundscheckfail_bb, DMSIRBuilder::BEGINNING, &added_insts);
     insertBoundsCheckFail(Builder);
     Builder.CreateUnreachable();
     assert(wellFormed(*boundscheckfail_bb));
@@ -1559,7 +1598,7 @@ private:
   BasicBlock* insertCondJumpTo(
     Value* cond,
     BasicBlock* true_bb,
-    IRBuilder<>& Builder,
+    DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     BasicBlock* A = Builder.GetInsertBlock();
@@ -1572,7 +1611,7 @@ private:
     // replace A's terminator with a condbr jumping to either
     // `true_bb` or B as appropriate
     BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
-    IRBuilder<> NewBuilder(A, A_end);
+    DMSIRBuilder NewBuilder(A, A_end, &added_insts);
     NewBuilder.CreateCondBr(cond, true_bb, B);
 
     assert(wellFormed(*A));
@@ -1584,7 +1623,7 @@ private:
   // Inject an instruction sequence to increment the given global counter, right
   // before the given instruction
   void incrementGlobalCounter(Constant* GlobalCounter, Instruction* BeforeInst) {
-    IRBuilder<> Builder(BeforeInst);
+    DMSIRBuilder Builder(BeforeInst, DMSIRBuilder::BEFORE, &added_insts);
     Type* i64ty = Builder.getInt64Ty();
     LoadInst* loaded = Builder.CreateLoad(i64ty, GlobalCounter);
     Value* incremented = Builder.CreateAdd(Builder.getInt64(1), loaded);
@@ -1595,7 +1634,7 @@ private:
   // based on the `PointerStatus`. This is to be used when (and only when) the
   // kind is `DYNAMIC`.
   void incrementGlobalCounterForDynKind(DynamicCounts& dyn_counts, PointerStatus& status, Instruction* BeforeInst) {
-    IRBuilder<> Builder(BeforeInst);
+    DMSIRBuilder Builder(BeforeInst, DMSIRBuilder::BEFORE, &added_insts);
     Type* i64ty = Builder.getInt64Ty();
     Constant* null = Constant::getNullValue(dyn_counts.clean->getType());
     Value* GlobalCounter = Builder.CreateSelect(
@@ -1733,7 +1772,8 @@ static GEPResultClassification classifyGEPResult(
   const PointerStatus input_status,
   const DataLayout &DL,
   const bool trust_llvm_struct_types,
-  const APInt* override_constant_offset
+  const APInt* override_constant_offset,
+  DenseSet<const Instruction*>& added_insts
 ) {
   assert(input_status.kind != PointerKind::NOTDEFINEDYET && "Shouldn't call classifyGEPResult() with NOTDEFINEDYET input_ptr");
   GEPResultClassification grc;
@@ -1785,7 +1825,7 @@ static GEPResultClassification classifyGEPResult(
           // "trustworthy" offset from clean is clean, from dirty is dirty,
           // from BLEMISHED16 is arbitrarily blemished, and from arbitrarily
           // blemished is still arbitrarily blemished.
-          IRBuilder<> Builder(&gep);
+          DMSIRBuilder Builder(&gep, DMSIRBuilder::BEFORE, &added_insts);
           Value* dynamic_kind = Builder.CreateSelect(
             Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16)),
             Builder.getInt64(DynamicKindMasks::blemished_other),
@@ -1898,7 +1938,7 @@ static GEPResultClassification classifyGEPResult(
         } else {
           // We need to dynamically check the kind in order to classify the
           // result.
-          IRBuilder<> Builder(&gep);
+          DMSIRBuilder Builder(&gep, DMSIRBuilder::BEFORE, &added_insts);
           Value* is_clean = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean));
           Value* is_blem16 = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16));
           Value* is_blemother = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished_other));
@@ -1969,13 +2009,23 @@ static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::o
 }
 
 /// Returns `true` if the block is well-formed. For this function's purposes,
-/// "well-formed" means it has exactly one terminator instruction and that
-/// instruction is at the end.
+/// "well-formed" means:
+///   - the block has exactly one terminator instruction
+///   - the terminator instruction is at the end
+///   - all PHI instructions (if they exist) come first
 static bool wellFormed(const BasicBlock& bb) {
   const Instruction* terminator = bb.getTerminator();
   if (!terminator) return false;
   for (const Instruction& I : bb) {
     if (I.isTerminator() && &I != terminator) return false;
+  }
+  bool have_non_phi = false;
+  for (const Instruction& I : bb) {
+    if (isa<PHINode>(I)) {
+      if (have_non_phi) return false;
+    } else {
+      have_non_phi = true;
+    }
   }
   return true;
 }
@@ -2037,12 +2087,8 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
 }
 
 /// If computing the allocation size requires inserting dynamic instructions,
-/// use `Builder` and add those instructions to `bounds_insts`
-static IsAllocatingCall isAllocatingCall(
-  const CallBase &call,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
-) {
+/// use `Builder`
+static IsAllocatingCall isAllocatingCall(const CallBase &call, DMSIRBuilder& Builder) {
   Function* callee = call.getCalledFunction();
   if (!callee) {
     // we assume indirect calls aren't allocating
@@ -2058,15 +2104,10 @@ static IsAllocatingCall isAllocatingCall(
   } else if (name == "realloc") {
     return IsAllocatingCall::allocating(call.getArgOperand(1));
   } else if (name == "calloc") {
-    Value* allocationSize = Builder.CreateMul(
+    return IsAllocatingCall::allocating(Builder.CreateMul(
       call.getArgOperand(0),
       call.getArgOperand(1)
-    );
-    if (allocationSize != call.getArgOperand(0) && allocationSize != call.getArgOperand(1)) {
-      if (const Instruction* allocationSize_inst = dyn_cast<Instruction>(allocationSize)) {
-        bounds_insts.insert(allocationSize_inst);
-      }
-    }
+    ));
   } else if (name == "aligned_alloc") {
     return IsAllocatingCall::allocating(call.getArgOperand(1));
   }

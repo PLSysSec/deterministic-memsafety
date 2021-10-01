@@ -41,52 +41,52 @@ PointerKind PointerKind::merge(const PointerKind a, const PointerKind b) {
 /// Merge two `PointerStatus`es.
 /// See comments on PointerKind::merge.
 ///
-/// `insertion_pt`: If we need to insert new dynamic instructions to handle
-/// a dynamic merge, insert them before this Instruction.
+/// If we need to insert dynamic instructions to handle the merge, use
+/// `Builder`.
 /// We will only potentially need to do this if at least one of the statuses
-/// is DYNAMIC with a non-null `dynamic_kind`. If neither of the statuses is
-/// DYNAMIC with a non-null `dynamic_kind`, then this parameter is ignored
-/// (and may be NULL).
-PointerStatus PointerStatus::merge(const PointerStatus a, const PointerStatus b, Instruction* insertion_pt) {
+/// is DYNAMIC with a non-null `dynamic_kind`.
+PointerStatus PointerStatus::merge(const PointerStatus a, const PointerStatus b, DMSIRBuilder& Builder) {
   if (a.kind == PointerKind::DYNAMIC && b.kind == PointerKind::DYNAMIC) {
-    return { PointerKind::DYNAMIC, merge_two_dynamic(a.dynamic_kind, b.dynamic_kind, insertion_pt) };
+    return { PointerKind::DYNAMIC, merge_two_dynamic(a.dynamic_kind, b.dynamic_kind, Builder) };
   } else if (a.kind == PointerKind::DYNAMIC) {
-    return merge_static_dynamic(b.kind, a.dynamic_kind, insertion_pt);
+    return merge_static_dynamic(b.kind, a.dynamic_kind, Builder);
   } else if (b.kind == PointerKind::DYNAMIC) {
-    return merge_static_dynamic(a.kind, b.dynamic_kind, insertion_pt);
+    return merge_static_dynamic(a.kind, b.dynamic_kind, Builder);
   } else {
     return { PointerKind::merge(a.kind, b.kind), NULL };
   }
 }
 
-/// `Builder`: the `IRBuilder` to use to insert dynamic instructions/values as
-/// necessary
-Value* PointerStatus::to_dynamic_kind_mask(IRBuilder<>& Builder) const {
+Value* PointerStatus::to_dynamic_kind_mask(LLVMContext& ctx) const {
+  if (kind == PointerKind::DYNAMIC) {
+    return dynamic_kind;
+  } else {
+    return to_constant_dynamic_kind_mask(ctx);
+  }
+}
+
+/// Like `to_dynamic_kind_mask()`, but only for `kind`s that aren't `DYNAMIC`.
+/// Returns a `ConstantInt` instead of an arbitrary `Value`.
+ConstantInt* PointerStatus::to_constant_dynamic_kind_mask(LLVMContext& ctx) const {
+  Type* i64Ty = Type::getInt64Ty(ctx);
   switch (kind) {
     case PointerKind::CLEAN:
-      return Builder.getInt64(DynamicKindMasks::clean);
-      break;
+      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::clean));
     case PointerKind::BLEMISHED16:
-      return Builder.getInt64(DynamicKindMasks::blemished16);
-      break;
+      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::blemished16));
     case PointerKind::BLEMISHED32:
     case PointerKind::BLEMISHED64:
     case PointerKind::BLEMISHEDCONST:
-      return Builder.getInt64(DynamicKindMasks::blemished_other);
-      break;
+      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::blemished_other));
     case PointerKind::DIRTY:
-      return Builder.getInt64(DynamicKindMasks::dirty);
-      break;
+      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::dirty));
     case PointerKind::UNKNOWN:
       // for now we just mark UNKNOWN pointers as dirty when storing them
-      return Builder.getInt64(DynamicKindMasks::dirty);
-      break;
+      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::dirty));
     case PointerKind::DYNAMIC:
-      return dynamic_kind;
-      break;
+      llvm_unreachable("to_constant_dynamic_kind_mask can't be called with a DYNAMIC status");
     case PointerKind::NOTDEFINEDYET:
-      llvm_unreachable("Shouldn't call to_dynamic_kind_mask on a NOTDEFINEDYET");
-      break;
+      llvm_unreachable("Shouldn't call to_constant_dynamic_kind_mask on a NOTDEFINEDYET");
     default:
       llvm_unreachable("PointerKind case not handled");
   }
@@ -94,10 +94,8 @@ Value* PointerStatus::to_dynamic_kind_mask(IRBuilder<>& Builder) const {
 
 /// Merge a static `PointerKind` and a `dynamic_kind`.
 /// See comments on PointerStatus::merge.
-PointerStatus PointerStatus::merge_static_dynamic(const PointerKind static_kind, Value* dynamic_kind, Instruction* insertion_pt) {
+PointerStatus PointerStatus::merge_static_dynamic(const PointerKind static_kind, Value* dynamic_kind, DMSIRBuilder& Builder) {
   if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
-  assert(insertion_pt && "To merge with a non-null `dynamic_kind`, insertion_pt must not be NULL");
-  IRBuilder<> Builder(insertion_pt);
   Value* merged_dynamic_kind;
   switch (static_kind) {
     case PointerKind::NOTDEFINEDYET:
@@ -144,7 +142,7 @@ PointerStatus PointerStatus::merge_static_dynamic(const PointerKind static_kind,
 
 /// Merge two `dynamic_kind`s.
 /// See comments on PointerStatus::merge.
-Value* PointerStatus::merge_two_dynamic(Value* dynamic_kind_a, Value* dynamic_kind_b, Instruction* insertion_pt) {
+Value* PointerStatus::merge_two_dynamic(Value* dynamic_kind_a, Value* dynamic_kind_b, DMSIRBuilder& Builder) {
   if (dynamic_kind_a == NULL) return dynamic_kind_b;
   if (dynamic_kind_b == NULL) return dynamic_kind_a;
   if (dynamic_kind_a == dynamic_kind_b) return dynamic_kind_a;
@@ -160,8 +158,6 @@ Value* PointerStatus::merge_two_dynamic(Value* dynamic_kind_a, Value* dynamic_ki
   //     (a is blemother or b is blemother) ? blemother :
   //     (a is blem16 or b is blem16) ? blem16 :
   //     clean
-  assert(insertion_pt && "To merge with a non-null `dynamic_kind`, insertion_pt must not be NULL");
-  IRBuilder<> Builder(insertion_pt);
   Value* dirty = Builder.getInt64(DynamicKindMasks::dirty);
   Value* blemother = Builder.getInt64(DynamicKindMasks::blemished_other);
   Value* blem16 = Builder.getInt64(DynamicKindMasks::blemished16);

@@ -18,20 +18,13 @@ static const char* store_bounds_inf_func = "__dms_store_infinite_bounds";
 /// `cur_ptr`: the pointer value for which these bounds apply.
 /// Can be any pointer type.
 ///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
+/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
 ///
 /// Returns the "base" (minimum inbounds pointer value) of the allocation,
 /// as an LLVM `Value` of type `i8*`.
 /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
 /// The `kind` should not be NOTDEFINEDYET.
-Value* BoundsInfo::base_as_llvm_value(
-	Value* cur_ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
-) const {
+Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
 	switch (kind) {
 		case NOTDEFINEDYET:
 			llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
@@ -39,10 +32,10 @@ Value* BoundsInfo::base_as_llvm_value(
 		case INFINITE:
 			return NULL;
 		case STATIC:
-			return info.static_info.base_as_llvm_value(cur_ptr, Builder, bounds_insts);
+			return info.static_info.base_as_llvm_value(cur_ptr, Builder);
 		case DYNAMIC:
 		case DYNAMIC_MERGED:
-			return info.dynamic_info.base.as_llvm_value(Builder, bounds_insts);
+			return info.dynamic_info.base.as_llvm_value(Builder);
 		default:
 			llvm_unreachable("Missing BoundsInfo.kind case");
 	}
@@ -51,20 +44,13 @@ Value* BoundsInfo::base_as_llvm_value(
 /// `cur_ptr`: the pointer value for which these bounds apply.
 /// Can be any pointer type.
 ///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
+/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
 ///
 /// Returns the "max" (maximum inbounds pointer value) of the allocation,
 /// as an LLVM `Value` of type `i8*`.
 /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
 /// The `kind` should not be NOTDEFINEDYET.
-Value* BoundsInfo::max_as_llvm_value(
-	Value* cur_ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
-) const {
+Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
 	switch (kind) {
 		case NOTDEFINEDYET:
 			llvm_unreachable("max_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
@@ -72,10 +58,10 @@ Value* BoundsInfo::max_as_llvm_value(
 		case INFINITE:
 			return NULL;
 		case STATIC:
-			return info.static_info.max_as_llvm_value(cur_ptr, Builder, bounds_insts);
+			return info.static_info.max_as_llvm_value(cur_ptr, Builder);
 		case DYNAMIC:
 		case DYNAMIC_MERGED:
-			return info.dynamic_info.max.as_llvm_value(Builder, bounds_insts);
+			return info.dynamic_info.max.as_llvm_value(Builder);
 		default:
 			llvm_unreachable("Missing BoundsInfo.kind case");
 	}
@@ -84,17 +70,13 @@ Value* BoundsInfo::max_as_llvm_value(
 /// `cur_ptr` is the pointer which these bounds are for.
 /// Can be any pointer type.
 ///
-/// `Builder` is the IRBuilder to use to insert dynamic instructions, if
+/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
 /// that is necessary.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
 BoundsInfo BoundsInfo::merge(
 	const BoundsInfo& A,
 	const BoundsInfo& B,
 	Value* cur_ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
+	DMSIRBuilder& Builder
 ) {
 	if (A.kind == NOTDEFINEDYET) return B;
 	if (B.kind == NOTDEFINEDYET) return A;
@@ -114,18 +96,18 @@ BoundsInfo BoundsInfo::merge(
 
 	if (A.is_dynamic() && B.is_dynamic()) {
 		return merge_dynamic_dynamic(
-			A.info.dynamic_info, B.info.dynamic_info, Builder, bounds_insts
+			A.info.dynamic_info, B.info.dynamic_info, Builder
 		);
 	}
 
 	if (A.kind == STATIC && B.is_dynamic()) {
 		return merge_static_dynamic(
-			A.info.static_info, B.info.dynamic_info, cur_ptr, Builder, bounds_insts
+			A.info.static_info, B.info.dynamic_info, cur_ptr, Builder
 		);
 	}
 	if (A.is_dynamic() && B.kind == STATIC) {
 		return merge_static_dynamic(
-			B.info.static_info, A.info.dynamic_info, cur_ptr, Builder, bounds_insts
+			B.info.static_info, A.info.dynamic_info, cur_ptr, Builder
 		);
 	}
 
@@ -136,25 +118,10 @@ BoundsInfo BoundsInfo::merge(
 /// The input pointer can be any pointer type, including `i8*` (in which case
 /// this will return the pointer unchanged).
 ///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
-Value* llvm::castToCharStar(
-	Value* ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
-) {
+/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
+Value* llvm::castToCharStar(Value* ptr, DMSIRBuilder& Builder) {
 	assert(ptr->getType()->isPointerTy());
-	Value* casted = Builder.CreatePointerCast(ptr, Builder.getInt8PtrTy());
-	if (casted != ptr) {
-		if (Instruction* cast_inst = dyn_cast<Instruction>(casted)) {
-			bounds_insts.insert(cast_inst);
-		} else {
-			LLVM_DEBUG(dbgs() << "DMS:   warning: expected CreatePointerCast to return either identity or a cast instruction, but it returned something else\n");
-		}
-	}
-	return casted;
+	return Builder.CreatePointerCast(ptr, Builder.getInt8PtrTy());
 }
 
 /// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
@@ -162,21 +129,17 @@ Value* llvm::castToCharStar(
 /// The input pointer can be any pointer type, the output pointer will
 /// have type `i8*`.
 ///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
+/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
 Value* llvm::add_offset_to_ptr(
 	Value* ptr,
 	const APInt offset,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
+	DMSIRBuilder& Builder
 ) {
-	Value* casted = castToCharStar(ptr, Builder, bounds_insts);
+	Value* casted = castToCharStar(ptr, Builder);
 	if (offset == 0) {
 		return casted;
 	} else {
-		return add_offset_to_ptr(casted, Builder.getInt(offset), Builder, bounds_insts);
+		return add_offset_to_ptr(casted, Builder.getInt(offset), Builder);
 	}
 }
 
@@ -186,66 +149,45 @@ Value* llvm::add_offset_to_ptr(
 /// have type `i8*`.
 /// `offset` should be a non-pointer value -- ie, the number of bytes.
 ///
-/// `Builder`: the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
+/// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
 Value* llvm::add_offset_to_ptr(
   Value* ptr,
   Value* offset,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
+  DMSIRBuilder& Builder
 ) {
-	Value* casted = castToCharStar(ptr, Builder, bounds_insts);
-	Value* GEP = Builder.CreateGEP(Builder.getInt8Ty(), casted, offset);
-	if (GEP != casted) {
-		if (Instruction* GEP_inst = dyn_cast<Instruction>(GEP)) {
-			bounds_insts.insert(GEP_inst);
-		} else {
-			LLVM_DEBUG(dbgs() << "DMS:   warning: expected CreateGEP to return either identity or a GEP instruction, but it returned something else\n");
-		}
-	}
-	return GEP;
+	Value* casted = castToCharStar(ptr, Builder);
+	return Builder.CreateGEP(Builder.getInt8Ty(), casted, offset);
 }
 
 /// `cur_ptr` is the pointer which these bounds are for.
 /// Can be any pointer type.
 ///
-/// `Builder` is the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
+/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
 BoundsInfo BoundsInfo::merge_static_dynamic(
 	const StaticBoundsInfo& static_info,
 	const DynamicBoundsInfo& dynamic_info,
 	Value* cur_ptr,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
+	DMSIRBuilder& Builder
 ) {
 	// these are the base and max from the dynamic side
-	Value* incoming_base = dynamic_info.base.as_llvm_value(Builder, bounds_insts);
-	Value* incoming_max = dynamic_info.max.as_llvm_value(Builder, bounds_insts);
+	Value* incoming_base = dynamic_info.base.as_llvm_value(Builder);
+	Value* incoming_max = dynamic_info.max.as_llvm_value(Builder);
 	// these are the base and max from the static side
-	Value* static_base = static_info.base_as_llvm_value(cur_ptr, Builder, bounds_insts);
-	Value* static_max = static_info.max_as_llvm_value(cur_ptr, Builder, bounds_insts);
+	Value* static_base = static_info.base_as_llvm_value(cur_ptr, Builder);
+	Value* static_max = static_info.max_as_llvm_value(cur_ptr, Builder);
 
 	return merge_dynamic_dynamic(
 		DynamicBoundsInfo(incoming_base, incoming_max),
 		DynamicBoundsInfo(static_base, static_max),
-		Builder,
-		bounds_insts
+		Builder
 	);
 }
 
-/// `Builder` is the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
+/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
 BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 	const DynamicBoundsInfo& a_info,
 	const DynamicBoundsInfo& b_info,
-	IRBuilder<>& Builder,
-	DenseSet<const Instruction*>& bounds_insts
+	DMSIRBuilder& Builder
 ) {
 	PointerWithOffset base;
 	PointerWithOffset max;
@@ -255,16 +197,13 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 			a_info.base.offset.slt(b_info.base.offset) ? b_info.base.offset : a_info.base.offset
 		);
 	} else {
-		Value* a_base = a_info.base.as_llvm_value(Builder, bounds_insts);
-		Value* b_base = b_info.base.as_llvm_value(Builder, bounds_insts);
+		Value* a_base = a_info.base.as_llvm_value(Builder);
+		Value* b_base = b_info.base.as_llvm_value(Builder);
 		Value* merged_base = Builder.CreateSelect(
 			Builder.CreateICmpULT(a_base, b_base),
 			b_base,
 			a_base
 		);
-		if (merged_base != a_base && merged_base != b_base) {
-			bounds_insts.insert(cast<Instruction>(merged_base));
-		}
 		base = PointerWithOffset(merged_base);
 	}
 	if (a_info.max.ptr == b_info.max.ptr) {
@@ -273,16 +212,13 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 			a_info.max.offset.slt(b_info.max.offset) ? a_info.max.offset : b_info.max.offset
 		);
 	} else {
-		Value* a_max = a_info.max.as_llvm_value(Builder, bounds_insts);
-		Value* b_max = b_info.max.as_llvm_value(Builder, bounds_insts);
+		Value* a_max = a_info.max.as_llvm_value(Builder);
+		Value* b_max = b_info.max.as_llvm_value(Builder);
 		Value* merged_max = Builder.CreateSelect(
 			Builder.CreateICmpULT(a_max, b_max),
 			a_max,
 			b_max
 		);
-		if (merged_max != a_max && merged_max != b_max) {
-			bounds_insts.insert(cast<Instruction>(merged_max));
-		}
 		max = PointerWithOffset(merged_max);
 	}
 	BoundsInfo merged = BoundsInfo::dynamic_bounds(base, max);
@@ -297,44 +233,31 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 ///
 /// `cur_ptr` is the pointer which these bounds are for.
 ///
-/// `Builder` is the IRBuilder to use to insert dynamic instructions.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
+/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
 ///
 /// Returns the Call instruction if one was inserted, or else NULL
-Instruction* BoundsInfo::store_dynamic(
-  Value* cur_ptr,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
-) const {
+Instruction* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const {
 	assert(cur_ptr);
 	assert(cur_ptr->getType()->isPointerTy());
 	Module* mod = Builder.GetInsertBlock()->getModule();
 	Type* CharStarTy = Builder.getInt8PtrTy();
-	Value* cur_ptr_as_charstar = castToCharStar(cur_ptr, Builder, bounds_insts);
+	Value* cur_ptr_as_charstar = castToCharStar(cur_ptr, Builder);
 	if (kind == BoundsInfo::INFINITE) {
 		FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
 		FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
-		Instruction* call = Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
-		bounds_insts.insert(call);
-		return call;
+		return Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
 	} else if (kind == BoundsInfo::UNKNOWN) {
 		LLVM_DEBUG(dbgs() << "DMS:   warning: bounds info unknown for " << cur_ptr->getNameOrAsOperand() << "; considering it as infinite bounds\n");
 		FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
 		FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
-		Instruction* call = Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
-		bounds_insts.insert(call);
-		return call;
+		return Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
 	} else {
-		Value* base = base_as_llvm_value(cur_ptr, Builder, bounds_insts);
-		Value* max = max_as_llvm_value(cur_ptr, Builder, bounds_insts);
+		Value* base = base_as_llvm_value(cur_ptr, Builder);
+		Value* max = max_as_llvm_value(cur_ptr, Builder);
 		if (base && max) {
 			FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
 			FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
-			Instruction* call = Builder.CreateCall(StoreBounds, {cur_ptr_as_charstar, base, max});
-			bounds_insts.insert(call);
-			return call;
+			return Builder.CreateCall(StoreBounds, {cur_ptr_as_charstar, base, max});
 		} else {
 			llvm_unreachable("base and/or max are NULL, but boundsinfo is not INFINITE or UNKNOWN");
 		}
@@ -346,15 +269,8 @@ Instruction* BoundsInfo::store_dynamic(
 /// Bounds info for this `ptr` should have been previously stored with
 /// `store_dynamic_boundsinfo`.
 ///
-/// Insert dynamic instructions using the given `IRBuilder`.
-///
-/// `bounds_insts`: If we insert any instructions into the program, we'll
-/// also add them to `bounds_insts`
-BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(
-  Value* ptr,
-  IRBuilder<>& Builder,
-  DenseSet<const Instruction*>& bounds_insts
-) {
+/// Insert dynamic instructions using the given `DMSIRBuilder`.
+BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(Value* ptr, DMSIRBuilder& Builder) {
 	assert(ptr);
 	assert(ptr->getType()->isPointerTy());
 	Module* mod = Builder.GetInsertBlock()->getModule();
@@ -362,21 +278,14 @@ BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(
 	Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
 	FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
 	FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
-	// TODO: IRBuilder supports some kind of hook for instruction
-	// insertion, maybe we can have the adding-to-bounds_insts be part
-	// of this hook rather than remembering to do it individually
-	// every time
-	Value* arg = castToCharStar(ptr, Builder, bounds_insts);
-	Value* dynbounds = Builder.CreateCall(GetBounds, arg);
-	bounds_insts.insert(cast<Instruction>(dynbounds));
+	Value* dynbounds = Builder.CreateCall(GetBounds, castToCharStar(ptr, Builder));
 	Value* base = Builder.CreateExtractValue(dynbounds, 0);
-	bounds_insts.insert(cast<Instruction>(base));
 	Value* max = Builder.CreateExtractValue(dynbounds, 1);
-	bounds_insts.insert(cast<Instruction>(max));
 	return BoundsInfo::DynamicBoundsInfo(base, max);
 }
 
-BoundsInfos::BoundsInfos(const Function& F, const DataLayout& DL) : DL(DL) {
+BoundsInfos::BoundsInfos(const Function& F, const DataLayout& DL, DenseSet<const Instruction*>& added_insts)
+	: DL(DL), added_insts(added_insts) {
 	// For now, if any function parameters are pointers, mark their bounds info
 	// as UNKNOWN
 	for (const Argument& arg : F.args()) {
@@ -428,9 +337,8 @@ void BoundsInfos::propagate_bounds(StoreInst& store) {
 		need_regenerate_bounds_store = true;
 	}
 	if (need_regenerate_bounds_store) {
-		IRBuilder<> Builder(&store);
-		setInsertPointToAfterInst(Builder, &store);
-		Instruction* new_bounds_call = binfo.store_dynamic(storedVal, Builder, added_insts);
+		DMSIRBuilder Builder(&store, DMSIRBuilder::AFTER, &added_insts);
+		Instruction* new_bounds_call = binfo.store_dynamic(storedVal, Builder);
 		store_bounds_calls[&store] = BoundsStoringCall(new_bounds_call, BoundsInfo(binfo));
 	}
 }
@@ -520,9 +428,8 @@ void BoundsInfos::propagate_bounds(SelectInst& select) {
 		// the merge may need to insert instructions that use the final
 		// value of the select, so we need a builder pointing after the
 		// select
-		IRBuilder<> AfterSelect(&select);
-		setInsertPointToAfterInst(AfterSelect, &select);
-		map[&select] = BoundsInfo::merge(binfo1, binfo2, &select, AfterSelect, added_insts);
+		DMSIRBuilder AfterSelect(&select, DMSIRBuilder::AFTER, &added_insts);
+		map[&select] = BoundsInfo::merge(binfo1, binfo2, &select, AfterSelect);
 	}
 }
 
@@ -553,7 +460,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 			bb
 		));
 	}
-	IRBuilder<> Builder(&phi);
+	DMSIRBuilder Builder(&phi, DMSIRBuilder::BEFORE, &added_insts);
 	const BoundsInfo& prev_iteration_binfo = map.lookup(&phi);
 	assert(incoming_binfos.size() >= 1);
 	bool any_incoming_bounds_are_dynamic = false;
@@ -685,8 +592,8 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 					// if dynamic instructions are necessary to compute phi
 					// incoming value, insert them at the end of the
 					// corresponding block, not here
-					IRBuilder<> IncomingBlockBuilder(incoming_bb->getTerminator());
-					Value* base = incoming_binfo->base_as_llvm_value(incoming_ptr, IncomingBlockBuilder, added_insts);
+					DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
+					Value* base = incoming_binfo->base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
 					assert(base);
 					base_phi->addIncoming(base, incoming_bb);
 				}
@@ -702,8 +609,8 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 					// if dynamic instructions are necessary to compute phi
 					// incoming value, insert them at the end of the
 					// corresponding block, not here
-					IRBuilder<> IncomingBlockBuilder(incoming_bb->getTerminator());
-					Value* max = incoming_binfo->max_as_llvm_value(incoming_ptr, IncomingBlockBuilder, added_insts);
+					DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
+					Value* max = incoming_binfo->max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
 					assert(max);
 					max_phi->addIncoming(max, incoming_bb);
 				}
@@ -732,7 +639,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 			assert(phi.getNumIncomingValues() >= 1);
 			for (auto& tuple : incoming_binfos) {
 				const BoundsInfo* binfo = std::get<1>(tuple);
-				merged_binfo = BoundsInfo::merge(merged_binfo, *binfo, &phi, Builder, added_insts);
+				merged_binfo = BoundsInfo::merge(merged_binfo, *binfo, &phi, Builder);
 			}
 			map[&phi] = merged_binfo;
 		}
@@ -757,10 +664,9 @@ void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
 			// bound. Only insert that the first time -- the bounds info
 			// here should not change from iteration to iteration
 			if (!is_binfo_present(&call)) {
-				IRBuilder<> Builder(&call);
-				setInsertPointToAfterInst(Builder, &call);
-				Value* callPlusBytes = add_offset_to_ptr(&call, IAC.allocation_bytes, Builder, added_insts);
-				Value* max = add_offset_to_ptr(callPlusBytes, minusone, Builder, added_insts);
+				DMSIRBuilder Builder(&call, DMSIRBuilder::AFTER, &added_insts);
+				Value* callPlusBytes = add_offset_to_ptr(&call, IAC.allocation_bytes, Builder);
+				Value* max = add_offset_to_ptr(callPlusBytes, minusone, Builder);
 				map[&call] = BoundsInfo::dynamic_bounds(&call, max);
 			}
 		}

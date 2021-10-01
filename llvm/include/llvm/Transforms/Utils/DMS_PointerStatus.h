@@ -1,8 +1,8 @@
 #ifndef DMS_POINTERSTATUS_H
 #define DMS_POINTERSTATUS_H
 
+#include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 #include "llvm/IR/Instruction.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Value.h"
 
 class PointerKind final {
@@ -142,26 +142,26 @@ public:
   /// Merge two `PointerStatus`es.
   /// See comments on PointerKind::merge.
   ///
-  /// `insertion_pt`: If we need to insert new dynamic instructions to handle
-  /// a dynamic merge, insert them before this Instruction.
+  /// If we need to insert dynamic instructions to handle the merge, use
+  /// `Builder`.
   /// We will only potentially need to do this if at least one of the statuses
-  /// is DYNAMIC with a non-null `dynamic_kind`. If neither of the statuses is
-  /// DYNAMIC with a non-null `dynamic_kind`, then this parameter is ignored
-  /// (and may be NULL).
-  static PointerStatus merge(const PointerStatus a, const PointerStatus b, llvm::Instruction* insertion_pt);
+  /// is DYNAMIC with a non-null `dynamic_kind`.
+  static PointerStatus merge(const PointerStatus a, const PointerStatus b, llvm::DMSIRBuilder& Builder);
 
-  /// `Builder`: the `IRBuilder` to use to insert dynamic instructions/values as
-  /// necessary
-  llvm::Value* to_dynamic_kind_mask(llvm::IRBuilder<>& Builder) const;
+  llvm::Value* to_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
+
+  /// Like `to_dynamic_kind_mask()`, but only for `kind`s that aren't `DYNAMIC`.
+  /// Returns a `ConstantInt` instead of an arbitrary `Value`.
+  llvm::ConstantInt* to_constant_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
 
 private:
   /// Merge a static `PointerKind` and a `dynamic_kind`.
   /// See comments on PointerStatus::merge.
-  static PointerStatus merge_static_dynamic(const PointerKind static_kind, llvm::Value* dynamic_kind, llvm::Instruction* insertion_pt);
+  static PointerStatus merge_static_dynamic(const PointerKind static_kind, llvm::Value* dynamic_kind, llvm::DMSIRBuilder& Builder);
 
   /// Merge two `dynamic_kind`s.
   /// See comments on PointerStatus::merge.
-  static llvm::Value* merge_two_dynamic(llvm::Value* dynamic_kind_a, llvm::Value* dynamic_kind_b, llvm::Instruction* insertion_pt);
+  static llvm::Value* merge_two_dynamic(llvm::Value* dynamic_kind_a, llvm::Value* dynamic_kind_b, llvm::DMSIRBuilder& Builder);
 };
 
 #endif

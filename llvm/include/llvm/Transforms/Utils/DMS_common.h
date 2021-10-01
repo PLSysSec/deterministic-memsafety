@@ -4,7 +4,6 @@
 #define DMS_COMMON_H
 
 #include "llvm/ADT/APInt.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
 
@@ -40,9 +39,5 @@ struct GEPResultClassification {
   /// it is a "trustworthy" struct offset?
   bool trustworthy_struct_offset;
 };
-
-/// The given `Builder` will now be ready to insert instructions _after_ the
-/// given `inst`
-void setInsertPointToAfterInst(llvm::IRBuilder<>& Builder, llvm::Instruction* inst);
 
 #endif
