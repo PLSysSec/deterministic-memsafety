@@ -28,11 +28,32 @@ using namespace llvm;
 const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
 const APInt minusone = APInt(/* bits = */ 64, /* val = */ -1);
 
-template <typename K, typename V, unsigned N> static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
+/// Return type of `mapsAreEqual`. Another struct that would ideally be
+/// std::optional or std::variant, but we can't use C++17
+template<typename K>
+struct MapEqualityResult {
+  /// Are the maps equal
+  bool equal;
+  /// If the maps aren't equal, but are the same size, here is one key they
+  /// disagree on.  (If the maps are equal, this will be NULL. If the maps
+  /// aren't equal because they're different sizes, this will also be NULL.)
+  const K* disagreement_key;
+
+  static MapEqualityResult is_equal() { return MapEqualityResult { true, NULL }; }
+  static MapEqualityResult not_equal(const K& key) { return MapEqualityResult { false, &key }; }
+  static MapEqualityResult not_same_size() { return MapEqualityResult { false, NULL }; }
+};
+
+template <typename K, typename V, unsigned N> static MapEqualityResult<K> mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 static bool wellFormed(const BasicBlock& bb);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
+
+/// Log that the given pointer's status at the top of the given block has changed.
+/// Return whether it has changed more than N times (i.e., in more than N
+/// iterations) at the top of this block.
+static bool has_changed_more_than_N_times(const Value* ptr, const BasicBlock& block, unsigned N);
 
 /// If computing the allocation size requires inserting dynamic instructions,
 /// use `Builder`
@@ -204,7 +225,7 @@ public:
     }
   }
 
-  bool isEqualTo(const PointerStatuses& other) const {
+  MapEqualityResult<const Value*> isEqualTo(const PointerStatuses& other) const {
     // since we assert in `mark_as()` that we never explicitly mark anything
     // NOTDEFINEDYET, we can just check that the `map`s contain exactly the same
     // elements mapped to the same things
@@ -301,25 +322,26 @@ private:
 };
 
 template<typename K, typename V, unsigned N>
-static bool mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B) {
+static MapEqualityResult<K> mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B) {
   // first: maps of different sizes can never be equal
-  if (A.size() != B.size()) return false;
+  if (A.size() != B.size()) return MapEqualityResult<K>::not_same_size();
   // now check that all keys in A are also in B, and map to the same things
   for (const auto &pair : A) {
-    const auto& it = B.find(pair.getFirst());
+    const K& key = pair.getFirst();
+    const auto& it = B.find(key);
     if (it == B.end()) {
       // key wasn't in B
-      return false;
+      return MapEqualityResult<K>::not_equal(key);
     }
     if (it->getSecond() != pair.getSecond()) {
       // maps disagree on what this key maps to
-      return false;
+      return MapEqualityResult<K>::not_equal(key);
     }
   }
   // we don't need the reverse check (all keys in B are also in A) because we
   // already checked that A and B have the same number of keys, and all keys in
   // A are also in B
-  return true;
+  return MapEqualityResult<K>::is_equal();
 }
 
 class DMSAnalysis final {
@@ -571,6 +593,11 @@ private:
     /// The `StaticResults` which we got last time we analyzed this block.
     DMSAnalysis::StaticResults static_results;
 
+    /// Manual overrides of pointer status at the top of this block.
+    /// Maps a pointer to its status.
+    /// If a pointer isn't in this map, its status will be computed normally.
+    SmallDenseMap<const Value*, PointerStatus, 4> status_overrides_at_top;
+
   private:
     /// Reference to the `added_insts` where we note any instructions added for
     /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
@@ -752,6 +779,11 @@ private:
       DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   next predecessor has " << otherPred_pbs.ptrs_end.describe() << " at end\n");
       ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs.ptrs_end, Builder);
     }
+    // now we handle the manual overrides
+    const PerBlockState& pbs = block_states.lookup(&block);
+    for (auto& pair : pbs.status_overrides_at_top) {
+      ptr_statuses.mark_as(pair.getFirst(), pair.getSecond());
+    }
     return ptr_statuses;
   }
 
@@ -805,7 +837,8 @@ private:
 
     if (!isEntryBlock) {
       // Let's check if that's any different from what we had last time
-      if (ptr_statuses.isEqualTo(pbs.ptrs_beg)) {
+      MapEqualityResult<const Value*> MER = ptr_statuses.isEqualTo(pbs.ptrs_beg);
+      if (MER.equal) {
         // no change. Unless we're adding dynamic instrumentation, there's no
         // need to actually analyze this block. Just return the `StaticResults`
         // we got last time.
@@ -819,8 +852,25 @@ private:
         // least one pointer status at top-of-block: namely, the pointer to the
         // current function, which will be in the `PointerStatuses` as CLEAN)
       } else {
-        // save the top-of-block ptr_statuses so we can do the above check on
-        // the next iteration
+        // this is a hack to avoid potential infinite loop in the fixpoint phase.
+        // normally, our progress lemma is that the status of any given pointer
+        // at any given program point only gets dirtier (or switches from
+        // NOTDEFINEDYET to defined) from iteration to iteration. But, dynamic
+        // statuses can mess this up. We can have a pair of blocks A and B where
+        // the dynamic status of pointer P needs to be recomputed (merged) at
+        // the top of both A and B. At the top of A, we recompute resulting in a
+        // new dynamic Value. This means B needs to recompute its merge,
+        // resulting in a different new dynamic Value. This means A needs to
+        // recompute its merge, resulting in a different new dynamic Value. Etc.
+        // Our hack is that if the status of the same pointer at the top of the
+        // same block has changed more than 10 times, just override it to be
+        // statically dirty.
+        if (MER.disagreement_key && has_changed_more_than_N_times(*MER.disagreement_key, block, 10)) {
+          ptr_statuses.mark_dirty(*MER.disagreement_key);
+          pbs.status_overrides_at_top[*MER.disagreement_key] = PointerStatus::dirty();
+        }
+        // regardless, save the top-of-block ptr_statuses so we can do the above
+        // check on the next iteration
         pbs.ptrs_beg = ptr_statuses;
       }
     }
@@ -1392,7 +1442,7 @@ private:
     // Now that we've processed all the instructions, we have the final
     // statuses of pointers as of the end of the block
     DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-    bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end);
+    bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end).equal;
     if (changed) {
       LLVM_DEBUG(dbgs() << "DMS:   end-of-block pointer statuses have changed\n");
     }
@@ -2200,6 +2250,55 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
   }
   // if we get here without finding a non-trustworthy index, then we're all good
   return true;
+}
+
+/// Used only for the state in `has_changed_more_than_N_times`; see notes there
+struct HasChangedKey {
+  const Value* ptr;
+  const BasicBlock* block;
+
+  HasChangedKey(const Value* ptr, const BasicBlock* block) : ptr(ptr), block(block) {}
+
+  bool operator==(const HasChangedKey& other) const {
+    return ptr == other.ptr && block == other.block;
+  }
+  bool operator!=(const HasChangedKey& other) const {
+    return !(*this == other);
+  }
+};
+
+// it seems this is required in order for HasChangedKey to be a key type
+// in a DenseMap
+namespace llvm {
+template<> struct DenseMapInfo<HasChangedKey> {
+  static inline HasChangedKey getEmptyKey() {
+    return HasChangedKey(NULL, NULL);
+  }
+  static inline HasChangedKey getTombstoneKey() {
+    return HasChangedKey(
+      DenseMapInfo<const Value*>::getTombstoneKey(),
+      DenseMapInfo<const BasicBlock*>::getTombstoneKey()
+    );
+  }
+  static unsigned getHashValue(const HasChangedKey &Val) {
+    return
+      DenseMapInfo<const Value*>::getHashValue(Val.ptr) ^
+      DenseMapInfo<const BasicBlock*>::getHashValue(Val.block);
+  }
+  static bool isEqual(const HasChangedKey &LHS, const HasChangedKey &RHS) {
+    return LHS == RHS;
+  }
+};
+} // end namespace llvm
+
+/// Log that the given pointer's status at the top of the given block has changed.
+/// Return whether it has changed more than N times (i.e., in more than N
+/// iterations) at the top of this block.
+static bool has_changed_more_than_N_times(const Value* ptr, const BasicBlock& block, unsigned N) {
+  static DenseMap<HasChangedKey, unsigned> times_changed;
+  HasChangedKey Key(ptr, &block);
+  times_changed[Key]++;
+  return (times_changed[Key] > N);
 }
 
 /// If computing the allocation size requires inserting dynamic instructions,
