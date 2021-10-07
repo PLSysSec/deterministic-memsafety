@@ -93,45 +93,45 @@ ConstantInt* PointerStatus::to_constant_dynamic_kind_mask(LLVMContext& ctx) cons
 }
 
 /// Merge a static `PointerKind` and a `dynamic_kind`.
-/// Returns a `dynamic_kind`.
 ///
 /// This function computes the merger directly, without caching.
-static Value* merge_static_dynamic_nocache(
+static PointerStatus merge_static_dynamic_nocache(
   const PointerKind static_kind,
   Value* dynamic_kind,
   DMSIRBuilder& Builder
 ) {
-  if (dynamic_kind == NULL) return NULL;
   switch (static_kind) {
     case PointerKind::NOTDEFINEDYET:
       // As in PointerKind::merge, merging x with NOTDEFINEDYET is always x
-      return dynamic_kind;
+      return PointerStatus::dynamic(dynamic_kind);
     case PointerKind::CLEAN:
       // For all x, merging CLEAN with x results in x
-      return dynamic_kind;
+      return PointerStatus::dynamic(dynamic_kind);
     case PointerKind::BLEMISHED16:
       // merging BLEMISHED16 with DYN_CLEAN is DYN_BLEMISHED16.
       // merging BLEMISHED16 with any other x results in x.
-      return Builder.CreateSelect(
+      if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
+      return PointerStatus::dynamic(Builder.CreateSelect(
         Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
         Builder.getInt64(DynamicKindMasks::blemished16),
         dynamic_kind
-      );
+      ));
     case PointerKind::BLEMISHED32:
     case PointerKind::BLEMISHED64:
     case PointerKind::BLEMISHEDCONST:
       // merging any of these with DYN_CLEAN, DYN_BLEMISHED16, or
       // DYN_BLEMISHEDOTHER results in DYN_BLEMISHEDOTHER.
       // merging any of these with DYN_DIRTY results in DYN_DIRTY.
-      return Builder.CreateSelect(
+      if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
+      return PointerStatus::dynamic(Builder.CreateSelect(
         Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(DynamicKindMasks::dirty)),
         Builder.getInt64(DynamicKindMasks::dirty),
         Builder.getInt64(DynamicKindMasks::blemished_other)
-      );
+      ));
     case PointerKind::DIRTY:
     case PointerKind::UNKNOWN:
-      // merging anything with DIRTY or UNKNOWN results in DYN_DIRTY
-      return Builder.getInt64(DynamicKindMasks::dirty);
+      // merging anything with DIRTY or UNKNOWN results in DIRTY
+      return PointerStatus::dirty();
     case PointerKind::DYNAMIC:
       llvm_unreachable("merge_static_dynamic: expected a static PointerKind");
     default:
@@ -201,13 +201,12 @@ PointerStatus PointerStatus::merge_static_dynamic(
   Value* dynamic_kind,
   DMSIRBuilder& Builder
 ) {
-  if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
-  static DenseMap<StaticDynamicCacheKey, Value*> cache;
+  static DenseMap<StaticDynamicCacheKey, PointerStatus> cache;
   StaticDynamicCacheKey Key(static_kind, dynamic_kind, Builder.GetInsertBlock());
-  if (cache.count(Key) > 0) return PointerStatus::dynamic(cache[Key]);
-  Value* merged_dynamic_kind = merge_static_dynamic_nocache(static_kind, dynamic_kind, Builder);
-  cache[Key] = merged_dynamic_kind;
-  return PointerStatus::dynamic(merged_dynamic_kind);
+  if (cache.count(Key) > 0) return cache[Key];
+  PointerStatus merged = merge_static_dynamic_nocache(static_kind, dynamic_kind, Builder);
+  cache[Key] = merged;
+  return merged;
 }
 
 /// Merge two `dynamic_kind`s. Returns a `dynamic_kind`.
