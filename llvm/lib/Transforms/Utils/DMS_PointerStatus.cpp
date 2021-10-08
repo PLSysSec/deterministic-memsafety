@@ -38,36 +38,32 @@ PointerKind PointerKind::merge(const PointerKind a, const PointerKind b) {
   }
 }
 
-/// Merge two `PointerStatus`es.
-/// See comments on PointerKind::merge.
-///
-/// If we need to insert dynamic instructions to handle the merge, use
-/// `Builder`.
-/// We will only potentially need to do this if at least one of the statuses
-/// is DYNAMIC with a non-null `dynamic_kind`.
-PointerStatus PointerStatus::merge(const PointerStatus a, const PointerStatus b, DMSIRBuilder& Builder) {
-  if (a.kind == PointerKind::DYNAMIC && b.kind == PointerKind::DYNAMIC) {
-    return { PointerKind::DYNAMIC, merge_two_dynamic(a.dynamic_kind, b.dynamic_kind, Builder) };
-  } else if (a.kind == PointerKind::DYNAMIC) {
-    return merge_static_dynamic(b.kind, a.dynamic_kind, Builder);
-  } else if (b.kind == PointerKind::DYNAMIC) {
-    return merge_static_dynamic(a.kind, b.dynamic_kind, Builder);
+/// This private function is like PointerKind::merge, but can handle some
+/// cases of DYNAMIC. If it knows the merge result will be static, it returns
+/// that; if it doesn't know, it returns DYNAMIC.
+PointerKind PointerKind::merge_maybe_dynamic(const PointerKind a, const PointerKind b) {
+  if (a != DYNAMIC && b != DYNAMIC) {
+    return PointerKind::merge(a, b);
+  } else if (a == NOTDEFINEDYET) {
+    return b;
+  } else if (b == NOTDEFINEDYET) {
+    return a;
+  } else if (a == DIRTY || b == DIRTY) {
+    // merging a DIRTY with anything, including a DYNAMIC, will just be DIRTY
+    return DIRTY;
+  } else if (a == CLEAN) {
+    // merging a CLEAN with any x, including a DYNAMIC, will just be that x
+    return b;
+  } else if (b == CLEAN) {
+    // merging a CLEAN with any x, including a DYNAMIC, will just be that x
+    return a;
   } else {
-    return { PointerKind::merge(a.kind, b.kind), NULL };
+    // in other cases, we don't know the status statically, so return DYNAMIC
+    return DYNAMIC;
   }
 }
 
-Value* PointerStatus::to_dynamic_kind_mask(LLVMContext& ctx) const {
-  if (kind == PointerKind::DYNAMIC) {
-    return dynamic_kind;
-  } else {
-    return to_constant_dynamic_kind_mask(ctx);
-  }
-}
-
-/// Like `to_dynamic_kind_mask()`, but only for `kind`s that aren't `DYNAMIC`.
-/// Returns a `ConstantInt` instead of an arbitrary `Value`.
-ConstantInt* PointerStatus::to_constant_dynamic_kind_mask(LLVMContext& ctx) const {
+ConstantInt* PointerKind::to_constant_dynamic_kind_mask(LLVMContext& ctx) const {
   Type* i64Ty = Type::getInt64Ty(ctx);
   switch (kind) {
     case PointerKind::CLEAN:
@@ -92,10 +88,168 @@ ConstantInt* PointerStatus::to_constant_dynamic_kind_mask(LLVMContext& ctx) cons
   }
 }
 
-/// Merge a static `PointerKind` and a `dynamic_kind`.
+Value* PointerStatus::to_dynamic_kind_mask(LLVMContext& ctx) const {
+  if (kind == PointerKind::DYNAMIC) {
+    return dynamic_kind;
+  } else {
+    return to_constant_dynamic_kind_mask(ctx);
+  }
+}
+
+/// Like `to_dynamic_kind_mask()`, but only for `kind`s that aren't `DYNAMIC`.
+/// Returns a `ConstantInt` instead of an arbitrary `Value`.
+ConstantInt* PointerStatus::to_constant_dynamic_kind_mask(LLVMContext& ctx) const {
+  return kind.to_constant_dynamic_kind_mask(ctx);
+}
+
+/// Merge two `PointerStatus`es.
+/// See comments on PointerKind::merge.
 ///
-/// This function computes the merger directly, without caching.
-static PointerStatus merge_static_dynamic_nocache(
+/// If we need to insert dynamic instructions to handle the merge, use
+/// `Builder`.
+/// We will only potentially need to do this if at least one of the statuses
+/// is DYNAMIC with a non-null `dynamic_kind`.
+PointerStatus PointerStatus::merge_direct(
+  const PointerStatus a,
+  const PointerStatus b,
+  llvm::DMSIRBuilder& Builder
+) {
+  if (a.kind == PointerKind::DYNAMIC && b.kind == PointerKind::DYNAMIC) {
+    return { PointerKind::DYNAMIC, merge_two_dynamic_direct(a.dynamic_kind, b.dynamic_kind, Builder) };
+  } else if (a.kind == PointerKind::DYNAMIC) {
+    return merge_static_dynamic_direct(b.kind, a.dynamic_kind, Builder);
+  } else if (b.kind == PointerKind::DYNAMIC) {
+    return merge_static_dynamic_direct(a.kind, b.dynamic_kind, Builder);
+  } else {
+    return PointerStatus { PointerKind::merge(a.kind, b.kind), NULL };
+  }
+}
+
+/// Used only for the cache in `PointerStatus::merge_with_phi`; see notes there
+struct PhiMergerCacheKey {
+  const SmallVector<StatusWithBlock, 4>* statuses;
+  BasicBlock* phi_block;
+
+  PhiMergerCacheKey(
+    const SmallVector<StatusWithBlock, 4>* statuses,
+    BasicBlock* phi_block
+  ) : statuses(statuses), phi_block(phi_block) {}
+  PhiMergerCacheKey() : statuses(NULL), phi_block(NULL) {}
+
+  bool operator==(const PhiMergerCacheKey& other) const {
+    if (statuses == NULL || phi_block == NULL || other.statuses == NULL || other.phi_block == NULL) {
+      if (statuses == NULL && phi_block == NULL && other.statuses == NULL && other.phi_block == NULL) {
+        return true;
+      } else {
+        return false;
+      }
+    }
+    const SmallVector<StatusWithBlock, 4>& this_statuses = *statuses;
+    const SmallVector<StatusWithBlock, 4>& other_statuses = *other.statuses;
+    if (this_statuses.size() != other_statuses.size()) return false;
+    if (phi_block != other.phi_block) return false;
+    for (size_t i = 0; i < this_statuses.size(); i++) {
+      if (this_statuses[i].status != other_statuses[i].status) return false;
+      if (&this_statuses[i].block != &other_statuses[i].block) return false;
+    }
+    return true;
+  }
+  bool operator!=(const PhiMergerCacheKey& other) const {
+    return !(*this == other);
+  }
+};
+
+// it seems this is required in order for PhiMergerCacheKey to be a key type
+// in a DenseMap
+namespace llvm {
+template<> struct DenseMapInfo<PhiMergerCacheKey> {
+  static inline PhiMergerCacheKey getEmptyKey() {
+    return PhiMergerCacheKey();
+  }
+  static inline PhiMergerCacheKey getTombstoneKey() {
+    return PhiMergerCacheKey(
+      DenseMapInfo<const SmallVector<StatusWithBlock, 4>*>::getTombstoneKey(),
+      DenseMapInfo<BasicBlock*>::getTombstoneKey()
+    );
+  }
+  static unsigned getHashValue(const PhiMergerCacheKey &Val) {
+    return
+      DenseMapInfo<const SmallVector<StatusWithBlock, 4>*>::getHashValue(Val.statuses) ^
+      DenseMapInfo<BasicBlock*>::getHashValue(Val.phi_block);
+  }
+  static bool isEqual(const PhiMergerCacheKey &LHS, const PhiMergerCacheKey &RHS) {
+    return LHS == RHS;
+  }
+};
+} // end namespace llvm
+
+/// Merge two `PointerStatus`es.
+/// See comments on PointerKind::merge.
+///
+/// If necessary, insert a phi instruction in `phi_block` to perform the
+/// merge.
+/// We will only potentially need to do this if at least one of the statuses
+/// is DYNAMIC with a non-null `dynamic_kind`.
+PointerStatus PointerStatus::merge_with_phi(
+  const SmallVector<StatusWithBlock, 4>& statuses,
+  /// Block where we will insert a phi if necessary (where the merge is occurring)
+  BasicBlock* phi_block
+) {
+  bool have_dynamic_null = false;
+  PointerKind maybe_merged = PointerKind::NOTDEFINEDYET;
+  for (const StatusWithBlock& swb : statuses) {
+    maybe_merged = PointerKind::merge_maybe_dynamic(maybe_merged, swb.status.kind);
+    if (swb.status.kind == PointerKind::DYNAMIC) {
+      if (swb.status.dynamic_kind == NULL) have_dynamic_null = true;
+    }
+  }
+  // if the result of the merger is a kind known statically, use that.
+  // (We could theoretically use a PHI even in this case.
+  // This would have the advantage of path-sensitive status instead of
+  // a conservative static merger; but the disadvantage of having a dynamic
+  // status (from phi) instead of a statically-known (merged) status.
+  if (maybe_merged != PointerKind::DYNAMIC) return PointerStatus { maybe_merged, NULL };
+  // ok so we don't know the kind statically
+  if (have_dynamic_null) {
+    // one of the pointers we're merging is dynamic with dynamic_kind NULL.
+    // result will be dynamic with dynamic_kind NULL.
+    return PointerStatus::dynamic(NULL);
+  }
+  // another special case to check: if all the statuses are equal, then the
+  // merger is trivial
+  bool all_equal = true;
+  for (size_t i = 0; i < statuses.size() - 1; i++) {
+    if (statuses[i].status != statuses[i+1].status) {
+      all_equal = false;
+      break;
+    }
+  }
+  if (all_equal) return statuses[0].status;
+  // at this point it's looking like we have to actually insert a phi.
+  // check the cache first
+  static SmallDenseMap<PhiMergerCacheKey, PointerStatus, 4> cache;
+  PhiMergerCacheKey Key(&statuses, phi_block);
+  if (cache.count(Key) > 0) return cache[Key];
+
+  DMSIRBuilder Builder(phi_block, DMSIRBuilder::BEGINNING, NULL);
+  PHINode* phi = Builder.CreatePHI(Builder.getInt64Ty(), 2);
+  for (const StatusWithBlock& swb : statuses) {
+    phi->addIncoming(
+      swb.status.to_dynamic_kind_mask(Builder.getContext()),
+      &swb.block
+    );
+  }
+  assert(phi->isComplete());
+
+  cache[Key] = PointerStatus::dynamic(phi);
+  return PointerStatus::dynamic(phi);
+}
+
+/// Merge a static `PointerKind` and a `dynamic_kind`, directly (inserting
+/// dynamic instructions if necessary).
+///
+/// This function computes the merger without caching.
+static PointerStatus merge_static_dynamic_nocache_direct(
   const PointerKind static_kind,
   Value* dynamic_kind,
   DMSIRBuilder& Builder
@@ -139,8 +293,8 @@ static PointerStatus merge_static_dynamic_nocache(
   }
 }
 
-/// Used only for the cache in `PointerStatus::merge_static_dynamic`; see notes
-/// there
+/// Used only for the cache in `PointerStatus::merge_static_dynamic_direct`; see
+/// notes there
 struct StaticDynamicCacheKey {
   PointerKind static_kind;
   Value* dynamic_kind;
@@ -191,12 +345,12 @@ template<> struct DenseMapInfo<StaticDynamicCacheKey> {
 } // end namespace llvm
 
 /// Merge a static `PointerKind` and a `dynamic_kind`.
-/// See comments on PointerStatus::merge.
+/// See comments on PointerStatus::merge_direct.
 ///
 /// This function performs caching. If these two things have been merged before,
 /// in the same block (eg on a previous iteration), it returns the cached value;
 /// else it computes the merger fresh.
-PointerStatus PointerStatus::merge_static_dynamic(
+PointerStatus PointerStatus::merge_static_dynamic_direct(
   const PointerKind static_kind,
   Value* dynamic_kind,
   DMSIRBuilder& Builder
@@ -204,15 +358,20 @@ PointerStatus PointerStatus::merge_static_dynamic(
   static DenseMap<StaticDynamicCacheKey, PointerStatus> cache;
   StaticDynamicCacheKey Key(static_kind, dynamic_kind, Builder.GetInsertBlock());
   if (cache.count(Key) > 0) return cache[Key];
-  PointerStatus merged = merge_static_dynamic_nocache(static_kind, dynamic_kind, Builder);
+  PointerStatus merged = merge_static_dynamic_nocache_direct(static_kind, dynamic_kind, Builder);
   cache[Key] = merged;
   return merged;
 }
 
-/// Merge two `dynamic_kind`s. Returns a `dynamic_kind`.
+/// Merge two `dynamic_kind`s, inserting dynamic instructions if necessary.
+/// Returns a `dynamic_kind`.
 ///
-/// This function computes the merger directly, without caching.
-static Value* merge_two_dynamic_nocache(Value* dynamic_kind_a, Value* dynamic_kind_b, DMSIRBuilder& Builder) {
+/// This function computes the merger without caching.
+static Value* merge_two_dynamic_nocache_direct(
+  Value* dynamic_kind_a,
+  Value* dynamic_kind_b,
+  DMSIRBuilder& Builder
+) {
   if (dynamic_kind_a == NULL) return dynamic_kind_b;
   if (dynamic_kind_b == NULL) return dynamic_kind_a;
   if (dynamic_kind_a == dynamic_kind_b) return dynamic_kind_a;
@@ -252,8 +411,8 @@ static Value* merge_two_dynamic_nocache(Value* dynamic_kind_a, Value* dynamic_ki
   return merged_dynamic_kind;
 }
 
-/// Used only for the cache in `PointerStatus::merge_two_dynamic`; see notes
-/// there
+/// Used only for the cache in `PointerStatus::merge_two_dynamic_direct`; see
+/// notes there
 struct DynamicDynamicCacheKey {
   Value* dynamic_kind_a;
   Value* dynamic_kind_b;
@@ -277,7 +436,7 @@ struct DynamicDynamicCacheKey {
   }
 };
 
-// it seems this is required in order for StaticDynamicCacheKey to be a key type
+// it seems this is required in order for DynamicDynamicCacheKey to be a key type
 // in a DenseMap
 namespace llvm {
 template<> struct DenseMapInfo<DynamicDynamicCacheKey> {
@@ -304,19 +463,19 @@ template<> struct DenseMapInfo<DynamicDynamicCacheKey> {
 } // end namespace llvm
 
 /// Merge two `dynamic_kind`s.
-/// See comments on PointerStatus::merge.
+/// See comments on PointerStatus::merge_direct.
 ///
 /// This function performs caching. If these two things have been merged before,
 /// in the same block (eg on a previous iteration), it returns the cached value;
 /// else it computes the merger fresh.
-Value* PointerStatus::merge_two_dynamic(Value* dynamic_kind_a, Value* dynamic_kind_b, DMSIRBuilder& Builder) {
+Value* PointerStatus::merge_two_dynamic_direct(Value* dynamic_kind_a, Value* dynamic_kind_b, DMSIRBuilder& Builder) {
   if (dynamic_kind_a == NULL) return dynamic_kind_b;
   if (dynamic_kind_b == NULL) return dynamic_kind_a;
   if (dynamic_kind_a == dynamic_kind_b) return dynamic_kind_a;
   static DenseMap<DynamicDynamicCacheKey, Value*> cache;
   DynamicDynamicCacheKey Key(dynamic_kind_a, dynamic_kind_b, Builder.GetInsertBlock());
   if (cache.count(Key) > 0) return cache[Key];
-  Value* merged_dynamic_kind = merge_two_dynamic_nocache(dynamic_kind_a, dynamic_kind_b, Builder);
+  Value* merged_dynamic_kind = merge_two_dynamic_nocache_direct(dynamic_kind_a, dynamic_kind_b, Builder);
   cache[Key] = merged_dynamic_kind;
   return merged_dynamic_kind;
 }

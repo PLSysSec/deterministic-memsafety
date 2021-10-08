@@ -100,14 +100,26 @@ private:
   /// in this map.
   SmallDenseMap<const Value*, PointerStatus, 8> map;
 
+  /// Which block are these statuses for. Note, this doesn't specify whether the
+  /// statuses are for the top, middle, or bottom of the block.
+  BasicBlock& block;
+
+  const DataLayout &DL;
+  const bool trust_llvm_struct_types;
+
+  /// Reference to the `added_insts` where we note any instructions added for
+  /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
+  DenseSet<const Instruction*>& added_insts;
+
 public:
-  PointerStatuses(const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
-    : DL(DL), trust_llvm_struct_types(trust_llvm_struct_types), added_insts(added_insts) {}
+  PointerStatuses(BasicBlock& block, const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
+    : block(block), DL(DL), trust_llvm_struct_types(trust_llvm_struct_types), added_insts(added_insts) {}
 
   PointerStatuses(const PointerStatuses& other)
-    : map(other.map), DL(other.DL), trust_llvm_struct_types(other.trust_llvm_struct_types), added_insts(other.added_insts) {}
+    : map(other.map), block(other.block), DL(other.DL), trust_llvm_struct_types(other.trust_llvm_struct_types), added_insts(other.added_insts) {}
 
   PointerStatuses operator=(const PointerStatuses& other) {
+    assert(&block == &other.block);
     assert(DL == other.DL);
     assert(trust_llvm_struct_types == other.trust_llvm_struct_types);
     map = other.map;
@@ -275,50 +287,59 @@ public:
     return out.str();
   }
 
-  /// Merge the two given PointerStatuses. If they disagree on any pointer,
-  /// use the `PointerStatus` `merge` function to combine the two results.
+  /// Merge the given PointerStatuses. If they disagree on any pointer, use
+  /// `PointerStatus::merge_with_phi` to combine the statuses.
   /// Recall that any pointer not appearing in the `map` is considered NOTDEFINEDYET.
   ///
-  /// If we need to insert dynamic instructions to handle the merge, use
-  /// `Builder`.
-  /// We will only potentially need to do this if at least one of the statuses
-  /// is DYNAMIC with a non-null `dynamic_kind`.
-  static PointerStatuses merge(const PointerStatuses& a, const PointerStatuses& b, DMSIRBuilder& Builder) {
-    assert(a.DL == b.DL);
-    assert(a.trust_llvm_struct_types == b.trust_llvm_struct_types);
-    PointerStatuses merged(a.DL, a.trust_llvm_struct_types, a.added_insts);
-    for (const auto& pair : a.map) {
-      const Value* ptr = pair.getFirst();
-      const PointerStatus status_in_a = pair.getSecond();
-      const auto& it = b.map.find(ptr);
-      PointerStatus status_in_b = (it == b.map.end()) ?
-        // implicitly NOTDEFINEDYET in b
-        PointerStatus::notdefinedyet() :
-        // defined in b, get the status
-        it->getSecond();
-      merged.mark_as(ptr, PointerStatus::merge(status_in_a, status_in_b, Builder));
+  /// `merge_block`: block where the merge is happening. The merged statuses are for this block.
+  static PointerStatuses merge(const SmallVector<const PointerStatuses*, 4>& statuses, BasicBlock& merge_block) {
+    assert(statuses.size() > 0);
+    for (size_t i = 0; i < statuses.size() - 1; i++) {
+      assert(statuses[i]->DL == statuses[i+1]->DL);
+      assert(statuses[i]->trust_llvm_struct_types == statuses[i+1]->trust_llvm_struct_types);
+      assert(&statuses[i]->added_insts == &statuses[i+1]->added_insts);
     }
-    // at this point we've handled all the pointers which were defined in a.
-    // what's left is the pointers which were defined in b and NOTDEFINEDYET in a
-    for (const auto& pair : b.map) {
-      const Value* ptr = pair.getFirst();
-      const PointerStatus status_in_b = pair.getSecond();
-      const auto& it = a.map.find(ptr);
-      if (it == a.map.end()) {
-        // implicitly NOTDEFINEDYET in a
-        merged.mark_as(ptr, PointerStatus::merge(PointerStatus::notdefinedyet(), status_in_b, Builder));
+    PointerStatuses merged(merge_block, statuses[0]->DL, statuses[0]->trust_llvm_struct_types, statuses[0]->added_insts);
+    for (size_t i = 0; i < statuses.size(); i++) {
+      for (const auto& pair : statuses[i]->map) {
+        SmallVector<StatusWithBlock, 4> statuses_for_ptr;
+        const Value* ptr = pair.getFirst();
+        statuses_for_ptr.push_back(
+          StatusWithBlock(pair.getSecond(), statuses[i]->block)
+        );
+        bool handled = false;
+        for (size_t prev = 0; prev < i; prev++) {
+          const auto& it = statuses[prev]->map.find(ptr);
+          // if this ptr is in a previous map, we've already handled it
+          if (it != statuses[prev]->map.end()) {
+            handled = true;
+            break;
+          }
+          // otherwise it's implicitly NOTDEFINEDYET in that map
+          statuses_for_ptr.push_back(
+            StatusWithBlock(PointerStatus::notdefinedyet(), statuses[prev]->block)
+          );
+        }
+        if (handled) continue;
+        // pointer is not in a previous map, so we need to handle it now
+        // get the statuses in the next map(s), if any
+        for (size_t next = i; next < statuses.size(); next++) {
+          const auto& it = statuses[next]->map.find(ptr);
+          PointerStatus status_in_next = (it == statuses[next]->map.end()) ?
+            // implicitly NOTDEFINEDYET in next
+            PointerStatus::notdefinedyet() :
+            // defined in next, get the status
+            it->getSecond();
+          statuses_for_ptr.push_back(
+            StatusWithBlock(status_in_next, statuses[i]->block)
+          );
+        }
+        // now we have all the statuses, do the merge
+        merged.mark_as(ptr, PointerStatus::merge_with_phi(statuses_for_ptr, &merge_block));
       }
     }
     return merged;
   }
-
-private:
-  const DataLayout &DL;
-  const bool trust_llvm_struct_types;
-
-  /// Reference to the `added_insts` where we note any instructions added for
-  /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
-  DenseSet<const Instruction*>& added_insts;
 };
 
 template<typename K, typename V, unsigned N>
@@ -579,9 +600,9 @@ private:
   /// class is kept per block in the function.
   class PerBlockState final {
   public:
-    PerBlockState(const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
-      : ptrs_beg(PointerStatuses(DL, trust_llvm_struct_types, added_insts)),
-        ptrs_end(PointerStatuses(DL, trust_llvm_struct_types, added_insts)),
+    PerBlockState(BasicBlock& block, const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
+      : ptrs_beg(PointerStatuses(block, DL, trust_llvm_struct_types, added_insts)),
+        ptrs_end(PointerStatuses(block, DL, trust_llvm_struct_types, added_insts)),
         static_results(StaticResults { 0 }),
         added_insts(added_insts)
       {}
@@ -610,12 +631,12 @@ private:
     DenseMap<const BasicBlock*, PerBlockState*> block_states;
 
   public:
-    explicit BlockStates(const Function& F, const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
+    explicit BlockStates(Function& F, const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
       : DL(DL), trust_llvm_struct_types(trust_llvm_struct_types), added_insts(added_insts)
     {
       // For now, if any function parameters are pointers,
       // mark them UNKNOWN in the function's entry block
-      PerBlockState& entry_block_pbs = lookup(&F.getEntryBlock());
+      PerBlockState& entry_block_pbs = lookup(F.getEntryBlock());
       for (const Argument& arg : F.args()) {
         if (arg.getType()->isPointerTy()) {
           entry_block_pbs.ptrs_beg.mark_unknown(&arg);
@@ -634,12 +655,12 @@ private:
 
     /// Get the PerBlockState for the given block, constructing a blank
     /// PerBlockState if needed.
-    PerBlockState& lookup(const BasicBlock* block) {
-      if (block_states.count(block) > 0) {
-        return *block_states[block];
+    PerBlockState& lookup(BasicBlock& block) {
+      if (block_states.count(&block) > 0) {
+        return *block_states[&block];
       } else {
-        PerBlockState* pbs = new PerBlockState(DL, trust_llvm_struct_types, added_insts);
-        block_states[block] = pbs;
+        PerBlockState* pbs = new PerBlockState(block, DL, trust_llvm_struct_types, added_insts);
+        block_states[&block] = pbs;
         return *pbs;
       }
     }
@@ -765,22 +786,13 @@ private:
   /// block).
   PointerStatuses computeTopOfBlockPointerStatuses(BasicBlock &block) {
     assert(block.hasNPredecessorsOrMore(1));
-    auto preds = pred_begin(&block);
-    DMSIRBuilder Builder(&block, DMSIRBuilder::BEGINNING, &added_insts);
-    const BasicBlock* firstPred = *preds;
-    const PerBlockState& firstPred_pbs = block_states.lookup(firstPred);
-    // we start with all of the ptr_statuses at the end of our first predecessor,
-    // then merge with the ptr_statuses at the end of our other predecessors
-    PointerStatuses ptr_statuses(firstPred_pbs.ptrs_end);
-    DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   first predecessor has " << ptr_statuses.describe() << " at end\n");
-    for (auto it = ++preds, end = pred_end(&block); it != end; ++it) {
-      const BasicBlock* otherPred = *it;
-      const PerBlockState& otherPred_pbs = block_states.lookup(otherPred);
-      DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   next predecessor has " << otherPred_pbs.ptrs_end.describe() << " at end\n");
-      ptr_statuses = PointerStatuses::merge(std::move(ptr_statuses), otherPred_pbs.ptrs_end, Builder);
+    SmallVector<const PointerStatuses*, 4> pred_statuses;
+    for (BasicBlock* pred : predecessors(&block)) {
+      pred_statuses.push_back(&block_states.lookup(*pred).ptrs_end);
     }
+    PointerStatuses ptr_statuses = PointerStatuses::merge(pred_statuses, block);
     // now we handle the manual overrides
-    const PerBlockState& pbs = block_states.lookup(&block);
+    const PerBlockState& pbs = block_states.lookup(block);
     for (auto& pair : pbs.status_overrides_at_top) {
       ptr_statuses.mark_as(pair.getFirst(), pair.getSecond());
     }
@@ -813,7 +825,7 @@ private:
     DynamicResults* dynamic_results,
     const bool add_spatial_sw_checks
   ) {
-    PerBlockState& pbs = block_states.lookup(&block);
+    PerBlockState& pbs = block_states.lookup(block);
 
     LLVM_DEBUG(dbgs() << "DMS: analyzing block " << block.getNameOrAsOperand() << "\n");
     DEBUG_WITH_TYPE("DMS-block-previous-state", dbgs() << "DMS:   this block previously had " << pbs.ptrs_beg.describe() << " at beginning and " << pbs.ptrs_end.describe() << " at end\n");
@@ -1208,7 +1220,7 @@ private:
             const PointerStatus true_status = ptr_statuses.getStatus(select.getTrueValue());
             const PointerStatus false_status = ptr_statuses.getStatus(select.getFalseValue());
             DMSIRBuilder Builder(&select, DMSIRBuilder::BEFORE, &added_insts);
-            ptr_statuses.mark_as(&select, PointerStatus::merge(true_status, false_status, Builder));
+            ptr_statuses.mark_as(&select, PointerStatus::merge_direct(true_status, false_status, Builder));
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(select);
             }
@@ -1220,17 +1232,18 @@ private:
           DMSIRBuilder BeforePhi(&phi, DMSIRBuilder::BEFORE, &added_insts);
           DMSIRBuilder AfterPhi(&block, DMSIRBuilder::BEGINNING, &added_insts);
           if (phi.getType()->isPointerTy()) {
-            SmallVector<std::pair<PointerStatus, BasicBlock*>, 4> incoming_statuses;
+            SmallVector<StatusWithBlock, 4> incoming_statuses;
             for (const Use& use : phi.incoming_values()) {
               BasicBlock* bb = phi.getIncomingBlock(use);
-              auto& ptr_statuses_end_of_bb = block_states.lookup(bb).ptrs_end;
+              auto& ptr_statuses_end_of_bb = block_states.lookup(*bb).ptrs_end;
               Value* value = use.get();
-              incoming_statuses.push_back(std::make_pair(
+              incoming_statuses.push_back(StatusWithBlock(
                 ptr_statuses_end_of_bb.getStatus(value),
-                bb
+                *bb
               ));
             }
             // check for an entry in dynamic_phi_to_status_phi
+            // TODO: do we need this cache anymore at all?
             auto it = dynamic_phi_to_status_phi.find(&phi);
             if (it != dynamic_phi_to_status_phi.end()) {
               // there's a previously created PHI of the pointer statuses.
@@ -1238,10 +1251,10 @@ private:
               // because some incoming pointer statuses have changed.
               PHINode* status_phi = it->getSecond();
               assert(incoming_statuses.size() == status_phi->getNumIncomingValues());
-              for (auto& pair : incoming_statuses) {
-                const PointerStatus& incoming_status = pair.first;
-                const BasicBlock* incoming_bb = pair.second;
-                const Value* old_incoming_kind = status_phi->getIncomingValueForBlock(incoming_bb);
+              for (StatusWithBlock& swb : incoming_statuses) {
+                const PointerStatus& incoming_status = swb.status;
+                const BasicBlock& incoming_bb = swb.block;
+                const Value* old_incoming_kind = status_phi->getIncomingValueForBlock(&incoming_bb);
                 assert(old_incoming_kind && "status_phi should have the same incoming blocks as the main phi");
                 if (incoming_status.kind == PointerKind::DYNAMIC) {
                   if (incoming_status.dynamic_kind == old_incoming_kind) {
@@ -1250,7 +1263,7 @@ private:
                     // a different dynamic status than we had previously.
                     // (or maybe we previously had a constant mask here.)
                     // Just change the status_phi in place.
-                    status_phi->setIncomingValueForBlock(incoming_bb, incoming_status.dynamic_kind);
+                    status_phi->setIncomingValueForBlock(&incoming_bb, incoming_status.dynamic_kind);
                   }
                 } else {
                   ConstantInt* new_mask = incoming_status.to_constant_dynamic_kind_mask(F.getContext());
@@ -1260,69 +1273,20 @@ private:
                     } else {
                       // a different constant mask than we had previously.
                       // Just change the status_phi in place.
-                      status_phi->setIncomingValueForBlock(incoming_bb, new_mask);
+                      status_phi->setIncomingValueForBlock(&incoming_bb, new_mask);
                     }
                   } else {
                     // a constant mask, where previously we had a dynamic mask.
                     // Just change the status_phi in place.
-                    status_phi->setIncomingValueForBlock(incoming_bb, new_mask);
+                    status_phi->setIncomingValueForBlock(&incoming_bb, new_mask);
                   }
                 }
               }
               // now we're done
               ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
             } else {
-              // ok, compute the result status fresh.
-              // If all incoming status are statically known (i.e. not dynamic),
-              // then the result status is just the merger of the statuses of all
-              // the inputs in their corresponding blocks.
-              // But if some incoming status are dynamic, and if
-              // `pointer_encoding_is_complete` (which guarantees that all
-              // `dynamic_kind`s are filled-in, i.e., non-NULL), then we'll just
-              // add a new PHI to select the correct dynamic status.
-              // (We could theoretically use a PHI even for the all-static case.
-              // This would have the advantage of path-sensitive status, but the
-              // disadvantage of having a dynamic status when the merger approach
-              // gives a statically-known status, albeit a more conservative one.
-              // Currently we don't insert a PHI in the all-static case. But, if
-              // we insert one, and then in a later iteration it becomes
-              // all-static somehow, we still leave the PHI.)
-              assert(incoming_statuses.size() >= 1);
-              bool all_incoming_status_are_static = true;
-              for (auto& pair : incoming_statuses) {
-                const PointerStatus& incoming_status = pair.first;
-                if (incoming_status.kind == PointerKind::DYNAMIC) {
-                  all_incoming_status_are_static = false;
-                  break;
-                }
-              }
-              if (pointer_encoding_is_complete && !all_incoming_status_are_static) {
-                PHINode* status_phi = BeforePhi.CreatePHI(BeforePhi.getInt64Ty(), phi.getNumIncomingValues());
-                for (auto& pair : incoming_statuses) {
-                  PointerStatus& incoming_status = pair.first;
-                  BasicBlock* incoming_bb = pair.second;
-                  if (incoming_status.kind == PointerKind::NOTDEFINEDYET) {
-                    LLVM_DEBUG(dbgs() << "pointer_encoding_is_complete, but the pointer incoming from " << incoming_bb->getNameOrAsOperand() << " in phi " << phi.getNameOrAsOperand() << " is NOTDEFINEDYET\n");
-                    LLVM_DEBUG(F.dump());
-                    llvm_unreachable("assertion failure: see above message");
-                  }
-                  Value* dynamic_kind = incoming_status.to_dynamic_kind_mask(F.getContext());
-                  assert(dynamic_kind && "when pointer_encoding_is_complete, we shouldn't have dynamic_kind == NULL");
-                  status_phi->addIncoming(dynamic_kind, incoming_bb);
-                }
-                assert(status_phi->isComplete());
-                ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
-                dynamic_phi_to_status_phi[&phi] = status_phi;
-              } else {
-                PointerStatus merged_status = PointerStatus::clean();
-                for (auto& pair : incoming_statuses) {
-                  PointerStatus& incoming_status = pair.first;
-                  // if dynamic instructions are necessary to perform the merge,
-                  // insert them after the phi
-                  merged_status = PointerStatus::merge(merged_status, incoming_status, AfterPhi);
-                }
-                ptr_statuses.mark_as(&phi, merged_status);
-              }
+              PointerStatus merged_status = PointerStatus::merge_with_phi(incoming_statuses, &block);
+              ptr_statuses.mark_as(&phi, std::move(merged_status));
             }
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(phi);

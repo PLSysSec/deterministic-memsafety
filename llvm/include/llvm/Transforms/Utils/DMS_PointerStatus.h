@@ -62,6 +62,8 @@ public:
   /// Disable if(kind) where `kind` is a `PointerKind`
   explicit operator bool() = delete;
 
+  llvm::ConstantInt* to_constant_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
+
   /// Merge two `PointerKind`s.
   /// For the purposes of this function, the ordering is
   /// DIRTY < UNKNOWN < BLEMISHEDCONST < BLEMISHED64 < BLEMISHED32 < BLEMISHED16 < CLEAN,
@@ -74,6 +76,12 @@ public:
 
 private:
   Kind kind;
+
+  /// This private function is like PointerKind::merge, but can handle some
+  /// cases of DYNAMIC. If it knows the merge result will be static, it returns
+  /// that; if it doesn't know, it returns DYNAMIC.
+  static PointerKind merge_maybe_dynamic(const PointerKind a, const PointerKind b);
+  friend class PointerStatus;
 };
 
 typedef enum DynamicPointerKind {
@@ -95,6 +103,8 @@ public:
   static const uint64_t clean = ((uint64_t)DYN_CLEAN) << 48;
   static const uint64_t dynamic_kind_mask = ((uint64_t)0b11) << 48;
 };
+
+struct StatusWithBlock;
 
 /// If C++ had ADTs, PointerKind::DYNAMIC would carry an LLVM Value*.  (And maybe
 /// BLEMISHED would carry an int indicating exactly how blemished.)  Instead,
@@ -139,6 +149,12 @@ public:
     return !(*this == other);
   }
 
+  llvm::Value* to_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
+
+  /// Like `to_dynamic_kind_mask()`, but only for `kind`s that aren't `DYNAMIC`.
+  /// Returns a `ConstantInt` instead of an arbitrary `Value`.
+  llvm::ConstantInt* to_constant_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
+
   /// Merge two `PointerStatus`es.
   /// See comments on PointerKind::merge.
   ///
@@ -146,22 +162,52 @@ public:
   /// `Builder`.
   /// We will only potentially need to do this if at least one of the statuses
   /// is DYNAMIC with a non-null `dynamic_kind`.
-  static PointerStatus merge(const PointerStatus a, const PointerStatus b, llvm::DMSIRBuilder& Builder);
+  static PointerStatus merge_direct(
+    const PointerStatus a,
+    const PointerStatus b,
+    llvm::DMSIRBuilder& Builder
+  );
 
-  llvm::Value* to_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
-
-  /// Like `to_dynamic_kind_mask()`, but only for `kind`s that aren't `DYNAMIC`.
-  /// Returns a `ConstantInt` instead of an arbitrary `Value`.
-  llvm::ConstantInt* to_constant_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
+  /// Merge two `PointerStatus`es.
+  /// See comments on PointerKind::merge.
+  ///
+  /// If necessary, insert a phi instruction in `phi_block` to perform the
+  /// merge.
+  /// We will only potentially need to do this if at least one of the statuses
+  /// is DYNAMIC with a non-null `dynamic_kind`.
+  static PointerStatus merge_with_phi(
+    const llvm::SmallVector<StatusWithBlock, 4>& statuses,
+    /// Block where we will insert a phi if necessary (where the merge is occurring)
+    llvm::BasicBlock* phi_block
+  );
 
 private:
   /// Merge a static `PointerKind` and a `dynamic_kind`.
-  /// See comments on PointerStatus::merge.
-  static PointerStatus merge_static_dynamic(const PointerKind static_kind, llvm::Value* dynamic_kind, llvm::DMSIRBuilder& Builder);
+  /// See comments on PointerStatus::merge_direct.
+  static PointerStatus merge_static_dynamic_direct(
+    const PointerKind static_kind,
+    llvm::Value* dynamic_kind,
+    /// Builder to insert instructions with (if necessary)
+    llvm::DMSIRBuilder& Builder
+  );
 
   /// Merge two `dynamic_kind`s.
-  /// See comments on PointerStatus::merge.
-  static llvm::Value* merge_two_dynamic(llvm::Value* dynamic_kind_a, llvm::Value* dynamic_kind_b, llvm::DMSIRBuilder& Builder);
+  /// See comments on PointerStatus::merge_direct.
+  static llvm::Value* merge_two_dynamic_direct(
+    llvm::Value* dynamic_kind_a,
+    llvm::Value* dynamic_kind_b,
+    /// Builder to insert instructions with (if necessary)
+    llvm::DMSIRBuilder& Builder
+  );
+};
+
+/// Holds a `PointerStatus` and the `BasicBlock` which it came from
+struct StatusWithBlock {
+  PointerStatus status;
+  llvm::BasicBlock& block;
+
+  StatusWithBlock(const PointerStatus status, llvm::BasicBlock& block)
+    : status(status), block(block) {}
 };
 
 #endif
