@@ -214,8 +214,15 @@ template<> struct DenseMapInfo<PhiMergerCacheKey> {
 };
 } // end namespace llvm
 
-/// Merge two `PointerStatus`es.
-/// See comments on PointerKind::merge.
+/// Is A a predecessor of B
+static bool block_is_pred_of_block(BasicBlock* A, BasicBlock* B) {
+  for (BasicBlock* pred : predecessors(B)) {
+    if (pred == A) return true;
+  }
+  return false;
+}
+
+/// Merge a set of `PointerStatus`es.
 ///
 /// If necessary, insert a phi instruction in `phi_block` to perform the
 /// merge.
@@ -274,7 +281,9 @@ PointerStatus PointerStatus::merge_with_phi(
 
   DMSIRBuilder Builder(phi_block, DMSIRBuilder::BEGINNING, NULL);
   PHINode* phi = Builder.CreatePHI(Builder.getInt64Ty(), 2);
+  assert(statuses.size() == pred_size(phi_block));
   for (const StatusWithBlock& swb : statuses) {
+    assert(block_is_pred_of_block(swb.block, phi_block));
     phi->addIncoming(
       swb.status.to_dynamic_kind_mask(Builder.getContext()),
       swb.block

@@ -323,7 +323,7 @@ public:
         if (handled) continue;
         // pointer is not in a previous map, so we need to handle it now
         // get the statuses in the next map(s), if any
-        for (size_t next = i; next < statuses.size(); next++) {
+        for (size_t next = i + 1; next < statuses.size(); next++) {
           const auto& it = statuses[next]->map.find(ptr);
           PointerStatus status_in_next = (it == statuses[next]->map.end()) ?
             // implicitly NOTDEFINEDYET in next
@@ -331,7 +331,7 @@ public:
             // defined in next, get the status
             it->getSecond();
           statuses_for_ptr.push_back(
-            StatusWithBlock(status_in_next, &statuses[i]->block)
+            StatusWithBlock(status_in_next, &statuses[next]->block)
           );
         }
         // now we have all the statuses, do the merge
@@ -787,6 +787,7 @@ private:
       const PerBlockState& pred_pbs = block_states.lookup(*pred);
       pred_statuses.push_back(&pred_pbs.ptrs_end);
     }
+    assert(pred_statuses.size() == pred_size(&block));
     PointerStatuses ptr_statuses = PointerStatuses::merge(pred_statuses, block);
     // now we handle the manual overrides
     const PerBlockState& pbs = block_states.lookup(block);

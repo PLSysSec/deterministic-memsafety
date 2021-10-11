@@ -168,8 +168,7 @@ public:
     llvm::DMSIRBuilder& Builder
   );
 
-  /// Merge two `PointerStatus`es.
-  /// See comments on PointerKind::merge.
+  /// Merge a set of `PointerStatus`es.
   ///
   /// If necessary, insert a phi instruction in `phi_block` to perform the
   /// merge.
