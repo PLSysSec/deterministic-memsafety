@@ -204,9 +204,9 @@ private:
 /// Holds a `PointerStatus` and the `BasicBlock` which it came from
 struct StatusWithBlock {
   PointerStatus status;
-  llvm::BasicBlock& block;
+  llvm::BasicBlock* block;
 
-  StatusWithBlock(const PointerStatus status, llvm::BasicBlock& block)
+  StatusWithBlock(const PointerStatus status, llvm::BasicBlock* block)
     : status(status), block(block) {}
 };
 

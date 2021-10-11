@@ -305,7 +305,7 @@ public:
         SmallVector<StatusWithBlock, 4> statuses_for_ptr;
         const Value* ptr = pair.getFirst();
         statuses_for_ptr.push_back(
-          StatusWithBlock(pair.getSecond(), statuses[i]->block)
+          StatusWithBlock(pair.getSecond(), &statuses[i]->block)
         );
         bool handled = false;
         for (size_t prev = 0; prev < i; prev++) {
@@ -317,7 +317,7 @@ public:
           }
           // otherwise it's implicitly NOTDEFINEDYET in that map
           statuses_for_ptr.push_back(
-            StatusWithBlock(PointerStatus::notdefinedyet(), statuses[prev]->block)
+            StatusWithBlock(PointerStatus::notdefinedyet(), &statuses[prev]->block)
           );
         }
         if (handled) continue;
@@ -331,7 +331,7 @@ public:
             // defined in next, get the status
             it->getSecond();
           statuses_for_ptr.push_back(
-            StatusWithBlock(status_in_next, statuses[i]->block)
+            StatusWithBlock(status_in_next, &statuses[i]->block)
           );
         }
         // now we have all the statuses, do the merge
@@ -788,7 +788,8 @@ private:
     assert(block.hasNPredecessorsOrMore(1));
     SmallVector<const PointerStatuses*, 4> pred_statuses;
     for (BasicBlock* pred : predecessors(&block)) {
-      pred_statuses.push_back(&block_states.lookup(*pred).ptrs_end);
+      const PerBlockState& pred_pbs = block_states.lookup(*pred);
+      pred_statuses.push_back(&pred_pbs.ptrs_end);
     }
     PointerStatuses ptr_statuses = PointerStatuses::merge(pred_statuses, block);
     // now we handle the manual overrides
@@ -1239,55 +1240,11 @@ private:
               Value* value = use.get();
               incoming_statuses.push_back(StatusWithBlock(
                 ptr_statuses_end_of_bb.getStatus(value),
-                *bb
+                bb
               ));
             }
-            // check for an entry in dynamic_phi_to_status_phi
-            // TODO: do we need this cache anymore at all?
-            auto it = dynamic_phi_to_status_phi.find(&phi);
-            if (it != dynamic_phi_to_status_phi.end()) {
-              // there's a previously created PHI of the pointer statuses.
-              // We need to check if it's still valid -- or if it needs updating
-              // because some incoming pointer statuses have changed.
-              PHINode* status_phi = it->getSecond();
-              assert(incoming_statuses.size() == status_phi->getNumIncomingValues());
-              for (StatusWithBlock& swb : incoming_statuses) {
-                const PointerStatus& incoming_status = swb.status;
-                const BasicBlock& incoming_bb = swb.block;
-                const Value* old_incoming_kind = status_phi->getIncomingValueForBlock(&incoming_bb);
-                assert(old_incoming_kind && "status_phi should have the same incoming blocks as the main phi");
-                if (incoming_status.kind == PointerKind::DYNAMIC) {
-                  if (incoming_status.dynamic_kind == old_incoming_kind) {
-                    // up to date, nothing to do
-                  } else {
-                    // a different dynamic status than we had previously.
-                    // (or maybe we previously had a constant mask here.)
-                    // Just change the status_phi in place.
-                    status_phi->setIncomingValueForBlock(&incoming_bb, incoming_status.dynamic_kind);
-                  }
-                } else {
-                  ConstantInt* new_mask = incoming_status.to_constant_dynamic_kind_mask(F.getContext());
-                  if (const ConstantInt* old_mask = cast<const ConstantInt>(old_incoming_kind)) {
-                    if (new_mask->getValue() == old_mask->getValue()) {
-                      // up to date, nothing to do
-                    } else {
-                      // a different constant mask than we had previously.
-                      // Just change the status_phi in place.
-                      status_phi->setIncomingValueForBlock(&incoming_bb, new_mask);
-                    }
-                  } else {
-                    // a constant mask, where previously we had a dynamic mask.
-                    // Just change the status_phi in place.
-                    status_phi->setIncomingValueForBlock(&incoming_bb, new_mask);
-                  }
-                }
-              }
-              // now we're done
-              ptr_statuses.mark_as(&phi, PointerStatus::dynamic(status_phi));
-            } else {
-              PointerStatus merged_status = PointerStatus::merge_with_phi(incoming_statuses, &block);
-              ptr_statuses.mark_as(&phi, std::move(merged_status));
-            }
+            PointerStatus merged_status = PointerStatus::merge_with_phi(incoming_statuses, &block);
+            ptr_statuses.mark_as(&phi, std::move(merged_status));
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(phi);
             }

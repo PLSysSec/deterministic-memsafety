@@ -127,30 +127,60 @@ PointerStatus PointerStatus::merge_direct(
 
 /// Used only for the cache in `PointerStatus::merge_with_phi`; see notes there
 struct PhiMergerCacheKey {
-  const SmallVector<StatusWithBlock, 4>* statuses;
+  // not a reference or pointer: requires us to copy in the contents of the
+  // vector into the vector inside this PhiMergerCacheKey
+  SmallVector<StatusWithBlock, 4> statuses;
   BasicBlock* phi_block;
 
-  PhiMergerCacheKey(
-    const SmallVector<StatusWithBlock, 4>* statuses,
+  explicit PhiMergerCacheKey(
+    const SmallVector<StatusWithBlock, 4>* _statuses,
     BasicBlock* phi_block
-  ) : statuses(statuses), phi_block(phi_block) {}
-  PhiMergerCacheKey() : statuses(NULL), phi_block(NULL) {}
+  ) : phi_block(phi_block) {
+    if (_statuses) {
+      for (StatusWithBlock status : *_statuses) {
+        statuses.push_back(StatusWithBlock(status));
+      }
+    }
+  }
+  PhiMergerCacheKey() : phi_block(NULL) {}
+  PhiMergerCacheKey(const PhiMergerCacheKey& other)
+    : statuses(other.statuses), phi_block(other.phi_block) {}
+
+  // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
+  // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
+  friend void swap(PhiMergerCacheKey& A, PhiMergerCacheKey& B) noexcept {
+    std::swap(A.statuses, B.statuses);
+    std::swap(A.phi_block, B.phi_block);
+  }
+  PhiMergerCacheKey(PhiMergerCacheKey&& other) noexcept : PhiMergerCacheKey() {
+    swap(*this, other);
+  }
+  PhiMergerCacheKey& operator=(PhiMergerCacheKey rhs) noexcept {
+    swap(*this, rhs);
+    return *this;
+  }
+
+  static inline PhiMergerCacheKey getTombstoneKey() {
+    PhiMergerCacheKey Key;
+    // getTombstoneKey() doesn't work on a SmallVector, hopefully it's sufficient to have a tombstone in the phi_block field
+    Key.phi_block = DenseMapInfo<BasicBlock*>::getTombstoneKey();
+    return Key;
+  }
 
   bool operator==(const PhiMergerCacheKey& other) const {
-    if (statuses == NULL || phi_block == NULL || other.statuses == NULL || other.phi_block == NULL) {
-      if (statuses == NULL && phi_block == NULL && other.statuses == NULL && other.phi_block == NULL) {
+    if (statuses.size() == 0 || phi_block == NULL || other.statuses.size() == 0 || other.phi_block == NULL) {
+      if (statuses.size() == 0 && phi_block == NULL && other.statuses.size() == 0 && other.phi_block == NULL) {
         return true;
       } else {
         return false;
       }
     }
-    const SmallVector<StatusWithBlock, 4>& this_statuses = *statuses;
-    const SmallVector<StatusWithBlock, 4>& other_statuses = *other.statuses;
-    if (this_statuses.size() != other_statuses.size()) return false;
+    assert(statuses.size() > 0);
+    if (statuses.size() != other.statuses.size()) return false;
     if (phi_block != other.phi_block) return false;
-    for (size_t i = 0; i < this_statuses.size(); i++) {
-      if (this_statuses[i].status != other_statuses[i].status) return false;
-      if (&this_statuses[i].block != &other_statuses[i].block) return false;
+    for (size_t i = 0; i < statuses.size(); i++) {
+      if (statuses[i].status != other.statuses[i].status) return false;
+      if (&statuses[i].block != &other.statuses[i].block) return false;
     }
     return true;
   }
@@ -167,15 +197,16 @@ template<> struct DenseMapInfo<PhiMergerCacheKey> {
     return PhiMergerCacheKey();
   }
   static inline PhiMergerCacheKey getTombstoneKey() {
-    return PhiMergerCacheKey(
-      DenseMapInfo<const SmallVector<StatusWithBlock, 4>*>::getTombstoneKey(),
-      DenseMapInfo<BasicBlock*>::getTombstoneKey()
-    );
+    return PhiMergerCacheKey::getTombstoneKey();
   }
   static unsigned getHashValue(const PhiMergerCacheKey &Val) {
-    return
-      DenseMapInfo<const SmallVector<StatusWithBlock, 4>*>::getHashValue(Val.statuses) ^
-      DenseMapInfo<BasicBlock*>::getHashValue(Val.phi_block);
+    unsigned hash = 0;
+    for (const StatusWithBlock& status : Val.statuses) {
+      hash ^= DenseMapInfo<BasicBlock*>::getHashValue(status.block);
+      hash ^= status.status.kind;
+      hash ^= DenseMapInfo<Value*>::getHashValue(status.status.dynamic_kind);
+    }
+    return hash ^ DenseMapInfo<BasicBlock*>::getHashValue(Val.phi_block);
   }
   static bool isEqual(const PhiMergerCacheKey &LHS, const PhiMergerCacheKey &RHS) {
     return LHS == RHS;
@@ -236,7 +267,7 @@ PointerStatus PointerStatus::merge_with_phi(
   for (const StatusWithBlock& swb : statuses) {
     phi->addIncoming(
       swb.status.to_dynamic_kind_mask(Builder.getContext()),
-      &swb.block
+      swb.block
     );
   }
   assert(phi->isComplete());
