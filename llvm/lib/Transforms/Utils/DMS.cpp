@@ -689,10 +689,6 @@ private:
   /// `dynamic_kind`). This mapping can't change from iteration to iteration.
   DenseMap<const LoadInst*, PointerStatus> loaded_val_statuses;
 
-  /// This maps pointer-typed PHI nodes to the corresponding PHI of the
-  /// `dynamic_kind`s, if one has been created.
-  DenseMap<const PHINode*, PHINode*> dynamic_phi_to_status_phi;
-
   /// For the IntToPtrs in this map, don't count them for stats, and lock the
   /// result's PointerStatus and BoundsInfo to be the same status/boundsinfo as
   /// that of the corresponding Value.
