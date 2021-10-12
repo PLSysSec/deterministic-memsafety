@@ -249,13 +249,17 @@ public:
     SmallVector<const Value*, 8> blem_ptrs = SmallVector<const Value*, 8>();
     SmallVector<const Value*, 8> dirty_ptrs = SmallVector<const Value*, 8>();
     SmallVector<const Value*, 8> unk_ptrs = SmallVector<const Value*, 8>();
+    SmallVector<const Value*, 8> dyn_ptrs = SmallVector<const Value*, 8>();
+    SmallVector<const Value*, 8> dynnull_ptrs = SmallVector<const Value*, 8>();
+    SmallVector<const Value*, 8> ndy_ptrs = SmallVector<const Value*, 8>();
     for (auto& pair : map) {
       const Value* ptr = pair.getFirst();
       if (ptr->hasName() && ptr->getName().startswith("__DMS")) {
         // name starts with __DMS, skip it
         continue;
       }
-      switch (pair.getSecond().kind) {
+      const PointerStatus& status = pair.getSecond();
+      switch (status.kind) {
         case PointerKind::CLEAN:
           clean_ptrs.push_back(ptr);
           break;
@@ -269,11 +273,17 @@ public:
           dirty_ptrs.push_back(ptr);
           break;
         case PointerKind::UNKNOWN:
-        case PointerKind::DYNAMIC:
           unk_ptrs.push_back(ptr);
           break;
-        default:
+        case PointerKind::DYNAMIC:
+          if (status.dynamic_kind) dyn_ptrs.push_back(ptr);
+          else dynnull_ptrs.push_back(ptr);
           break;
+        case PointerKind::NOTDEFINEDYET:
+          ndy_ptrs.push_back(ptr);
+          break;
+        default:
+          llvm_unreachable("Missing PointerKind case");
       }
     }
     std::ostringstream out;
@@ -284,6 +294,12 @@ public:
     describePointerList(dirty_ptrs, out, "dirty");
     out << " and ";
     describePointerList(unk_ptrs, out, "unk");
+    out << " and ";
+    describePointerList(dyn_ptrs, out, "dyn");
+    out << " and ";
+    describePointerList(dynnull_ptrs, out, "dynnull");
+    out << " and ";
+    describePointerList(ndy_ptrs, out, "ndy");
     return out.str();
   }
 
@@ -754,7 +770,12 @@ private:
     StaticResults static_results = { 0 };
     bool changed = false;
 
-    LLVM_DEBUG(dbgs() << "DMS: starting an iteration through function " << F.getName() << "\n");
+    LLVM_DEBUG(
+      dbgs() << "DMS: starting an iteration through function " << F.getName();
+      if (dynamic_results) dbgs() << ", with instrumentation for dynamic counts";
+      if (add_spatial_sw_checks) dbgs() << ", adding spatial sw checks";
+      dbgs() << "\n";
+    );
 
     // Recompute the RPOT if necessary. See notes on RPOT
     unsigned new_num_bbs = F.getBasicBlockList().size();
@@ -1641,6 +1662,8 @@ private:
   // based on the `PointerStatus`. This is to be used when (and only when) the
   // kind is `DYNAMIC`.
   void incrementGlobalCounterForDynKind(DynamicCounts& dyn_counts, PointerStatus& status, Instruction* BeforeInst) {
+    assert(status.kind == PointerKind::DYNAMIC);
+    assert(status.dynamic_kind != NULL);
     DMSIRBuilder Builder(BeforeInst, DMSIRBuilder::BEFORE, &added_insts);
     Type* i64ty = Builder.getInt64Ty();
     Constant* null = Constant::getNullValue(dyn_counts.clean->getType());
