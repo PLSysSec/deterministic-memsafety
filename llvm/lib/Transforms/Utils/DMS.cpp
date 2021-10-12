@@ -692,7 +692,7 @@ private:
   /// that of the corresponding Value.
   /// This is used for the IntToPtrs which we insert ourselves as part of
   /// pointer encoding/decoding.
-  DenseMap<const IntToPtrInst*, const Value*> inttoptr_status_and_bounds_overrides;
+  DenseMap<const Value*, const Value*> inttoptr_status_and_bounds_overrides;
 
   /// `Load` and `Store` instructions for which we have already inserted bounds
   /// checks. This way, we know which instructions may still need checks during
@@ -1061,12 +1061,11 @@ private:
               // create a status and bounds override for the new `IntToPtr`, so
               // this relationship is preserved even in future passes. It will
               // always have the same status and boundsinfo as `storedVal`.
-              IntToPtrInst* inttoptr = cast<IntToPtrInst>(new_storedVal_as_ptr);
-              inttoptr_status_and_bounds_overrides[inttoptr] = storedVal;
+              inttoptr_status_and_bounds_overrides[new_storedVal_as_ptr] = storedVal;
               // update aliasing information
               // TODO: can this supercede the inttoptr_status_and_bounds_overrides?
-              pointer_aliases[storedVal].insert(inttoptr);
-              pointer_aliases[inttoptr].insert(storedVal);
+              pointer_aliases[storedVal].insert(new_storedVal_as_ptr);
+              pointer_aliases[new_storedVal_as_ptr].insert(storedVal);
             }
           }
           break;
