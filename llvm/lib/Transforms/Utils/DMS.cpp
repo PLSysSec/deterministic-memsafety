@@ -126,51 +126,12 @@ public:
     return *this;
   }
 
-  void mark_clean(const Value* ptr) {
-    mark_as(ptr, PointerKind::CLEAN);
-  }
-
-  void mark_dirty(const Value* ptr) {
-    mark_as(ptr, PointerKind::DIRTY);
-  }
-
-  void mark_blemished16(const Value* ptr) {
-    mark_as(ptr, PointerKind::BLEMISHED16);
-  }
-
-  void mark_blemished32(const Value* ptr) {
-    mark_as(ptr, PointerKind::BLEMISHED32);
-  }
-
-  void mark_blemished64(const Value* ptr) {
-    mark_as(ptr, PointerKind::BLEMISHED64);
-  }
-
-  void mark_blemishedconst(const Value* ptr) {
-    mark_as(ptr, PointerKind::BLEMISHEDCONST);
-  }
-
-  void mark_unknown(const Value* ptr) {
-    mark_as(ptr, PointerKind::UNKNOWN);
-  }
-
-  /// `dynamic_kind` may be NULL before `pointer_encoding_is_complete` -- in
-  /// particular if we're not doing pointer encoding at all.
-  /// (If we aren't inserting dynamic instructions for pointer encoding, we
-  /// don't have the dynamic Values representing dynamic kinds.)
-  /// If/when `pointer_encoding_is_complete`, `dynamic_kind` must not be NULL
-  /// in any call to `mark_dynamic`.
-  void mark_dynamic(const Value* ptr, Value* dynamic_kind) {
-    mark_as(ptr, PointerStatus::dynamic(dynamic_kind));
-  }
-
   // Use this for any `kind` except NOTDEFINEDYET or DYNAMIC
   void mark_as(const Value* ptr, PointerKind kind) {
     // don't explicitly mark anything NOTDEFINEDYET - we reserve
     // "not in the map" to mean NOTDEFINEDYET
     assert(kind != PointerKind::NOTDEFINEDYET);
-    // DYNAMIC has to be handled with `mark_dynamic` or the other overload
-    // of `mark_as`
+    // DYNAMIC has to be handled with the other overload of `mark_as`
     assert(kind != PointerKind::DYNAMIC);
     // insert() does nothing if the key was already in the map.
     // instead, it appears we have to use operator[], which seems to
@@ -612,6 +573,14 @@ private:
   /// pointer-producing instructions, and all the calls.
   DenseSet<const Instruction*> added_insts;
 
+  /// Map from a pointer to a set of pointers it is known to be exactly equal to
+  /// (perhaps bitcasted, or GEP'd with 0 offset, but the pointer value is
+  /// equal).
+  /// If a status is updated for this pointer at a given program point, the
+  /// status of the other pointers at that program point will be updated as
+  /// well.
+  DenseMap<const Value*, SmallDenseSet<const Value*>> pointer_aliases;
+
   /// This holds the per-block state for the analysis. One instance of this
   /// class is kept per block in the function.
   class PerBlockState final {
@@ -655,7 +624,9 @@ private:
       PerBlockState& entry_block_pbs = lookup(F.getEntryBlock());
       for (const Argument& arg : F.args()) {
         if (arg.getType()->isPointerTy()) {
-          entry_block_pbs.ptrs_beg.mark_unknown(&arg);
+          // we use PointerStatuses::mark_as() directly. We don't need the
+          // DMSAnalysis::mark_as() here because we can't have any aliases yet
+          entry_block_pbs.ptrs_beg.mark_as(&arg, PointerStatus::unknown());
         }
       }
 
@@ -665,7 +636,9 @@ private:
       // NOTDEFINEDYET.)
       for (const GlobalValue& gv : F.getParent()->global_values()) {
         assert(gv.getType()->isPointerTy());
-        entry_block_pbs.ptrs_beg.mark_clean(&gv);
+        // we use PointerStatuses::mark_as() directly. We don't need the
+        // DMSAnalysis::mark_as() here because we can't have any aliases yet
+        entry_block_pbs.ptrs_beg.mark_as(&gv, PointerStatus::clean());
       }
     }
 
@@ -698,6 +671,15 @@ private:
   };
 
   BlockStates block_states;
+
+  /// Mark the given `ptr` (and all of its aliases, see `pointer_aliases`) as
+  /// the given `PointerStatus`, in the given `PointerStatuses`
+  void mark_as(PointerStatuses& statuses, const Value* ptr, PointerStatus status) {
+    statuses.mark_as(ptr, status);
+    for (const Value* alias : pointer_aliases[ptr]) {
+      statuses.mark_as(alias, status);
+    }
+  }
 
   /// If the `DMSAnalysis` has `do_pointer_encoding`, this maps loaded value
   /// (type `LoadInst`) to its `PointerStatus` at the program point right after
@@ -897,7 +879,7 @@ private:
         // same block has changed more than 10 times, just override it to be
         // statically dirty.
         if (MER.disagreement_key && has_changed_more_than_N_times(*MER.disagreement_key, block, 10)) {
-          ptr_statuses.mark_dirty(*MER.disagreement_key);
+          mark_as(ptr_statuses, *MER.disagreement_key, PointerStatus::dirty());
           pbs.status_overrides_at_top[*MER.disagreement_key] = PointerStatus::dirty();
         }
         // regardless, save the top-of-block ptr_statuses so we can do the above
@@ -982,7 +964,7 @@ private:
             checked_insts.insert(&store);
           }
           // now, the pointer used as an address becomes clean
-          ptr_statuses.mark_clean(addr);
+          mark_as(ptr_statuses, addr, PointerStatus::clean());
 
           // if we're storing a pointer we have some extra work to do.
           Value* storedVal = store.getValueOperand();
@@ -1081,6 +1063,10 @@ private:
               // always have the same status and boundsinfo as `storedVal`.
               IntToPtrInst* inttoptr = cast<IntToPtrInst>(new_storedVal_as_ptr);
               inttoptr_status_and_bounds_overrides[inttoptr] = storedVal;
+              // update aliasing information
+              // TODO: can this supercede the inttoptr_status_and_bounds_overrides?
+              pointer_aliases[storedVal].insert(inttoptr);
+              pointer_aliases[inttoptr].insert(storedVal);
             }
           }
           break;
@@ -1098,7 +1084,7 @@ private:
             checked_insts.insert(&load);
           }
           // now, the pointer becomes clean
-          ptr_statuses.mark_clean(ptr);
+          mark_as(ptr_statuses, ptr, PointerStatus::clean());
 
           if (load.getType()->isPointerTy()) {
             // in this case, we loaded a pointer from memory, so we
@@ -1141,6 +1127,10 @@ private:
               // `loaded_val_statuses`.)
               IntToPtrInst* new_val_inttoptr = cast<IntToPtrInst>(new_val_as_ptr);
               inttoptr_status_and_bounds_overrides[new_val_inttoptr] = &load;
+              // update aliasing information
+              // TODO: can this supercede the inttoptr_status_and_bounds_overrides?
+              pointer_aliases[&load].insert(new_val_inttoptr);
+              pointer_aliases[new_val_inttoptr].insert(&load);
               if (settings.add_sw_spatial_checks) {
                 // compute the bounds of the loaded pointer dynamically. this
                 // requires the unencoded pointer value, ie `new_val_as_ptr`.
@@ -1153,8 +1143,8 @@ private:
               }
             } else {
               // when not `do_pointer_encoding`, we're allowed to pass NULL
-              // here. See notes on `mark_dynamic`
-              ptr_statuses.mark_dynamic(&load, NULL);
+              // here. See notes on `PointerStatus::dynamic_kind`
+              mark_as(ptr_statuses, &load, PointerStatus::dynamic(NULL));
               if (settings.add_sw_spatial_checks) {
                 // bounds info remains valid from iteration to iteration (our
                 // fixpoint won't change the bounds info here), so we only need to
@@ -1176,7 +1166,7 @@ private:
         case Instruction::Alloca: {
           AllocaInst& alloca = cast<AllocaInst>(inst);
           // result of an alloca is a clean pointer
-          ptr_statuses.mark_clean(&alloca);
+          mark_as(ptr_statuses, &alloca, PointerStatus::clean());
           if (settings.add_sw_spatial_checks) {
             bounds_infos.propagate_bounds(alloca);
           }
@@ -1203,11 +1193,17 @@ private:
             ipr.is_induction_pattern ? &ipr.induction_offset : NULL,
             added_insts
           );
-          ptr_statuses.mark_as(&gep, grc.classification);
+          mark_as(ptr_statuses, &gep, grc.classification);
           // if we added a nonzero constant to a pointer, count that for stats purposes
-          if (grc.offset_is_constant && !grc.trustworthy_struct_offset && grc.constant_offset != zero) {
+          if (grc.offset_is_constant && !grc.trustworthy_struct_offset && grc.constant_offset != 0) {
             COUNT_OP_AS_STATUS(pointer_arith_const, input_status, &gep, "GEP on a pointer");
           }
+          // update aliasing information
+          if (grc.offset_is_constant && !grc.trustworthy_struct_offset && grc.constant_offset == 0) {
+            pointer_aliases[&gep].insert(input_ptr);
+            pointer_aliases[input_ptr].insert(&gep);
+          }
+          // update bounds info
           if (settings.add_sw_spatial_checks) {
             bounds_infos.propagate_bounds(gep, grc);
           }
@@ -1217,7 +1213,9 @@ private:
           const BitCastInst& bitcast = cast<BitCastInst>(inst);
           if (bitcast.getType()->isPointerTy()) {
             const Value* input_ptr = bitcast.getOperand(0);
-            ptr_statuses.mark_as(&bitcast, ptr_statuses.getStatus(input_ptr));
+            mark_as(ptr_statuses, &bitcast, ptr_statuses.getStatus(input_ptr));
+            pointer_aliases[input_ptr].insert(&bitcast);
+            pointer_aliases[&bitcast].insert(input_ptr);
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds_id(inst);
             }
@@ -1226,7 +1224,9 @@ private:
         }
         case Instruction::AddrSpaceCast: {
           const Value* input_ptr = inst.getOperand(0);
-          ptr_statuses.mark_as(&inst, ptr_statuses.getStatus(input_ptr));
+          mark_as(ptr_statuses, &inst, ptr_statuses.getStatus(input_ptr));
+          pointer_aliases[input_ptr].insert(&inst);
+          pointer_aliases[&inst].insert(input_ptr);
           if (settings.add_sw_spatial_checks) {
             bounds_infos.propagate_bounds_id(inst);
           }
@@ -1239,7 +1239,7 @@ private:
             const PointerStatus true_status = ptr_statuses.getStatus(select.getTrueValue());
             const PointerStatus false_status = ptr_statuses.getStatus(select.getFalseValue());
             DMSIRBuilder Builder(&select, DMSIRBuilder::BEFORE, &added_insts);
-            ptr_statuses.mark_as(&select, PointerStatus::merge_direct(true_status, false_status, Builder));
+            mark_as(ptr_statuses, &select, PointerStatus::merge_direct(true_status, false_status, Builder));
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(select);
             }
@@ -1262,7 +1262,7 @@ private:
               ));
             }
             PointerStatus merged_status = PointerStatus::merge_with_phi(incoming_statuses, &block);
-            ptr_statuses.mark_as(&phi, std::move(merged_status));
+            mark_as(ptr_statuses, &phi, std::move(merged_status));
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(phi);
             }
@@ -1279,7 +1279,7 @@ private:
             // See notes on `inttoptr_status_and_bounds_overrides`.
             PointerStatus status = ptr_statuses.getStatus(it->getSecond());
             assert(status.kind != PointerKind::NOTDEFINEDYET);
-            ptr_statuses.mark_as(&inttoptr, status);
+            mark_as(ptr_statuses, &inttoptr, status);
             if (settings.add_sw_spatial_checks) {
               bounds_infos.mark_as(&inttoptr, bounds_infos.get_binfo(it->getSecond()));
             }
@@ -1290,7 +1290,7 @@ private:
             if (dynamic_results) {
               incrementGlobalCounter(dynamic_results->inttoptrs, &inst);
             }
-            ptr_statuses.mark_as(&inttoptr, settings.inttoptr_kind);
+            mark_as(ptr_statuses, &inttoptr, PointerStatus::from_kind(settings.inttoptr_kind));
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(inttoptr, settings.inttoptr_kind);
             }
@@ -1320,10 +1320,10 @@ private:
             if (IAC.is_allocating) {
               // If this is an allocating call (eg, a call to `malloc`), then the
               // returned pointer is CLEAN
-              ptr_statuses.mark_clean(&call);
+              mark_as(ptr_statuses, &call, PointerStatus::clean());
             } else {
               // For now, mark pointers returned from other calls as UNKNOWN
-              ptr_statuses.mark_unknown(&call);
+              mark_as(ptr_statuses, &call, PointerStatus::unknown());
             }
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(call, IAC);
@@ -1342,7 +1342,7 @@ private:
           // or (b) we loaded the struct from memory (?), in which case we
           // should just mark the result UNKNOWN per our current assumptions.
           // So for now, we'll just mark UNKNOWN and move on
-          ptr_statuses.mark_unknown(&inst);
+          mark_as(ptr_statuses, &inst, PointerStatus::unknown());
           if (settings.add_sw_spatial_checks) {
             bounds_infos.mark_as(&inst, BoundsInfo::unknown());
           }
@@ -1350,7 +1350,7 @@ private:
         }
         case Instruction::ExtractElement: {
           // same comments apply as for ExtractValue, basically
-          ptr_statuses.mark_unknown(&inst);
+          mark_as(ptr_statuses, &inst, PointerStatus::unknown());
           if (settings.add_sw_spatial_checks) {
             bounds_infos.mark_as(&inst, BoundsInfo::unknown());
           }

@@ -137,6 +137,10 @@ public:
   static PointerStatus notdefinedyet() { return { PointerKind::NOTDEFINEDYET, NULL }; }
   static PointerStatus dynamic(llvm::Value* dynamic_kind) { return { PointerKind::DYNAMIC, dynamic_kind }; }
 
+  /// Create a `PointerStatus` from a `PointerKind`. If the `PointerKind` is `DYNAMIC`,
+  /// the `PointerStatus` will have dynamic_kind `NULL`; see notes on `dynamic_kind`.
+  static PointerStatus from_kind(PointerKind kind) { return { kind, NULL }; }
+
   bool operator==(const PointerStatus& other) const {
     if (kind != other.kind) return false;
     if (kind == PointerKind::DYNAMIC) {
