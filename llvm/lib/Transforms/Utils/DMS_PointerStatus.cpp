@@ -234,14 +234,12 @@ PointerStatus PointerStatus::merge_with_phi(
   BasicBlock* phi_block
 ) {
   bool have_dynamic_null = false;
-  bool have_notdefinedyet = false;
   PointerKind maybe_merged = PointerKind::NOTDEFINEDYET;
   for (const StatusWithBlock& swb : statuses) {
     maybe_merged = PointerKind::merge_maybe_dynamic(maybe_merged, swb.status.kind);
     if (swb.status.kind == PointerKind::DYNAMIC) {
       if (swb.status.dynamic_kind == NULL) have_dynamic_null = true;
     }
-    if (swb.status.kind == PointerKind::NOTDEFINEDYET) have_notdefinedyet = true;
   }
   // if the result of the merger is a kind known statically, use that.
   // (We could theoretically use a PHI even in this case.
@@ -253,14 +251,6 @@ PointerStatus PointerStatus::merge_with_phi(
   if (have_dynamic_null) {
     // one of the pointers we're merging is dynamic with dynamic_kind NULL.
     // result will be dynamic with dynamic_kind NULL.
-    return PointerStatus::dynamic(NULL);
-  }
-  if (have_notdefinedyet) {
-    // one of the pointers we're merging is NOTDEFINEDYET.
-    // but at this point we also know we have at least one DYNAMIC with non-null
-    // dynamic_kind.
-    // For this iteration, just make it dynamic_kind NULL; on a next iteration,
-    // when all inputs are defined, we'll fix it
     return PointerStatus::dynamic(NULL);
   }
   // another special case to check: if all the statuses are equal, then the
@@ -284,10 +274,22 @@ PointerStatus PointerStatus::merge_with_phi(
   assert(statuses.size() == pred_size(phi_block));
   for (const StatusWithBlock& swb : statuses) {
     assert(block_is_pred_of_block(swb.block, phi_block));
-    phi->addIncoming(
-      swb.status.to_dynamic_kind_mask(Builder.getContext()),
-      swb.block
-    );
+    if (swb.status.kind == PointerKind::NOTDEFINEDYET) {
+      // for now, treat this input to the phi as CLEAN.
+      // this will be updated on a future iteration if necessary, once the
+      // incoming pointer has a defined kind.
+      // But if considering this CLEAN leads to the incoming pointer eventually
+      // being CLEAN, that's fine, we're happy with that result
+      phi->addIncoming(
+        Builder.getInt64(DynamicKindMasks::clean),
+        swb.block
+      );
+    } else {
+      phi->addIncoming(
+        swb.status.to_dynamic_kind_mask(Builder.getContext()),
+        swb.block
+      );
+    }
   }
   assert(phi->isComplete());
 
