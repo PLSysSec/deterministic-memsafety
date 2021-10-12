@@ -172,7 +172,7 @@ public:
     llvm::DMSIRBuilder& Builder
   );
 
-  /// Merge a set of `PointerStatus`es.
+  /// Merge a set of `PointerStatus`es for the given `ptr` in `phi_block`.
   ///
   /// If necessary, insert a phi instruction in `phi_block` to perform the
   /// merge.
@@ -180,7 +180,7 @@ public:
   /// is DYNAMIC with a non-null `dynamic_kind`.
   static PointerStatus merge_with_phi(
     const llvm::SmallVector<StatusWithBlock, 4>& statuses,
-    /// Block where we will insert a phi if necessary (where the merge is occurring)
+    const llvm::Value* ptr,
     llvm::BasicBlock* phi_block
   );
 

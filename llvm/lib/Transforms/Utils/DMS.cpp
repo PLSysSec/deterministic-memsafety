@@ -312,7 +312,7 @@ public:
           );
         }
         // now we have all the statuses, do the merge
-        merged.mark_as(ptr, PointerStatus::merge_with_phi(statuses_for_ptr, &merge_block));
+        merged.mark_as(ptr, PointerStatus::merge_with_phi(statuses_for_ptr, ptr, &merge_block));
       }
     }
     return merged;
@@ -1261,7 +1261,7 @@ private:
                 bb
               ));
             }
-            PointerStatus merged_status = PointerStatus::merge_with_phi(incoming_statuses, &block);
+            PointerStatus merged_status = PointerStatus::merge_with_phi(incoming_statuses, &phi, &block);
             mark_as(ptr_statuses, &phi, std::move(merged_status));
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(phi);

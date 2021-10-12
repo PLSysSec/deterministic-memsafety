@@ -127,62 +127,15 @@ PointerStatus PointerStatus::merge_direct(
 
 /// Used only for the cache in `PointerStatus::merge_with_phi`; see notes there
 struct PhiMergerCacheKey {
-  // not a reference or pointer: requires us to copy in the contents of the
-  // vector into the vector inside this PhiMergerCacheKey
-  SmallVector<StatusWithBlock, 4> statuses;
+  const Value* ptr;
   BasicBlock* phi_block;
 
-  explicit PhiMergerCacheKey(
-    const SmallVector<StatusWithBlock, 4>* _statuses,
-    BasicBlock* phi_block
-  ) : phi_block(phi_block) {
-    if (_statuses) {
-      for (StatusWithBlock status : *_statuses) {
-        statuses.push_back(StatusWithBlock(status));
-      }
-    }
-  }
-  PhiMergerCacheKey() : phi_block(NULL) {}
-  PhiMergerCacheKey(const PhiMergerCacheKey& other)
-    : statuses(other.statuses), phi_block(other.phi_block) {}
-
-  // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
-  // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
-  friend void swap(PhiMergerCacheKey& A, PhiMergerCacheKey& B) noexcept {
-    std::swap(A.statuses, B.statuses);
-    std::swap(A.phi_block, B.phi_block);
-  }
-  PhiMergerCacheKey(PhiMergerCacheKey&& other) noexcept : PhiMergerCacheKey() {
-    swap(*this, other);
-  }
-  PhiMergerCacheKey& operator=(PhiMergerCacheKey rhs) noexcept {
-    swap(*this, rhs);
-    return *this;
-  }
-
-  static inline PhiMergerCacheKey getTombstoneKey() {
-    PhiMergerCacheKey Key;
-    // getTombstoneKey() doesn't work on a SmallVector, hopefully it's sufficient to have a tombstone in the phi_block field
-    Key.phi_block = DenseMapInfo<BasicBlock*>::getTombstoneKey();
-    return Key;
-  }
+  explicit PhiMergerCacheKey(const Value* ptr, BasicBlock* phi_block)
+    : ptr(ptr), phi_block(phi_block) {}
+  PhiMergerCacheKey() : ptr(NULL), phi_block(NULL) {}
 
   bool operator==(const PhiMergerCacheKey& other) const {
-    if (statuses.size() == 0 || phi_block == NULL || other.statuses.size() == 0 || other.phi_block == NULL) {
-      if (statuses.size() == 0 && phi_block == NULL && other.statuses.size() == 0 && other.phi_block == NULL) {
-        return true;
-      } else {
-        return false;
-      }
-    }
-    assert(statuses.size() > 0);
-    if (statuses.size() != other.statuses.size()) return false;
-    if (phi_block != other.phi_block) return false;
-    for (size_t i = 0; i < statuses.size(); i++) {
-      if (statuses[i].status != other.statuses[i].status) return false;
-      if (&statuses[i].block != &other.statuses[i].block) return false;
-    }
-    return true;
+    return ptr == other.ptr && phi_block == other.phi_block;
   }
   bool operator!=(const PhiMergerCacheKey& other) const {
     return !(*this == other);
@@ -197,16 +150,14 @@ template<> struct DenseMapInfo<PhiMergerCacheKey> {
     return PhiMergerCacheKey();
   }
   static inline PhiMergerCacheKey getTombstoneKey() {
-    return PhiMergerCacheKey::getTombstoneKey();
+    return PhiMergerCacheKey(
+      DenseMapInfo<const Value*>::getTombstoneKey(),
+      DenseMapInfo<BasicBlock*>::getTombstoneKey()
+    );
   }
   static unsigned getHashValue(const PhiMergerCacheKey &Val) {
-    unsigned hash = 0;
-    for (const StatusWithBlock& status : Val.statuses) {
-      hash ^= DenseMapInfo<BasicBlock*>::getHashValue(status.block);
-      hash ^= status.status.kind;
-      hash ^= DenseMapInfo<Value*>::getHashValue(status.status.dynamic_kind);
-    }
-    return hash ^ DenseMapInfo<BasicBlock*>::getHashValue(Val.phi_block);
+    return DenseMapInfo<const Value*>::getHashValue(Val.ptr) ^
+      DenseMapInfo<BasicBlock*>::getHashValue(Val.phi_block);
   }
   static bool isEqual(const PhiMergerCacheKey &LHS, const PhiMergerCacheKey &RHS) {
     return LHS == RHS;
@@ -222,16 +173,16 @@ static bool block_is_pred_of_block(BasicBlock* A, BasicBlock* B) {
   return false;
 }
 
-/// Merge a set of `PointerStatus`es.
+/// Merge a set of `PointerStatus`es for the given `ptr` in `phi_block`.
 ///
 /// If necessary, insert a phi instruction in `phi_block` to perform the
 /// merge.
 /// We will only potentially need to do this if at least one of the statuses
 /// is DYNAMIC with a non-null `dynamic_kind`.
 PointerStatus PointerStatus::merge_with_phi(
-  const SmallVector<StatusWithBlock, 4>& statuses,
-  /// Block where we will insert a phi if necessary (where the merge is occurring)
-  BasicBlock* phi_block
+  const llvm::SmallVector<StatusWithBlock, 4>& statuses,
+  const Value* ptr,
+  llvm::BasicBlock* phi_block
 ) {
   bool have_dynamic_null = false;
   PointerKind maybe_merged = PointerKind::NOTDEFINEDYET;
@@ -263,38 +214,85 @@ PointerStatus PointerStatus::merge_with_phi(
     }
   }
   if (all_equal) return statuses[0].status;
+
   // at this point it's looking like we have to actually insert a phi.
-  // check the cache first
-  static SmallDenseMap<PhiMergerCacheKey, PointerStatus, 4> cache;
-  PhiMergerCacheKey Key(&statuses, phi_block);
-  if (cache.count(Key) > 0) return cache[Key];
-
-  DMSIRBuilder Builder(phi_block, DMSIRBuilder::BEGINNING, NULL);
-  PHINode* phi = Builder.CreatePHI(Builder.getInt64Ty(), 2);
-  assert(statuses.size() == pred_size(phi_block));
-  for (const StatusWithBlock& swb : statuses) {
-    assert(block_is_pred_of_block(swb.block, phi_block));
-    if (swb.status.kind == PointerKind::NOTDEFINEDYET) {
-      // for now, treat this input to the phi as CLEAN.
-      // this will be updated on a future iteration if necessary, once the
-      // incoming pointer has a defined kind.
-      // But if considering this CLEAN leads to the incoming pointer eventually
-      // being CLEAN, that's fine, we're happy with that result
-      phi->addIncoming(
-        Builder.getInt64(DynamicKindMasks::clean),
-        swb.block
-      );
-    } else {
-      phi->addIncoming(
-        swb.status.to_dynamic_kind_mask(Builder.getContext()),
-        swb.block
-      );
+  // check the cache first to see if we've already created a phi for
+  // the dynamic status of this `ptr` in this `phi_block`
+  static DenseMap<PhiMergerCacheKey, PHINode*> cache;
+  PhiMergerCacheKey Key(ptr, phi_block);
+  if (cache.count(Key) > 0) {
+    PHINode* phi = cache[Key];
+    // Adjust the inputs to the phi if any incoming statuses have changed
+    assert(statuses.size() == phi->getNumIncomingValues());
+    for (const StatusWithBlock& swb : statuses) {
+      const Value* old_incoming_kind = phi->getIncomingValueForBlock(swb.block);
+      assert(old_incoming_kind && "expected the same incoming blocks as last time");
+      if (swb.status.kind == PointerKind::DYNAMIC) {
+        if (swb.status.dynamic_kind == old_incoming_kind) {
+          // nothing to update
+        } else {
+          // a different dynamic status than we had previously.
+          // (or maybe we previously had a constant mask here.)
+          // Update the incoming value in place.
+          phi->setIncomingValueForBlock(swb.block, swb.status.dynamic_kind);
+        }
+      } else {
+        ConstantInt* new_mask = swb.status.kind == PointerKind::NOTDEFINEDYET ?
+          // for now, treat this input to the phi as CLEAN.
+          // this will be updated on a future iteration if necessary, once the
+          // incoming pointer has a defined kind.
+          // But if considering this CLEAN leads to the incoming pointer eventually
+          // being CLEAN, that's fine, we're happy with that result
+          ConstantInt::get(Type::getInt64Ty(swb.block->getContext()), DynamicKindMasks::clean)
+          // incoming pointer status is defined, just get the appopriate dynamic
+          // mask
+          : swb.status.to_constant_dynamic_kind_mask(swb.block->getContext());
+        if (const ConstantInt* old_mask = dyn_cast<const ConstantInt>(old_incoming_kind)) {
+          if (new_mask->getValue() == old_mask->getValue()) {
+            // nothing to update
+          } else {
+            // a different constant mask than we had previously.
+            // Update the incoming value in place.
+            phi->setIncomingValueForBlock(swb.block, new_mask);
+          }
+        } else {
+          // a constant mask, where previously we had a dynamic mask.
+          // Update the incoming value in place.
+          phi->setIncomingValueForBlock(swb.block, new_mask);
+        }
+      }
     }
-  }
-  assert(phi->isComplete());
+    cache[Key] = phi; // shouldn't be necessary I suppose -- we just modified the `phi` in place
+    return PointerStatus::dynamic(phi);
+  } else {
+    // create a fresh phi
+    DMSIRBuilder Builder(phi_block, DMSIRBuilder::BEGINNING, NULL);
+    PHINode* phi = Builder.CreatePHI(Builder.getInt64Ty(), 2);
+    assert(statuses.size() == pred_size(phi_block));
+    for (const StatusWithBlock& swb : statuses) {
+      assert(block_is_pred_of_block(swb.block, phi_block));
+      if (swb.status.kind == PointerKind::NOTDEFINEDYET) {
+        // for now, treat this input to the phi as CLEAN.
+        // this will be updated on a future iteration if necessary, once the
+        // incoming pointer has a defined kind.
+        // But if considering this CLEAN leads to the incoming pointer eventually
+        // being CLEAN, that's fine, we're happy with that result
+        phi->addIncoming(
+          Builder.getInt64(DynamicKindMasks::clean),
+          swb.block
+        );
+      } else {
+        phi->addIncoming(
+          swb.status.to_dynamic_kind_mask(Builder.getContext()),
+          swb.block
+        );
+      }
+    }
+    assert(phi->isComplete());
 
-  cache[Key] = PointerStatus::dynamic(phi);
-  return PointerStatus::dynamic(phi);
+    cache[Key] = phi;
+    return PointerStatus::dynamic(phi);
+  }
 }
 
 /// Merge a static `PointerKind` and a `dynamic_kind`, directly (inserting
