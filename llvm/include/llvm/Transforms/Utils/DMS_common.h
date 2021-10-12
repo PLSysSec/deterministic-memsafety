@@ -31,7 +31,7 @@ struct GEPResultClassification {
   /// course.)
   bool offset_is_constant;
   /// If `offset_is_constant` is `true`, then this holds the value of the
-  /// constant offset.
+  /// constant offset, in _bytes_.
   /// (If `override_constant_offset` is non-NULL, `classifyGEPResult` will
   /// copy that value to `constant_offset`.)
   llvm::APInt constant_offset;

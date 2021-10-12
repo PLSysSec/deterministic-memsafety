@@ -5,7 +5,7 @@
 ; totals are for this entire file.
 ; CHECK-LABEL: DMS dynamic counts
 ; CHECK-NEXT: =====
-; CHECK-NEXT: Loads with clean addr: 3
+; CHECK-NEXT: Loads with clean addr: 9
 ; CHECK-NEXT: Loads with blemished16 addr: 1
 ; CHECK-NEXT: Loads with blemished32 addr: 0
 ; CHECK-NEXT: Loads with blemished64 addr: 0
@@ -61,14 +61,17 @@ define i32 @dynclean(i32 %arg) {
   %arr = bitcast [64 x i32]* %allocated to i32*
   %ptrptr = alloca i32*, align 4
   store i32* %arr, i32** %ptrptr, align 4 ; storing a clean ptr to clean address
-  %loadedptr = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr will have DYN_CLEAN status
-  %added0 = getelementptr i32, i32* %loadedptr, i32 0 ; added 0 to DYN_CLEAN ptr, should still be DYN_CLEAN
+  %loadedptr_a = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr_a will have DYN_CLEAN status
+  %added0 = getelementptr i32, i32* %loadedptr_a, i32 0 ; added 0 to DYN_CLEAN ptr, should still be DYN_CLEAN
   %loaded1 = load i32, i32* %added0 ; loading from DYN_CLEAN ptr
-  %added2 = getelementptr i32, i32* %loadedptr, i32 2 ; added 8 bytes to DYN_CLEAN ptr, should be DYN_BLEMISHED16
+  %loadedptr_b = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr_b will have DYN_CLEAN status
+  %added2 = getelementptr i32, i32* %loadedptr_b, i32 2 ; added 8 bytes to DYN_CLEAN ptr, should be DYN_BLEMISHED16
   %loaded2 = load i32, i32* %added2 ; loading from DYN_BLEMISHED16 ptr
-  %added64 = getelementptr i32, i32* %loadedptr, i32 16 ; added 64 bytes to DYN_CLEAN ptr, should be DYN_BLEMISHED_OTHER
+  %loadedptr_c = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr_c will have DYN_CLEAN status
+  %added64 = getelementptr i32, i32* %loadedptr_c, i32 16 ; added 64 bytes to DYN_CLEAN ptr, should be DYN_BLEMISHED_OTHER
   %loaded3 = load i32, i32* %added64 ; loading from DYN_BLEMISHED_OTHER ptr
-  %addednonconst = getelementptr i32, i32* %loadedptr, i32 %arg ; added non-constant offset to DYN_CLEAN ptr, should be DYN_DIRTY
+  %loadedptr_d = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr_d will have DYN_CLEAN status
+  %addednonconst = getelementptr i32, i32* %loadedptr_d, i32 %arg ; added non-constant offset to DYN_CLEAN ptr, should be DYN_DIRTY
   %loaded4 = load i32, i32* %addednonconst ; loading from DYN_DIRTY ptr
   ret i32 %loaded4
 }
@@ -80,14 +83,17 @@ define i32 @dyndirty(i32 %arg) {
   %dirtyptr = getelementptr i32, i32* %arr, i32 %arg ; dirty because the offset is not a compile-time constant
   %ptrptr = alloca i32*, align 4
   store i32* %dirtyptr, i32** %ptrptr, align 4 ; storing a dirty ptr to clean address
-  %loadedptr = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr will have DYN_DIRTY status
-  %added0 = getelementptr i32, i32* %loadedptr, i32 0 ; added 0 to DYN_DIRTY ptr, should still be DYN_DIRTY
+  %loadedptr_a = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr_a will have DYN_DIRTY status
+  %added0 = getelementptr i32, i32* %loadedptr_a, i32 0 ; added 0 to DYN_DIRTY ptr, should still be DYN_DIRTY
   %loaded1 = load i32, i32* %added0 ; loading from DYN_DIRTY ptr
-  %added2 = getelementptr i32, i32* %loadedptr, i32 2 ; added 8 bytes to DYN_DIRTY ptr, should be DYN_DIRTY
+  %loadedptr_b = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr_b will have DYN_DIRTY status
+  %added2 = getelementptr i32, i32* %loadedptr_b, i32 2 ; added 8 bytes to DYN_DIRTY ptr, should be DYN_DIRTY
   %loaded2 = load i32, i32* %added2 ; loading from DYN_DIRTY ptr
-  %added64 = getelementptr i32, i32* %loadedptr, i32 16 ; added 64 bytes to DYN_DIRTY ptr, should be DYN_DIRTY
+  %loadedptr_c = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr_c will have DYN_DIRTY status
+  %added64 = getelementptr i32, i32* %loadedptr_c, i32 16 ; added 64 bytes to DYN_DIRTY ptr, should be DYN_DIRTY
   %loaded3 = load i32, i32* %added64 ; loading from DYN_DIRTY ptr
-  %addednonconst = getelementptr i32, i32* %loadedptr, i32 %arg ; added non-constant offset to DYN_DIRTY ptr, should be DYN_DIRTY
+  %loadedptr_d = load i32*, i32** %ptrptr, align 4 ; loading from clean address. result %loadedptr_d will have DYN_DIRTY status
+  %addednonconst = getelementptr i32, i32* %loadedptr_d, i32 %arg ; added non-constant offset to DYN_DIRTY ptr, should be DYN_DIRTY
   %loaded4 = load i32, i32* %addednonconst ; loading from DYN_DIRTY ptr
   ret i32 %loaded4
 }
