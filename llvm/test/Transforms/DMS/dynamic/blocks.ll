@@ -5,21 +5,21 @@
 ; totals are for this entire file.
 ; CHECK-LABEL: DMS dynamic counts
 ; CHECK-NEXT: =====
-; CHECK-NEXT: Loads with clean addr: 271
+; CHECK-NEXT: Loads with clean addr: 273
 ; CHECK-NEXT: Loads with blemished16 addr: 0
 ; CHECK-NEXT: Loads with blemished32 addr: 0
 ; CHECK-NEXT: Loads with blemished64 addr: 0
 ; CHECK-NEXT: Loads with blemishedconst addr: 0
 ; CHECK-NEXT: Loads with dirty addr: 53
 ; CHECK-NEXT: Loads with unknown addr: 0
-; CHECK-NEXT: Stores with clean addr: 10
+; CHECK-NEXT: Stores with clean addr: 11
 ; CHECK-NEXT: Stores with blemished16 addr: 102
 ; CHECK-NEXT: Stores with blemished32 addr: 0
 ; CHECK-NEXT: Stores with blemished64 addr: 0
 ; CHECK-NEXT: Stores with blemishedconst addr: 0
 ; CHECK-NEXT: Stores with dirty addr: 1
 ; CHECK-NEXT: Stores with unknown addr: 0
-; CHECK-NEXT: Storing a clean ptr to mem: 6
+; CHECK-NEXT: Storing a clean ptr to mem: 7
 ; CHECK-NEXT: Storing a blemished16 ptr to mem: 0
 ; CHECK-NEXT: Storing a blemished32 ptr to mem: 0
 ; CHECK-NEXT: Storing a blemished64 ptr to mem: 0
@@ -59,6 +59,7 @@ define i32 @main() {
   %call7 = call i32 @phi_both_dyn_clean(i32 2)
   %call8 = call i32 @phi_one_dyn_dirty(i32 2)
   %call9 = call i32 @phi_dyn_dirty_static_clean(i32 2)
+  %call10 = call i32 @dyn_clean_nested_loop(i32 2)
   ret i32 0
 }
 
@@ -364,5 +365,41 @@ body:
 
 end:
   %res = phi i32 [ %loop_res, %loop ], [ %arg, %start ]
+  ret i32 %res
+}
+
+; Here, the DYN_CLEAN pointer goes through some more complicated control flow
+; (including a nested loop); it should still be DYN_CLEAN at the end.
+; This test is more to make sure the dynamic pass can handle instrumenting this
+; (including merging dynamic statuses at tops of blocks) and less about checking
+; the runtime behavior.
+; (Dynamic) totals for this function (arg <= 4):
+; Loads with clean addr: 2
+; Stores with clean addr: 1
+; Storing a clean ptr to mem: 1
+define i32 @dyn_clean_nested_loop(i32 %arg) {
+start:
+  %ptr = alloca i32, align 4
+  %ptrptr = alloca i32*, align 4
+  store i32* %ptr, i32** %ptrptr, align 4 ; storing a clean ptr to clean address
+  %dyncleanptr = load volatile i32*, i32** %ptrptr, align 4 ; loading the pointer back from clean address, resulting in DYN_CLEAN ptr
+  br label %a
+
+a:  ; preds: start, d
+  br label %b
+
+b:  ; preds: a, c
+  br label %c
+
+c:  ; preds: b
+  %cond1 = icmp ugt i32 %arg, 4
+  br i1 %cond1, label %b, label %d
+
+d:  ; preds: c
+  %cond2 = icmp ugt i32 %arg, 6
+  br i1 %cond2, label %a, label %exit
+
+exit:  ; preds: d
+  %res = load i32, i32* %dyncleanptr, align 4  ; should be dyn_clean load
   ret i32 %res
 }
