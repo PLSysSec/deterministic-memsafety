@@ -220,12 +220,24 @@ PointerStatus PointerStatus::merge_with_phi(
   // the dynamic status of this `ptr` in this `phi_block`
   static DenseMap<PhiMergerCacheKey, PHINode*> cache;
   PhiMergerCacheKey Key(ptr, phi_block);
-  if (cache.count(Key) > 0) {
-    PHINode* phi = cache[Key];
+  bool have_cached_phi = cache.count(Key) > 0;
+  // if we have a cached phi but it has the wrong number of inputs
+  // (for instance, if we have added another incoming edge to the block)
+  // then we'll create a completely fresh phi anyway.
+  // `cached_phi` is nonnull iff we have a cached phi with the right number of
+  // inputs.
+  PHINode* cached_phi = NULL;
+  if (have_cached_phi) {
+    cached_phi = cache[Key];
+    if (statuses.size() != cached_phi->getNumIncomingValues()) {
+      cached_phi = NULL;
+    }
+  }
+  if (cached_phi) {
     // Adjust the inputs to the phi if any incoming statuses have changed
-    assert(statuses.size() == phi->getNumIncomingValues());
+    assert(statuses.size() == cached_phi->getNumIncomingValues());
     for (const StatusWithBlock& swb : statuses) {
-      const Value* old_incoming_kind = phi->getIncomingValueForBlock(swb.block);
+      const Value* old_incoming_kind = cached_phi->getIncomingValueForBlock(swb.block);
       assert(old_incoming_kind && "expected the same incoming blocks as last time");
       if (swb.status.kind == PointerKind::DYNAMIC) {
         if (swb.status.dynamic_kind == old_incoming_kind) {
@@ -234,7 +246,7 @@ PointerStatus PointerStatus::merge_with_phi(
           // a different dynamic status than we had previously.
           // (or maybe we previously had a constant mask here.)
           // Update the incoming value in place.
-          phi->setIncomingValueForBlock(swb.block, swb.status.dynamic_kind);
+          cached_phi->setIncomingValueForBlock(swb.block, swb.status.dynamic_kind);
         }
       } else {
         ConstantInt* new_mask = swb.status.kind == PointerKind::NOTDEFINEDYET ?
@@ -253,17 +265,17 @@ PointerStatus PointerStatus::merge_with_phi(
           } else {
             // a different constant mask than we had previously.
             // Update the incoming value in place.
-            phi->setIncomingValueForBlock(swb.block, new_mask);
+            cached_phi->setIncomingValueForBlock(swb.block, new_mask);
           }
         } else {
           // a constant mask, where previously we had a dynamic mask.
           // Update the incoming value in place.
-          phi->setIncomingValueForBlock(swb.block, new_mask);
+          cached_phi->setIncomingValueForBlock(swb.block, new_mask);
         }
       }
     }
-    cache[Key] = phi; // shouldn't be necessary I suppose -- we just modified the `phi` in place
-    return PointerStatus::dynamic(phi);
+    cache[Key] = cached_phi; // shouldn't be necessary I suppose -- we just modified the `phi` in place
+    return PointerStatus::dynamic(cached_phi);
   } else {
     // create a fresh phi
     DMSIRBuilder Builder(phi_block, DMSIRBuilder::BEGINNING, NULL);
