@@ -50,11 +50,6 @@ static bool wellFormed(const BasicBlock& bb);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
 
-/// Log that the given pointer's status at the top of the given block has changed.
-/// Return whether it has changed more than N times (i.e., in more than N
-/// iterations) at the top of this block.
-static bool has_changed_more_than_N_times(const Value* ptr, const BasicBlock& block, unsigned N);
-
 /// If computing the allocation size requires inserting dynamic instructions,
 /// use `Builder`
 static IsAllocatingCall isAllocatingCall(const CallBase &call, DMSIRBuilder& Builder);
@@ -111,17 +106,39 @@ private:
   /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
   DenseSet<const Instruction*>& added_insts;
 
+  /// Reference to the `pointer_aliases` for this function; see notes there
+  DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
+
 public:
-  PointerStatuses(BasicBlock& block, const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
-    : block(block), DL(DL), trust_llvm_struct_types(trust_llvm_struct_types), added_insts(added_insts) {}
+  PointerStatuses(
+    BasicBlock& block,
+    const DataLayout &DL,
+    const bool trust_llvm_struct_types,
+    DenseSet<const Instruction*>& added_insts,
+    DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+  ) :
+    block(block),
+    DL(DL),
+    trust_llvm_struct_types(trust_llvm_struct_types),
+    added_insts(added_insts),
+    pointer_aliases(pointer_aliases)
+  {}
 
   PointerStatuses(const PointerStatuses& other)
-    : map(other.map), block(other.block), DL(other.DL), trust_llvm_struct_types(other.trust_llvm_struct_types), added_insts(other.added_insts) {}
+    : map(other.map),
+    block(other.block),
+    DL(other.DL),
+    trust_llvm_struct_types(other.trust_llvm_struct_types),
+    added_insts(other.added_insts),
+    pointer_aliases(other.pointer_aliases)
+  {}
 
   PointerStatuses operator=(const PointerStatuses& other) {
     assert(&block == &other.block);
     assert(DL == other.DL);
     assert(trust_llvm_struct_types == other.trust_llvm_struct_types);
+    assert(&added_insts == &other.added_insts);
+    assert(&pointer_aliases == &other.pointer_aliases);
     map = other.map;
     return *this;
   }
@@ -181,9 +198,22 @@ public:
             return classifyGEPResult_cached(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL, added_insts).classification;
           }
           default: {
-            LLVM_DEBUG(dbgs() << "constant expression of unhandled opcode:\n");
+            // see if this constant expression has an alias.
+            // if so, maybe that alias has a status.
+            // (this comes up with constant IntToPtr which can sometimes be
+            // introduced by our pointer encoding)
+            if (pointer_aliases.count(expr)) {
+              for (const Value* alias : pointer_aliases[expr]) {
+                PointerStatus alias_status = getStatus(alias);
+                if (alias_status.kind != PointerKind::NOTDEFINEDYET) {
+                  return alias_status;
+                }
+              }
+              LLVM_DEBUG(dbgs() << "unhandled constant expression has aliases, but no aliases have a status\n");
+            }
+            LLVM_DEBUG(dbgs() << "unhandled constant expression:\n");
             LLVM_DEBUG(expr->dump());
-            llvm_unreachable("getting status of constant expression of unhandled opcode");
+            llvm_unreachable("getting status of unhandled constant expression");
           }
         }
       } else {
@@ -276,7 +306,7 @@ public:
       assert(statuses[i]->trust_llvm_struct_types == statuses[i+1]->trust_llvm_struct_types);
       assert(&statuses[i]->added_insts == &statuses[i+1]->added_insts);
     }
-    PointerStatuses merged(merge_block, statuses[0]->DL, statuses[0]->trust_llvm_struct_types, statuses[0]->added_insts);
+    PointerStatuses merged(merge_block, statuses[0]->DL, statuses[0]->trust_llvm_struct_types, statuses[0]->added_insts, statuses[0]->pointer_aliases);
     for (size_t i = 0; i < statuses.size(); i++) {
       for (const auto& pair : statuses[i]->map) {
         SmallVector<StatusWithBlock, 4> statuses_for_ptr;
@@ -387,7 +417,7 @@ public:
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())),
       blocks_in_function(F.getBasicBlockList().size()),
       pointer_encoding_is_complete(false),
-      block_states(BlockStates(F, DL, settings.trust_llvm_struct_types, added_insts)),
+      block_states(BlockStates(F, DL, settings.trust_llvm_struct_types, added_insts, pointer_aliases)),
       bounds_infos(BoundsInfos(F, DL, added_insts)),
       boundscheckfail_bb(NULL)
   {}
@@ -585,12 +615,18 @@ private:
   /// class is kept per block in the function.
   class PerBlockState final {
   public:
-    PerBlockState(BasicBlock& block, const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
-      : ptrs_beg(PointerStatuses(block, DL, trust_llvm_struct_types, added_insts)),
-        ptrs_end(PointerStatuses(block, DL, trust_llvm_struct_types, added_insts)),
-        static_results(StaticResults { 0 }),
-        added_insts(added_insts)
-      {}
+    PerBlockState(
+      BasicBlock& block,
+      const DataLayout &DL,
+      const bool trust_llvm_struct_types,
+      DenseSet<const Instruction*>& added_insts,
+      DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+    ) :
+      ptrs_beg(PointerStatuses(block, DL, trust_llvm_struct_types, added_insts, pointer_aliases)),
+      ptrs_end(PointerStatuses(block, DL, trust_llvm_struct_types, added_insts, pointer_aliases)),
+      static_results(StaticResults { 0 }),
+      added_insts(added_insts)
+    {}
 
     /// The status of all pointers at the _beginning_ of the block.
     PointerStatuses ptrs_beg;
@@ -616,8 +652,17 @@ private:
     DenseMap<const BasicBlock*, PerBlockState*> block_states;
 
   public:
-    explicit BlockStates(Function& F, const DataLayout &DL, const bool trust_llvm_struct_types, DenseSet<const Instruction*>& added_insts)
-      : DL(DL), trust_llvm_struct_types(trust_llvm_struct_types), added_insts(added_insts)
+    explicit BlockStates(
+      Function& F,
+      const DataLayout &DL,
+      const bool trust_llvm_struct_types,
+      DenseSet<const Instruction*>& added_insts,
+      DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+    ) :
+      DL(DL),
+      trust_llvm_struct_types(trust_llvm_struct_types),
+      added_insts(added_insts),
+      pointer_aliases(pointer_aliases)
     {
       // For now, if any function parameters are pointers,
       // mark them UNKNOWN in the function's entry block
@@ -648,7 +693,13 @@ private:
       if (block_states.count(&block) > 0) {
         return *block_states[&block];
       } else {
-        PerBlockState* pbs = new PerBlockState(block, DL, trust_llvm_struct_types, added_insts);
+        PerBlockState* pbs = new PerBlockState(
+          block,
+          DL,
+          trust_llvm_struct_types,
+          added_insts,
+          pointer_aliases
+        );
         block_states[&block] = pbs;
         return *pbs;
       }
@@ -668,6 +719,9 @@ private:
     /// Reference to the `added_insts` where we note any instructions added for
     /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
     DenseSet<const Instruction*>& added_insts;
+
+    /// Reference to the `pointer_aliases` for this function; see notes there
+    DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
   };
 
   BlockStates block_states;
@@ -865,25 +919,8 @@ private:
         // least one pointer status at top-of-block: namely, the pointer to the
         // current function, which will be in the `PointerStatuses` as CLEAN)
       } else {
-        // this is a hack to avoid potential infinite loop in the fixpoint phase.
-        // normally, our progress lemma is that the status of any given pointer
-        // at any given program point only gets dirtier (or switches from
-        // NOTDEFINEDYET to defined) from iteration to iteration. But, dynamic
-        // statuses can mess this up. We can have a pair of blocks A and B where
-        // the dynamic status of pointer P needs to be recomputed (merged) at
-        // the top of both A and B. At the top of A, we recompute resulting in a
-        // new dynamic Value. This means B needs to recompute its merge,
-        // resulting in a different new dynamic Value. This means A needs to
-        // recompute its merge, resulting in a different new dynamic Value. Etc.
-        // Our hack is that if the status of the same pointer at the top of the
-        // same block has changed more than 10 times, just override it to be
-        // statically dirty.
-        if (MER.disagreement_key && has_changed_more_than_N_times(*MER.disagreement_key, block, 10)) {
-          mark_as(ptr_statuses, *MER.disagreement_key, PointerStatus::dirty());
-          pbs.status_overrides_at_top[*MER.disagreement_key] = PointerStatus::dirty();
-        }
-        // regardless, save the top-of-block ptr_statuses so we can do the above
-        // check on the next iteration
+        // save the top-of-block ptr_statuses so we can do the above check on
+        // the next iteration
         pbs.ptrs_beg = ptr_statuses;
       }
     }
@@ -982,7 +1019,8 @@ private:
               // `do_pointer_encoding`.
 
               // After `pointer_encoding_is_complete`, all stored pointers
-              // should be results of `IntToPtr` instructions
+              // should be results of `IntToPtr` instructions, or possibly
+              // constant expressions
               IntToPtrInst* storedVal_inst = cast<IntToPtrInst>(storedVal);
 
               // Compute the updated mask, i.e. the one that we should be
@@ -1037,35 +1075,17 @@ private:
               }
             } else if (settings.do_pointer_encoding) {
               // modify the store instruction to store the encoded pointer
-              // instead.
-              // Specifically, when we store the pointer to memory, we use bits
-              // 48-49 to indicate its PointerKind, interpreted per the
-              // DynamicPointerKind enum.
-              // When we later load this pointer from memory, we'll check bits
-              // 48-49 to learn the pointer type, then clear them so the pointer
-              // is valid for use.
-              // (We assume all pointers are userspace pointers, so 48-49 should
-              // be 0 for valid pointers.)
+              // instead. When we later load this pointer from memory, we will
+              // decode it to learn the pointer type and make the pointer valid
+              // for use again.
               LLVM_DEBUG(dbgs() << "DMS:   encoding a stored pointer\n");
-              // create `new_storedVal` which has the appropriate bits set
               DMSIRBuilder Builder(&store, DMSIRBuilder::BEFORE, NULL); // we explicitly don't want to add these to inserted_insts; we still want to track and process them in future iterations
-              Value* mask = storedVal_status.to_dynamic_kind_mask(F.getContext());
-              Value* storedVal_as_int = Builder.CreatePtrToInt(storedVal, Builder.getInt64Ty());
-              Value* new_storedVal = Builder.CreateOr(storedVal_as_int, mask);
-              Value* new_storedVal_as_ptr = Builder.CreateIntToPtr(new_storedVal, storedVal->getType());
-              // store the new (encoded) value instead of the old one
-              store.setOperand(0, new_storedVal_as_ptr);
-              // and also mark the status of the new (encoded) value -- it's the
-              // same as the status of the original (unencoded) value
-              ptr_statuses.mark_as(new_storedVal_as_ptr, storedVal_status);
-              // create a status and bounds override for the new `IntToPtr`, so
-              // this relationship is preserved even in future passes. It will
-              // always have the same status and boundsinfo as `storedVal`.
-              inttoptr_status_and_bounds_overrides[new_storedVal_as_ptr] = storedVal;
-              // update aliasing information
-              // TODO: can this supercede the inttoptr_status_and_bounds_overrides?
-              pointer_aliases[storedVal].insert(new_storedVal_as_ptr);
-              pointer_aliases[new_storedVal_as_ptr].insert(storedVal);
+              Value* encoded_ptr = encode_ptr(storedVal, storedVal_status, Builder);
+              // store the encoded value instead of the old one
+              store.setOperand(0, encoded_ptr);
+              // and also mark the status of the new (encoded) ptr -- it's the same as the
+              // status of the original (unencoded) ptr
+              ptr_statuses.mark_as(encoded_ptr, storedVal_status);
             }
           }
           break;
@@ -1103,41 +1123,29 @@ private:
             } else if (settings.do_pointer_encoding) {
               // insert the instructions to interpret the encoded pointer
               DMSIRBuilder AfterLoad(&load, DMSIRBuilder::AFTER, NULL); // we explicitly don't want to add these to inserted_insts; we still want to track and process them in future iterations
-              Value* val_as_int = AfterLoad.CreatePtrToInt(&load, AfterLoad.getInt64Ty());
-              Value* dynamic_kind = AfterLoad.CreateAnd(val_as_int, DynamicKindMasks::dynamic_kind_mask);
-              Value* new_val = AfterLoad.CreateAnd(val_as_int, ~DynamicKindMasks::dynamic_kind_mask);
-              Value* new_val_as_ptr = AfterLoad.CreateIntToPtr(new_val, load.getType());
-              // replace all uses of `load` with the modified loaded ptr, except
-              // of course the use which we just inserted (which generates
-              // `val_as_int`)
+              auto tuple = decode_ptr(&load, AfterLoad);
+              Value* decoded_ptr = std::get<0>(tuple);
+              PointerStatus loaded_ptr_status = std::get<1>(tuple);
+              User* decode_user = std::get<2>(tuple);
+              // replace all uses of `load` with the decoded ptr, except of
+              // course the `decoded_ptr_use`, which is necessary for actually
+              // decoding the loaded pointer
               load.replaceUsesWithIf(
-                new_val_as_ptr,
-                [val_as_int](Use &U){ return U.getUser() != val_as_int; }
+                decoded_ptr,
+                [decode_user](Use &U){ return U.getUser() != decode_user; }
               );
-              PointerStatus status = PointerStatus::dynamic(dynamic_kind);
-              ptr_statuses.mark_as(&load, status);
-              ptr_statuses.mark_as(new_val_as_ptr, status);
+              ptr_statuses.mark_as(&load, loaded_ptr_status);
+              ptr_statuses.mark_as(decoded_ptr, loaded_ptr_status);
               // store this mapping in `loaded_val_statuses`; see notes there
-              loaded_val_statuses[&load] = status;
-              // create a status and bounds override for the `IntToPtr` which we
-              // just inserted: it should always have the same dynamic status
-              // and bounds as the loaded value. (The loaded value itself will
-              // always have the dynamic `status` we just created, thanks to
-              // `loaded_val_statuses`.)
-              IntToPtrInst* new_val_inttoptr = cast<IntToPtrInst>(new_val_as_ptr);
-              inttoptr_status_and_bounds_overrides[new_val_inttoptr] = &load;
-              // update aliasing information
-              // TODO: can this supercede the inttoptr_status_and_bounds_overrides?
-              pointer_aliases[&load].insert(new_val_inttoptr);
-              pointer_aliases[new_val_inttoptr].insert(&load);
+              loaded_val_statuses[&load] = loaded_ptr_status;
               if (settings.add_sw_spatial_checks) {
                 // compute the bounds of the loaded pointer dynamically. this
-                // requires the unencoded pointer value, ie `new_val_as_ptr`.
+                // requires the decoded pointer value.
                 // TODO: Instead of loading bounds info right when we load the
                 // pointer, we could/should wait until it is needed for a SW
                 // bounds check. I'm envisioning some type of laziness solution
                 // inside BoundsInfo.
-                BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(new_val_as_ptr, AfterLoad);
+                BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(decoded_ptr, AfterLoad);
                 bounds_infos.mark_as(&load, BoundsInfo(std::move(loadedInfo)));
               }
             } else {
@@ -1645,6 +1653,68 @@ private:
     assert(wellFormed(*B));
 
     return B;
+  }
+
+  /// Create and return the "encoded" version of `ptr`, assuming it has the
+  /// given `status`.
+  /// If dynamic instructions need to be inserted, use `Builder`.
+  ///
+  /// Specifically, our encoding uses bits 48-49 to indicate the PointerKind of
+  /// the pointer, interpreted per the DynamicPointerKind enum.
+  /// (We assume all pointers are userspace pointers, so 48-49 should be 0 for
+  /// valid pointers.)
+  Value* encode_ptr(Value* ptr, const PointerStatus& status, DMSIRBuilder& Builder) {
+    // create `new_storedVal` which has the appropriate bits set
+    Value* mask = status.to_dynamic_kind_mask(F.getContext());
+    Value* ptr_as_int = Builder.CreatePtrToInt(ptr, Builder.getInt64Ty());
+    Value* masked_int = Builder.CreateOr(ptr_as_int, mask);
+    Value* encoded_ptr = Builder.CreateIntToPtr(masked_int, ptr->getType());
+    // create a status and bounds override for the `encoded_ptr`, so
+    // this relationship is preserved even in future passes. It will
+    // always have the same status and boundsinfo as `ptr`.
+    inttoptr_status_and_bounds_overrides[encoded_ptr] = ptr;
+    // update aliasing information
+    // TODO: can this supercede the inttoptr_status_and_bounds_overrides?
+    pointer_aliases[ptr].insert(encoded_ptr);
+    pointer_aliases[encoded_ptr].insert(ptr);
+    return encoded_ptr;
+  }
+
+  /// Given an encoded pointer, "decode" it, returning the original pointer
+  /// value and its status.
+  /// If dynamic instructions need to be inserted, use `Builder`.
+  ///
+  /// This function also returns the `User` of the `encoded_ptr` which is
+  /// necessary for its decoding. (so that you know not to tamper with that
+  /// `User`.)
+  ///
+  /// Specifically, we check bits 48-49 to learn the pointer type, then clear
+  /// them so the pointer is valid for use. See notes on `encode_ptr`.
+  std::tuple<Value*, PointerStatus, User*> decode_ptr(Value* encoded_ptr, DMSIRBuilder& Builder) {
+    Value* encoded_ptr_as_int = Builder.CreatePtrToInt(encoded_ptr, Builder.getInt64Ty());
+    Value* dynamic_kind = Builder.CreateAnd(encoded_ptr_as_int, DynamicKindMasks::dynamic_kind_mask);
+    Value* decoded_ptr_as_int = Builder.CreateAnd(encoded_ptr_as_int, ~DynamicKindMasks::dynamic_kind_mask);
+    Value* decoded_ptr_as_ptr = Builder.CreateIntToPtr(decoded_ptr_as_int, encoded_ptr->getType());
+    PointerStatus status = PointerStatus::dynamic(dynamic_kind);
+
+    // create a status and bounds override for the `IntToPtr` which we just
+    // inserted: it should always have the same dynamic status and bounds as the
+    // `encoded_ptr`. (Caller is responsible for the status and bounds of the
+    // `encoded_ptr` itself.)
+    if (IntToPtrInst* decoded_ptr_inttoptr = dyn_cast<IntToPtrInst>(decoded_ptr_as_ptr)) {
+      inttoptr_status_and_bounds_overrides[decoded_ptr_inttoptr] = encoded_ptr;
+    } else {
+      LLVM_DEBUG(
+        dbgs() << "The following decoded pointer is not an inttoptr instruction:\n";
+        decoded_ptr_as_ptr->dump();
+      );
+    }
+    // update aliasing information
+    // TODO: can this supercede the inttoptr_status_and_bounds_overrides?
+    pointer_aliases[encoded_ptr].insert(decoded_ptr_as_ptr);
+    pointer_aliases[decoded_ptr_as_ptr].insert(encoded_ptr);
+
+    return std::make_tuple(decoded_ptr_as_ptr, status, cast<User>(encoded_ptr_as_int));
   }
 
   // Inject an instruction sequence to increment the given global counter, right
@@ -2190,55 +2260,6 @@ static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {
   }
   // if we get here without finding a non-trustworthy index, then we're all good
   return true;
-}
-
-/// Used only for the state in `has_changed_more_than_N_times`; see notes there
-struct HasChangedKey {
-  const Value* ptr;
-  const BasicBlock* block;
-
-  HasChangedKey(const Value* ptr, const BasicBlock* block) : ptr(ptr), block(block) {}
-
-  bool operator==(const HasChangedKey& other) const {
-    return ptr == other.ptr && block == other.block;
-  }
-  bool operator!=(const HasChangedKey& other) const {
-    return !(*this == other);
-  }
-};
-
-// it seems this is required in order for HasChangedKey to be a key type
-// in a DenseMap
-namespace llvm {
-template<> struct DenseMapInfo<HasChangedKey> {
-  static inline HasChangedKey getEmptyKey() {
-    return HasChangedKey(NULL, NULL);
-  }
-  static inline HasChangedKey getTombstoneKey() {
-    return HasChangedKey(
-      DenseMapInfo<const Value*>::getTombstoneKey(),
-      DenseMapInfo<const BasicBlock*>::getTombstoneKey()
-    );
-  }
-  static unsigned getHashValue(const HasChangedKey &Val) {
-    return
-      DenseMapInfo<const Value*>::getHashValue(Val.ptr) ^
-      DenseMapInfo<const BasicBlock*>::getHashValue(Val.block);
-  }
-  static bool isEqual(const HasChangedKey &LHS, const HasChangedKey &RHS) {
-    return LHS == RHS;
-  }
-};
-} // end namespace llvm
-
-/// Log that the given pointer's status at the top of the given block has changed.
-/// Return whether it has changed more than N times (i.e., in more than N
-/// iterations) at the top of this block.
-static bool has_changed_more_than_N_times(const Value* ptr, const BasicBlock& block, unsigned N) {
-  static DenseMap<HasChangedKey, unsigned> times_changed;
-  HasChangedKey Key(ptr, &block);
-  times_changed[Key]++;
-  return (times_changed[Key] > N);
 }
 
 /// If computing the allocation size requires inserting dynamic instructions,
