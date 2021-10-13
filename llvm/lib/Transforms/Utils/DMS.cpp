@@ -1021,56 +1021,89 @@ private:
               // After `pointer_encoding_is_complete`, all stored pointers
               // should be results of `IntToPtr` instructions, or possibly
               // constant expressions
-              IntToPtrInst* storedVal_inst = cast<IntToPtrInst>(storedVal);
+              if (IntToPtrInst* storedVal_inst = dyn_cast<IntToPtrInst>(storedVal)) {
+                // Compute the updated mask, i.e. the one that we should be
+                // using based on our most up-to-date knowledge of status of
+                // `storedVal`
+                Value* new_mask = storedVal_status.to_dynamic_kind_mask(F.getContext());
 
-              // Compute the updated mask, i.e. the one that we should be
-              // using based on our most up-to-date knowledge of status of
-              // `storedVal`
-              Value* new_mask = storedVal_status.to_dynamic_kind_mask(F.getContext());
-
-              // `maskedVal` is the integer resulting from applying the mask
-              Value* maskedVal = storedVal_inst->getOperand(0);
-              // maskedVal should also be the result of some kind of `Instruction`
-              Instruction* maskedVal_inst = cast<Instruction>(maskedVal);
-              if (maskedVal_inst->getOpcode() == Instruction::Or) {
-                // maskedVal is the result of a literal `Or` instruction
-                // applying a mask. The mask itself is the second operand.
-                Value* mask = maskedVal_inst->getOperand(1);
-                if (mask == new_mask) {
-                  // nothing to do
-                } else if (ConstantInt* mask_const = dyn_cast<ConstantInt>(mask)) {
-                  if (ConstantInt* new_mask_const = dyn_cast<ConstantInt>(new_mask)) {
-                    if (mask_const->getValue() == new_mask_const->getValue()) {
-                      // nothing to do
+                // `maskedVal` is the integer resulting from applying the mask
+                Value* maskedVal = storedVal_inst->getOperand(0);
+                // maskedVal should also be the result of some kind of `Instruction`
+                Instruction* maskedVal_inst = cast<Instruction>(maskedVal);
+                if (maskedVal_inst->getOpcode() == Instruction::Or) {
+                  // maskedVal is the result of a literal `Or` instruction
+                  // applying a mask. The mask itself is the second operand.
+                  Value* mask = maskedVal_inst->getOperand(1);
+                  if (mask == new_mask) {
+                    // nothing to do
+                  } else if (ConstantInt* mask_const = dyn_cast<ConstantInt>(mask)) {
+                    if (ConstantInt* new_mask_const = dyn_cast<ConstantInt>(new_mask)) {
+                      if (mask_const->getValue() == new_mask_const->getValue()) {
+                        // nothing to do
+                      } else {
+                        // both masks are constants, but different values.
+                        // change the mask to the new mask. Nothing else needs to change
+                        maskedVal_inst->setOperand(1, new_mask);
+                      }
                     } else {
-                      // both masks are constants, but different values.
+                      // old mask is a constant, new one is not.
                       // change the mask to the new mask. Nothing else needs to change
                       maskedVal_inst->setOperand(1, new_mask);
                     }
                   } else {
-                    // old mask is a constant, new one is not.
+                    // old mask is a non-constant, new one is some other constant or non-constant.
                     // change the mask to the new mask. Nothing else needs to change
                     maskedVal_inst->setOperand(1, new_mask);
                   }
                 } else {
-                  // old mask is a non-constant, new one is some other constant or non-constant.
-                  // change the mask to the new mask. Nothing else needs to change
-                  maskedVal_inst->setOperand(1, new_mask);
+                  // maskedVal is not the result of a literal `Or` instruction.
+                  // This must mean that the current mask was constant 0.
+                  // If the new mask is as well, then we're all good
+                  Constant* new_mask_const = dyn_cast<Constant>(new_mask);
+                  if (new_mask_const && new_mask_const->isNullValue()) {
+                    // nothing to do
+                  } else {
+                    // old mask was constant 0, new one is not. We need to insert
+                    // a new `Or` instruction to apply the new mask
+                    DMSIRBuilder Builder(storedVal_inst, DMSIRBuilder::BEFORE, &added_insts);
+                    Value* new_maskedVal = Builder.CreateOr(maskedVal, new_mask);
+                    // update storedVal_inst to use this new masked value as its input
+                    storedVal_inst->setOperand(0, new_maskedVal);
+                  }
                 }
               } else {
-                // maskedVal is not the result of a literal `Or` instruction.
-                // This must mean that the current mask was constant 0.
-                // If the new mask is as well, then we're all good
-                Constant* new_mask_const = dyn_cast<Constant>(new_mask);
-                if (new_mask_const && new_mask_const->isNullValue()) {
+                assert(isa<Constant>(storedVal));
+                // stored pointer is a constant, and the mask was applied to the
+                // constant value. Use constant operations to check if the
+                // previous mask was correct; if not, update it
+                DMSIRBuilder Builder(&store, DMSIRBuilder::BEFORE, NULL);
+                Constant* prev_masked_ptr = cast<Constant>(storedVal);
+                Constant* prev_masked_ptr_as_int = prev_masked_ptr->stripPointerCasts();
+                if (prev_masked_ptr_as_int->getType()->isPointerTy()) {
+                  prev_masked_ptr_as_int = cast<Constant>(Builder.CreatePtrToInt(
+                    prev_masked_ptr_as_int,
+                    Builder.getInt64Ty()
+                  ));
+                }
+                Constant* prev_mask = cast<Constant>(Builder.CreateAnd(prev_masked_ptr_as_int, DynamicKindMasks::dynamic_kind_mask));
+                if (prev_mask == storedVal_status.to_constant_dynamic_kind_mask(F.getContext())) {
                   // nothing to do
                 } else {
-                  // old mask was constant 0, new one is not. We need to insert
-                  // a new `Or` instruction to apply the new mask
-                  DMSIRBuilder Builder(storedVal_inst, DMSIRBuilder::BEFORE, &added_insts);
-                  Value* new_maskedVal = Builder.CreateOr(maskedVal, new_mask);
-                  // update storedVal_inst to use this new masked value as its input
-                  storedVal_inst->setOperand(0, new_maskedVal);
+                  Value* decoded_ptr = Builder.CreateIntToPtr(
+                    Builder.CreateAnd(prev_masked_ptr_as_int, ~DynamicKindMasks::dynamic_kind_mask),
+                    prev_masked_ptr->getType()
+                  );
+                  Value* encoded_ptr = encode_ptr(decoded_ptr, storedVal_status, Builder);
+                  assert(isa<Constant>(encoded_ptr));
+                  store.setOperand(0, encoded_ptr);
+                  // and also mark the status of the new (encoded) ptr -- it's the
+                  // same as the status of the original (unencoded) ptr
+                  // commented out because we "shouldn't" need to look up the status
+                  // of the encoded ptr in the future, as it's only used in this
+                  // one place; and this way we avoid interfering with the fixpoint
+                  // calculation (making it think some status has "changed")
+                  //ptr_statuses.mark_as(encoded_ptr, storedVal_status);
                 }
               }
             } else if (settings.do_pointer_encoding) {
