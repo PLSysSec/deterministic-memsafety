@@ -379,8 +379,15 @@ private:
 
 /// Holds the bounds information for all pointers in the function.
 class BoundsInfos final {
+private:
+  /// Maps a pointer to its bounds info, if we know anything about its bounds
+  /// info.
+  /// For pointers not appearing in this map, we don't know anything about their
+  /// bounds.
+  DenseMap<const Value*, BoundsInfo> map;
+
 public:
-  BoundsInfos(const Function&, const DataLayout&, DenseSet<const Instruction*>&);
+  BoundsInfos(const Function&, const DataLayout&, DenseSet<const Instruction*>& added_insts);
 
   /// Mark the given pointer as having the given bounds information.
   void mark_as(const Value* ptr, const BoundsInfo binfo) {
@@ -389,12 +396,17 @@ public:
 
   /// Get the bounds information for the given pointer.
   BoundsInfo get_binfo(const Value* ptr) {
+    if (const Constant* constptr = dyn_cast<const Constant>(ptr)) {
+      if (constptr->isNullValue()) {
+        return BoundsInfo::infinite();
+      }
+    }
     return map.lookup(ptr);
   }
 
   /// Is there any bounds information for the given pointer?
   bool is_binfo_present(const Value* ptr) {
-    return map.count(ptr) > 0;
+    return get_binfo(ptr).get_kind() != BoundsInfo::NOTDEFINEDYET;
   }
 
   void propagate_bounds(StoreInst&);
@@ -410,12 +422,6 @@ public:
   void propagate_bounds_id(Instruction& inst);
 
 private:
-  /// Maps a pointer to its bounds info, if we know anything about its bounds
-  /// info.
-  /// For pointers not appearing in this map, we don't know anything about their
-  /// bounds.
-  DenseMap<const Value*, BoundsInfo> map;
-
   const DataLayout& DL;
 
   /// Reference to the `added_insts` where we note any instructions added for

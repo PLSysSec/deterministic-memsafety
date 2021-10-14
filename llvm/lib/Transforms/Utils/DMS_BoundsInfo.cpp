@@ -197,24 +197,31 @@ Instruction* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) co
 	Module* mod = Builder.GetInsertBlock()->getModule();
 	Type* CharStarTy = Builder.getInt8PtrTy();
 	Value* cur_ptr_as_charstar = Builder.castToCharStar(cur_ptr);
-	if (kind == BoundsInfo::INFINITE) {
-		FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
-		FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
-		return Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
-	} else if (kind == BoundsInfo::UNKNOWN) {
-		LLVM_DEBUG(dbgs() << "DMS:   warning: bounds info unknown for " << cur_ptr->getNameOrAsOperand() << "; considering it as infinite bounds\n");
-		FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
-		FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
-		return Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
-	} else {
-		Value* base = base_as_llvm_value(cur_ptr, Builder);
-		Value* max = max_as_llvm_value(cur_ptr, Builder);
-		if (base && max) {
-			FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
-			FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
-			return Builder.CreateCall(StoreBounds, {cur_ptr_as_charstar, base, max});
-		} else {
-			llvm_unreachable("base and/or max are NULL, but boundsinfo is not INFINITE or UNKNOWN");
+	switch (kind) {
+		case BoundsInfo::INFINITE: {
+			FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
+			FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
+			return Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
+		}
+		case BoundsInfo::UNKNOWN: {
+			DEBUG_WITH_TYPE("DMS", dbgs() << "DMS:   warning: bounds info unknown for " << cur_ptr->getNameOrAsOperand() << "; considering it as infinite bounds\n");
+			FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
+			FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
+			return Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
+		}
+		case BoundsInfo::NOTDEFINEDYET: {
+			llvm_unreachable("store_dynamic: bounds info should be defined (at least UNKNOWN)");
+		}
+		default: {
+			Value* base = base_as_llvm_value(cur_ptr, Builder);
+			Value* max = max_as_llvm_value(cur_ptr, Builder);
+			if (base && max) {
+				FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
+				FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
+				return Builder.CreateCall(StoreBounds, {cur_ptr_as_charstar, base, max});
+			} else {
+				llvm_unreachable("base and/or max are NULL, but boundsinfo is not INFINITE or UNKNOWN or NOTDEFINEDYET");
+			}
 		}
 	}
 }
