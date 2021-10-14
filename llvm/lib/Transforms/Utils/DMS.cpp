@@ -18,6 +18,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Transforms/Utils/Local.h"
 
 #include <sstream>  // ostringstream
 
@@ -514,6 +515,13 @@ public:
 
     if (settings.add_sw_spatial_checks) {
       addSpatialSafetySWChecks();
+    }
+
+    // now that we're done, clean up any instructions we added that
+    // ended up not being used. For instance, dynamically computing
+    // bounds for a pointer that ended up never needing a bounds check.
+    for (BasicBlock& block : F) {
+      SimplifyInstructionsInBlock(&block);
     }
 
     return res.static_results;
