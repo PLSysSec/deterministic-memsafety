@@ -277,6 +277,22 @@ BoundsInfos::BoundsInfos(
 	}
 }
 
+/// Get the bounds information for the given pointer.
+BoundsInfo BoundsInfos::get_binfo(const Value* ptr) const {
+	if (is_null_ptr(ptr)) {
+		return BoundsInfo::infinite();
+	}
+	BoundsInfo binfo = map.lookup(ptr);
+	if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+	// if bounds info isn't defined, see if it's defined for any alias of this pointer
+	for (const Value* alias : pointer_aliases[ptr]) {
+		if (is_null_ptr(alias)) return BoundsInfo::infinite();
+		binfo = map.lookup(alias);
+		if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+	}
+	return binfo;
+}
+
 /// Propagate bounds information for a Store instruction.
 void BoundsInfos::propagate_bounds(StoreInst& store) {
 	// if we aren't storing a pointer, we have nothing to do

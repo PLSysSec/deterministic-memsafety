@@ -412,23 +412,10 @@ public:
   }
 
   /// Get the bounds information for the given pointer.
-  BoundsInfo get_binfo(const Value* ptr) {
-    if (is_null_ptr(ptr)) {
-      return BoundsInfo::infinite();
-    }
-    BoundsInfo binfo = map.lookup(ptr);
-    if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
-    // if bounds info isn't defined, see if it's defined for any alias of this pointer
-    for (const Value* alias : pointer_aliases[ptr]) {
-      if (is_null_ptr(alias)) return BoundsInfo::infinite();
-      binfo = map.lookup(alias);
-      if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
-    }
-    return binfo;
-  }
+  BoundsInfo get_binfo(const Value* ptr) const;
 
   /// Is there any bounds information for the given pointer?
-  bool is_binfo_present(const Value* ptr) {
+  bool is_binfo_present(const Value* ptr) const {
     return get_binfo(ptr).get_kind() != BoundsInfo::NOTDEFINEDYET;
   }
 
