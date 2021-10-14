@@ -524,6 +524,11 @@ public:
       SimplifyInstructionsInBlock(&block);
     }
 
+    DEBUG_WITH_TYPE("DMS-ir-dump",
+      dbgs() << "Final IR after DMS pass:\n";
+      F.dump();
+    );
+
     return res.static_results;
   }
 
