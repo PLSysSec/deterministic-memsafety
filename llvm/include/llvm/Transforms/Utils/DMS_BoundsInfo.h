@@ -399,7 +399,12 @@ private:
   DenseMap<const Value*, BoundsInfo> map;
 
 public:
-  BoundsInfos(const Function&, const DataLayout&, DenseSet<const Instruction*>& added_insts);
+  BoundsInfos(
+    const Function&,
+    const DataLayout&,
+    DenseSet<const Instruction*>& added_insts,
+    DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+  );
 
   /// Mark the given pointer as having the given bounds information.
   void mark_as(const Value* ptr, const BoundsInfo binfo) {
@@ -408,12 +413,18 @@ public:
 
   /// Get the bounds information for the given pointer.
   BoundsInfo get_binfo(const Value* ptr) {
-    if (const Constant* constptr = dyn_cast<const Constant>(ptr)) {
-      if (constptr->isNullValue()) {
-        return BoundsInfo::infinite();
-      }
+    if (is_null_ptr(ptr)) {
+      return BoundsInfo::infinite();
     }
-    return map.lookup(ptr);
+    BoundsInfo binfo = map.lookup(ptr);
+    if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+    // if bounds info isn't defined, see if it's defined for any alias of this pointer
+    for (const Value* alias : pointer_aliases[ptr]) {
+      if (is_null_ptr(alias)) return BoundsInfo::infinite();
+      binfo = map.lookup(alias);
+      if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+    }
+    return binfo;
   }
 
   /// Is there any bounds information for the given pointer?
@@ -439,6 +450,10 @@ private:
   /// Reference to the `added_insts` where we note any instructions added for
   /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
   DenseSet<const Instruction*>& added_insts;
+
+  /// Reference to the `pointer_aliases` for this function; see notes on
+  /// `pointer_aliases` in `DMSAnalysis`
+  DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
 
   /// Value type for the below map
   class BoundsStoringCall final {
@@ -471,6 +486,17 @@ private:
   /// stored pointer has changed, we can remove the Call instruction and
   /// generate a new one.
   DenseMap<const StoreInst*, BoundsStoringCall> store_bounds_calls;
+
+  /// Is the given Value a null pointer
+  static bool is_null_ptr(const Value* v) {
+    if (!v->getType()->isPointerTy()) return false;
+    if (const Constant* c = dyn_cast<const Constant>(v)) {
+      if (c->isNullValue()) {
+        return true;
+      }
+    }
+    return false;
+  }
 };
 
 } // end namespace

@@ -247,8 +247,12 @@ BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(Value* ptr, DMSIRBuilder&
 	return BoundsInfo::DynamicBoundsInfo(base, max);
 }
 
-BoundsInfos::BoundsInfos(const Function& F, const DataLayout& DL, DenseSet<const Instruction*>& added_insts)
-	: DL(DL), added_insts(added_insts) {
+BoundsInfos::BoundsInfos(
+	const Function& F,
+	const DataLayout& DL,
+	DenseSet<const Instruction*>& added_insts,
+	DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+) : DL(DL), added_insts(added_insts), pointer_aliases(pointer_aliases) {
 	// For now, if any function parameters are pointers, mark their bounds info
 	// as UNKNOWN
 	for (const Argument& arg : F.args()) {

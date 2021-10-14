@@ -419,7 +419,7 @@ public:
       blocks_in_function(F.getBasicBlockList().size()),
       pointer_encoding_is_complete(false),
       block_states(BlockStates(F, DL, settings.trust_llvm_struct_types, added_insts, pointer_aliases)),
-      bounds_infos(BoundsInfos(F, DL, added_insts)),
+      bounds_infos(BoundsInfos(F, DL, added_insts, pointer_aliases)),
       boundscheckfail_bb(NULL)
   {}
 
