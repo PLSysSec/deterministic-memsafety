@@ -210,6 +210,7 @@ Instruction* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) co
 			return Builder.CreateCall(StoreBoundsInf, {cur_ptr_as_charstar});
 		}
 		case BoundsInfo::NOTDEFINEDYET: {
+			dbgs() << "error during store_dynamic for " << cur_ptr->getNameOrAsOperand() << "\n";
 			llvm_unreachable("store_dynamic: bounds info should be defined (at least UNKNOWN)");
 		}
 		default: {
@@ -279,14 +280,14 @@ void BoundsInfos::propagate_bounds(StoreInst& store) {
 	if (!storedVal->getType()->isPointerTy()) return;
 	// we store the bounds info so that when this pointer is later
 	// loaded, we can get the bounds info back
-	BoundsInfo& binfo = map[storedVal];
+	BoundsInfo binfo = get_binfo(storedVal);
 	bool need_regenerate_bounds_store;
 	if (store_bounds_calls.count(&store) > 0) {
 		// there is already a Call instruction storing bounds info for
 		// this stored pointer. Make sure that the bounds info it's
 		// storing hasn't changed.
 		BoundsStoringCall& BSC = store_bounds_calls[&store];
-		if (*&binfo == BSC.binfo) {
+		if (binfo == BSC.binfo) {
 			// bounds info is up to date; nothing to do
 			need_regenerate_bounds_store = false;
 		} else {
@@ -301,7 +302,7 @@ void BoundsInfos::propagate_bounds(StoreInst& store) {
 	if (need_regenerate_bounds_store) {
 		DMSIRBuilder Builder(&store, DMSIRBuilder::AFTER, &added_insts);
 		Instruction* new_bounds_call = binfo.store_dynamic(storedVal, Builder);
-		store_bounds_calls[&store] = BoundsStoringCall(new_bounds_call, BoundsInfo(binfo));
+		store_bounds_calls[&store] = BoundsStoringCall(new_bounds_call, binfo);
 	}
 }
 
@@ -320,7 +321,7 @@ void BoundsInfos::propagate_bounds(AllocaInst& alloca) {
 void BoundsInfos::propagate_bounds_id(Instruction& inst) {
 	Value* input_ptr = inst.getOperand(0);
 	assert(input_ptr->getType()->isPointerTy());
-	map[&inst] = map.lookup(input_ptr);
+	map[&inst] = get_binfo(input_ptr);
 }
 
 /// Propagate bounds information for a GEP instruction.
@@ -331,7 +332,7 @@ void BoundsInfos::propagate_bounds(
 	// propagate the input pointer's bounds to the new pointer. We let
 	// the new pointer still have access to the whole allocation
 	Value* input_ptr = gep.getPointerOperand();
-	const BoundsInfo& binfo = map[input_ptr];
+	const BoundsInfo binfo = get_binfo(input_ptr);
 	switch (binfo.get_kind()) {
 		case BoundsInfo::NOTDEFINEDYET:
 			llvm_unreachable("GEP input ptr's BoundsInfo should be defined (at least UNKNOWN)");
@@ -376,9 +377,9 @@ void BoundsInfos::propagate_bounds(
 void BoundsInfos::propagate_bounds(SelectInst& select) {
 	// if we aren't selecting a pointer, we have nothing to do
 	if (!select.getType()->isPointerTy()) return;
-	const BoundsInfo& binfo1 = map.lookup(select.getTrueValue());
-	const BoundsInfo& binfo2 = map.lookup(select.getFalseValue());
-	const BoundsInfo& prev_iteration_binfo = map.lookup(&select);
+	const BoundsInfo& binfo1 = get_binfo(select.getTrueValue());
+	const BoundsInfo& binfo2 = get_binfo(select.getFalseValue());
+	const BoundsInfo& prev_iteration_binfo = get_binfo(&select);
 	if (
 		prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC_MERGED
 		&& prev_iteration_binfo.merge_inputs.size() == 2
@@ -412,31 +413,31 @@ void BoundsInfos::propagate_bounds(IntToPtrInst& inttoptr, PointerKind inttoptr_
 void BoundsInfos::propagate_bounds(PHINode& phi) {
 	// if the PHI isn't choosing between pointers, we have nothing to do
 	if (!phi.getType()->isPointerTy()) return;
-	SmallVector<std::tuple<Value*, BoundsInfo*, BasicBlock*>, 4> incoming_binfos;
+	SmallVector<std::tuple<Value*, BoundsInfo, BasicBlock*>, 4> incoming_binfos;
 	for (const Use& use : phi.incoming_values()) {
 		BasicBlock* bb = phi.getIncomingBlock(use);
 		Value* value = use.get();
 		incoming_binfos.push_back(std::make_tuple(
 			value,
-			new BoundsInfo(map.lookup(value)),
+			get_binfo(value),
 			bb
 		));
 	}
 	DMSIRBuilder Builder(&phi, DMSIRBuilder::BEFORE, &added_insts);
-	const BoundsInfo& prev_iteration_binfo = map.lookup(&phi);
+	const BoundsInfo prev_iteration_binfo = get_binfo(&phi);
 	assert(incoming_binfos.size() >= 1);
 	bool any_incoming_bounds_are_dynamic = false;
 	bool any_incoming_bounds_are_unknown = false;
 	bool any_incoming_bounds_are_notdefinedyet = false;
 	for (auto& tuple : incoming_binfos) {
-		const BoundsInfo* incoming_binfo = std::get<1>(tuple);
-		if (incoming_binfo->is_dynamic()) {
+		const BoundsInfo incoming_binfo = std::get<1>(tuple);
+		if (incoming_binfo.is_dynamic()) {
 			any_incoming_bounds_are_dynamic = true;
 		}
-		if (incoming_binfo->get_kind() == BoundsInfo::UNKNOWN) {
+		if (incoming_binfo.get_kind() == BoundsInfo::UNKNOWN) {
 			any_incoming_bounds_are_unknown = true;
 		}
-		if (incoming_binfo->get_kind() == BoundsInfo::NOTDEFINEDYET) {
+		if (incoming_binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
 			any_incoming_bounds_are_notdefinedyet = true;
 		}
 	}
@@ -461,10 +462,10 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 					assert(prev_iteration_dyninfo->base.offset == 0);
 					assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
 					for (auto& tuple : incoming_binfos) {
-						const BoundsInfo* incoming_binfo = std::get<1>(tuple);
+						const BoundsInfo incoming_binfo = std::get<1>(tuple);
 						BasicBlock* incoming_bb = std::get<2>(tuple);
 						const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
-						switch (incoming_binfo->get_kind()) {
+						switch (incoming_binfo.get_kind()) {
 							case BoundsInfo::NOTDEFINEDYET:
 							case BoundsInfo::UNKNOWN:
 							case BoundsInfo::INFINITE:
@@ -476,7 +477,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 							case BoundsInfo::DYNAMIC:
 							case BoundsInfo::DYNAMIC_MERGED:
 							{
-								const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
+								const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo.dynamic_info();
 								if (incoming_dyninfo->base.offset != 0) {
 									// need to recalculate base_phi
 									base_phi = NULL;
@@ -503,10 +504,10 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 					assert(prev_iteration_dyninfo->max.offset == 0);
 					assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
 					for (auto& tuple : incoming_binfos) {
-						const BoundsInfo* incoming_binfo = std::get<1>(tuple);
+						const BoundsInfo incoming_binfo = std::get<1>(tuple);
 						BasicBlock* incoming_bb = std::get<2>(tuple);
 						const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
-						switch (incoming_binfo->get_kind()) {
+						switch (incoming_binfo.get_kind()) {
 							case BoundsInfo::NOTDEFINEDYET:
 							case BoundsInfo::UNKNOWN:
 							case BoundsInfo::INFINITE:
@@ -518,7 +519,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 							case BoundsInfo::DYNAMIC:
 							case BoundsInfo::DYNAMIC_MERGED:
 							{
-								const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo->dynamic_info();
+								const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo.dynamic_info();
 								if (incoming_dyninfo->max.offset != 0) {
 									// need to recalculate max_phi
 									max_phi = NULL;
@@ -549,13 +550,13 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 				added_insts.insert(base_phi);
 				for (auto& tuple : incoming_binfos) {
 					Value* incoming_ptr = std::get<0>(tuple);
-					const BoundsInfo* incoming_binfo = std::get<1>(tuple);
+					const BoundsInfo incoming_binfo = std::get<1>(tuple);
 					BasicBlock* incoming_bb = std::get<2>(tuple);
 					// if dynamic instructions are necessary to compute phi
 					// incoming value, insert them at the end of the
 					// corresponding block, not here
 					DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
-					Value* base = incoming_binfo->base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+					Value* base = incoming_binfo.base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
 					assert(base);
 					base_phi->addIncoming(base, incoming_bb);
 				}
@@ -566,13 +567,13 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 				added_insts.insert(max_phi);
 				for (auto& tuple : incoming_binfos) {
 					Value* incoming_ptr = std::get<0>(tuple);
-					const BoundsInfo* incoming_binfo = std::get<1>(tuple);
+					const BoundsInfo incoming_binfo = std::get<1>(tuple);
 					BasicBlock* incoming_bb = std::get<2>(tuple);
 					// if dynamic instructions are necessary to compute phi
 					// incoming value, insert them at the end of the
 					// corresponding block, not here
 					DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
-					Value* max = incoming_binfo->max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+					Value* max = incoming_binfo.max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
 					assert(max);
 					max_phi->addIncoming(max, incoming_bb);
 				}
@@ -589,7 +590,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 			any_merge_inputs_changed = true;
 		if (!any_merge_inputs_changed) {
 			for (unsigned i = 0; i < incoming_binfos.size(); i++) {
-				if (*prev_iteration_binfo.merge_inputs[i] != *std::get<1>(incoming_binfos[i])) {
+				if (*prev_iteration_binfo.merge_inputs[i] != std::get<1>(incoming_binfos[i])) {
 					any_merge_inputs_changed = true;
 					break;
 				}
@@ -600,15 +601,11 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 			BoundsInfo merged_binfo = BoundsInfo::infinite(); // just the initial value we start the merge with
 			assert(phi.getNumIncomingValues() >= 1);
 			for (auto& tuple : incoming_binfos) {
-				const BoundsInfo* binfo = std::get<1>(tuple);
-				merged_binfo = BoundsInfo::merge(merged_binfo, *binfo, &phi, Builder);
+				const BoundsInfo binfo = std::get<1>(tuple);
+				merged_binfo = BoundsInfo::merge(merged_binfo, binfo, &phi, Builder);
 			}
 			map[&phi] = merged_binfo;
 		}
-	}
-	for (auto& tuple : incoming_binfos) {
-		const BoundsInfo* binfo = std::get<1>(tuple);
-		delete binfo;
 	}
 }
 

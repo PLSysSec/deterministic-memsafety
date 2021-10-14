@@ -759,7 +759,7 @@ private:
   /// that of the corresponding Value.
   /// This is used for the IntToPtrs which we insert ourselves as part of
   /// pointer encoding/decoding.
-  DenseMap<const Value*, const Value*> inttoptr_status_and_bounds_overrides;
+  DenseMap<const IntToPtrInst*, const Value*> inttoptr_status_and_bounds_overrides;
 
   /// `Load` and `Store` instructions for which we have already inserted bounds
   /// checks. This way, we know which instructions may still need checks during
@@ -1425,6 +1425,9 @@ private:
           break;
       }
       DEBUG_WITH_TYPE("DMS-inst-processing",
+        if (inst.getType()->isPointerTy()) {
+          dbgs() << "DMS:     bounds info for the produced pointer is " << bounds_infos.get_binfo(&inst).pretty_kind() << "\n";
+        }
         auto num_new_insts = added_insts.size() - num_added_insts_before_processing_this_inst;
         if (num_new_insts > 0) dbgs() << "DMS:   " << num_new_insts << " new instructions added while processing this instruction\n";
       );
@@ -1718,7 +1721,9 @@ private:
     // create a status and bounds override for the `encoded_ptr`, so
     // this relationship is preserved even in future passes. It will
     // always have the same status and boundsinfo as `ptr`.
-    inttoptr_status_and_bounds_overrides[encoded_ptr] = ptr;
+    if (IntToPtrInst* encoded_ptr_inttoptr = dyn_cast<IntToPtrInst>(encoded_ptr)) {
+      inttoptr_status_and_bounds_overrides[encoded_ptr_inttoptr] = ptr;
+    }
     // update aliasing information
     // TODO: can this supercede the inttoptr_status_and_bounds_overrides?
     pointer_aliases[ptr].insert(encoded_ptr);

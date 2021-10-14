@@ -44,6 +44,18 @@ public:
     return kind;
   }
 
+  const char* pretty_kind() const {
+    switch (kind) {
+      case NOTDEFINEDYET: return "NOTDEFINEDYET";
+      case UNKNOWN: return "UNKNOWN";
+      case STATIC: return "STATIC";
+      case DYNAMIC: return "DYNAMIC";
+      case DYNAMIC_MERGED: return "DYNAMIC_MERGED";
+      case INFINITE: return "INFINITE";
+      default: llvm_unreachable("Missing BoundsInfo.kind case");
+    }
+  }
+
   /// Statically known bounds info.
   ///
   /// Suppose the pointer value is P. If the `low_offset` is L and the
