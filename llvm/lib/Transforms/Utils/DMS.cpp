@@ -1368,7 +1368,7 @@ private:
           }
           // now classify the returned pointer, if the return value is a pointer
           if (call.getType()->isPointerTy()) {
-            DMSIRBuilder Builder(&call, DMSIRBuilder::AFTER, &added_insts);
+            DMSIRBuilder Builder(&call, DMSIRBuilder::BEFORE, &added_insts);
             IsAllocatingCall IAC = isAllocatingCall(call, Builder);
             if (IAC.is_allocating) {
               // If this is an allocating call (eg, a call to `malloc`), then the
