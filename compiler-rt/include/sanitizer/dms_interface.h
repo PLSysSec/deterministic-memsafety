@@ -25,4 +25,9 @@ void __dms_store_infinite_bounds(void* ptr);
 /// `ptr` should be an UNENCODED value, ie with all upper bits clear.
 struct DynamicBounds __dms_get_bounds(void* ptr);
 
+/// Call this to indicate that a bounds check failed for `ptr`.
+/// This function will not return.
+__attribute__((noreturn))
+void __dms_boundscheckfail(void* ptr);
+
 } // end namespace

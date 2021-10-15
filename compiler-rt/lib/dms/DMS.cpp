@@ -14,6 +14,7 @@ struct DynamicBounds {
 // -- above this line, mirror all changes to dms_interface.h -- //
 
 #include "sanitizer_common/sanitizer_addrhashmap.h"
+#include <stdio.h>
 
 // AddrHashMap docs recommend a prime for the template arg. It appears to be the
 // number of buckets in the hashtable.
@@ -42,6 +43,14 @@ void __dms_store_infinite_bounds(void* ptr) {
 DynamicBounds __dms_get_bounds(void* ptr) {
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
   return *h;
+}
+
+/// Call this to indicate that a bounds check failed for `ptr`.
+/// This function will not return.
+__attribute__((noreturn))
+void __dms_boundscheckfail(void* ptr) {
+  fprintf(stderr, "Aborting due to bounds check failure for %p\n", ptr);
+  abort();
 }
 
 } // end namespace

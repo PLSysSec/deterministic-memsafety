@@ -1540,7 +1540,7 @@ private:
               Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
               Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
             );
-            BasicBlock* failbb = boundsCheckFailBB();
+            BasicBlock* failbb = boundsCheckFailBB(addr);
             new_blocks.push_back(failbb);
             insertCondJumpTo(needs_check, failbb, Builder, new_blocks);
             return true;
@@ -1620,9 +1620,8 @@ private:
     const BoundsInfo::StaticBoundsInfo& binfo,
     DMSIRBuilder& Builder
   ) {
-    // implementation doesn't actually need `ptr`
     if (binfo.fails()) {
-      insertBoundsCheckFail(Builder);
+      insertBoundsCheckFail(ptr, Builder);
     }
     assert(wellFormed(*Builder.GetInsertBlock()));
   }
@@ -1646,35 +1645,30 @@ private:
       Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder)),
       Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder))
     );
-    BasicBlock* failbb = boundsCheckFailBB();
+    BasicBlock* failbb = boundsCheckFailBB(ptr);
     new_blocks.push_back(failbb);
     insertCondJumpTo(Fail, failbb, Builder, new_blocks);
   }
 
-  /// Insert dynamic instructions indicating a bounds-check failure, at the
-  /// program point indicated by the given `Builder`
-  void insertBoundsCheckFail(DMSIRBuilder& Builder) {
+  /// Insert dynamic instructions indicating a bounds-check failure for the
+  /// given `ptr`, at the program point indicated by the given `Builder`
+  void insertBoundsCheckFail(Value* ptr, DMSIRBuilder& Builder) {
     Module* mod = F.getParent();
-    FunctionType* AbortTy = FunctionType::get(Builder.getVoidTy(), /* IsVarArgs = */ false);
-    FunctionCallee Abort = mod->getOrInsertFunction("abort", AbortTy);
-    Builder.CreateCall(Abort);
+    FunctionType* BoundsCheckFailTy = FunctionType::get(Builder.getVoidTy(), Builder.getInt8PtrTy(), /* IsVarArgs = */ false);
+    FunctionCallee BoundsCheckFail = mod->getOrInsertFunction("__dms_boundscheckfail", BoundsCheckFailTy);
+    Builder.CreateCall(BoundsCheckFail, {Builder.castToCharStar(ptr)});
   }
 
   /// Private member of `DMSAnalysis` holding the BasicBlock created by
   /// `boundsCheckFailBB()`; or NULL if it hasn't been created yet
   BasicBlock* boundscheckfail_bb;
 
-  /// Get a BasicBlock containing code indicating a bounds-check failure.
-  /// Returns an existing BasicBlock if `boundsCheckFailBB()` was already called
-  /// for this function;
-  /// else, inserts a new BasicBlock in the `Function` we're currently analyzing.
-  /// In either case, we can dynamically jump to this block to report a
-  /// bounds-check failure.
-  BasicBlock* boundsCheckFailBB() {
-    if (boundscheckfail_bb) return boundscheckfail_bb;
-    boundscheckfail_bb = BasicBlock::Create(F.getContext(), "boundscheckfail", &F);
+  /// Get a BasicBlock containing code indicating a bounds-check failure for `ptr`.
+  /// We can dynamically jump to this block to report a bounds-check failure.
+  BasicBlock* boundsCheckFailBB(Value* ptr) {
+    boundscheckfail_bb = BasicBlock::Create(F.getContext(), "", &F);
     DMSIRBuilder Builder(boundscheckfail_bb, DMSIRBuilder::BEGINNING, &added_insts);
-    insertBoundsCheckFail(Builder);
+    insertBoundsCheckFail(ptr, Builder);
     Builder.CreateUnreachable();
     assert(wellFormed(*boundscheckfail_bb));
     return boundscheckfail_bb;
