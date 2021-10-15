@@ -38,9 +38,74 @@ IsAllocatingCall isAllocatingCall(const CallBase &call, DMSIRBuilder& Builder) {
 
 /// Determine whether the GEP's total offset is a compile-time constant, and if
 /// so, what constant
-GEPConstantOffset computeGEPOffset(const llvm::GetElementPtrInst& gep, const DataLayout& DL) {
+GEPConstantOffset computeGEPOffset(const GetElementPtrInst& gep, const DataLayout& DL) {
   GEPConstantOffset gco;
   gco.offset = zero;
   gco.is_constant = gep.accumulateConstantOffset(DL, gco.offset);
   return gco;
+}
+
+/// Mangled name of the get_bounds function
+static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
+/// Mangled name of the store_bounds function
+static const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
+/// Mangled name of the store_infinite_bounds function
+/// TODO: real mangled name
+static const char* store_bounds_inf_func = "__dms_store_infinite_bounds";
+/// Mangled name of the boundscheckfail function
+/// TODO: real mangled name
+static const char* boundscheckfail_func = "__dms_boundscheckfail";
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_store_bounds()`.
+///
+/// The arguments `ptr`, `base`, and `max` can be any pointer type (not
+/// necessarily `void*`). They should be UNENCODED values, ie with all upper
+/// bits clear.
+CallInst* call_dms_store_bounds(Value* ptr, Value* base, Value* max, DMSIRBuilder& Builder) {
+	Module* mod = Builder.GetInsertBlock()->getModule();
+	static Type* CharStarTy = Builder.getInt8PtrTy();
+  static FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
+  FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
+  return Builder.CreateCall(StoreBounds, {Builder.castToCharStar(ptr), Builder.castToCharStar(base), Builder.castToCharStar(max)});
+}
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_store_infinite_bounds()`.
+///
+/// The `ptr` argument can be any pointer type (not necessarily `void*`),
+/// and should be an UNENCODED value, ie with all upper bits clear.
+CallInst* call_dms_store_infinite_bounds(Value* ptr, DMSIRBuilder& Builder) {
+	Module* mod = Builder.GetInsertBlock()->getModule();
+	static Type* CharStarTy = Builder.getInt8PtrTy();
+  static FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
+  FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
+  return Builder.CreateCall(StoreBoundsInf, {Builder.castToCharStar(ptr)});
+}
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_get_bounds()`.
+///
+/// The `ptr` argument can be any pointer type (not necessarily `void*`),
+/// and should be an UNENCODED value, ie with all upper bits clear.
+CallInst* call_dms_get_bounds(Value* ptr, DMSIRBuilder& Builder) {
+	Module* mod = Builder.GetInsertBlock()->getModule();
+	static Type* CharStarTy = Builder.getInt8PtrTy();
+	static Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
+	FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
+	FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
+	return Builder.CreateCall(GetBounds, {Builder.castToCharStar(ptr)});
+}
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_boundscheckfail()`.
+///
+/// The `ptr` argument can be any pointer type (not necessarily `void*`),
+/// and should be an UNENCODED value, ie with all upper bits clear.
+CallInst* call_dms_boundscheckfail(Value* ptr, DMSIRBuilder& Builder) {
+  Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharStarTy = Builder.getInt8PtrTy();
+  FunctionType* BoundsCheckFailTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
+  FunctionCallee BoundsCheckFail = mod->getOrInsertFunction(boundscheckfail_func, BoundsCheckFailTy);
+  return Builder.CreateCall(BoundsCheckFail, {Builder.castToCharStar(ptr)});
 }

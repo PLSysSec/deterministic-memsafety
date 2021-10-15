@@ -430,8 +430,7 @@ public:
       blocks_in_function(F.getBasicBlockList().size()),
       pointer_encoding_is_complete(false),
       block_states(BlockStates(F, DL, settings.trust_llvm_struct_types, added_insts, pointer_aliases)),
-      bounds_infos(BoundsInfos(F, DL, added_insts, pointer_aliases)),
-      boundscheckfail_bb(NULL)
+      bounds_infos(BoundsInfos(F, DL, added_insts, pointer_aliases))
   {}
 
   struct StaticCounts {
@@ -1621,7 +1620,7 @@ private:
     DMSIRBuilder& Builder
   ) {
     if (binfo.fails()) {
-      insertBoundsCheckFail(ptr, Builder);
+      call_dms_boundscheckfail(ptr, Builder);
     }
     assert(wellFormed(*Builder.GetInsertBlock()));
   }
@@ -1650,28 +1649,15 @@ private:
     insertCondJumpTo(Fail, failbb, Builder, new_blocks);
   }
 
-  /// Insert dynamic instructions indicating a bounds-check failure for the
-  /// given `ptr`, at the program point indicated by the given `Builder`
-  void insertBoundsCheckFail(Value* ptr, DMSIRBuilder& Builder) {
-    Module* mod = F.getParent();
-    FunctionType* BoundsCheckFailTy = FunctionType::get(Builder.getVoidTy(), Builder.getInt8PtrTy(), /* IsVarArgs = */ false);
-    FunctionCallee BoundsCheckFail = mod->getOrInsertFunction("__dms_boundscheckfail", BoundsCheckFailTy);
-    Builder.CreateCall(BoundsCheckFail, {Builder.castToCharStar(ptr)});
-  }
-
-  /// Private member of `DMSAnalysis` holding the BasicBlock created by
-  /// `boundsCheckFailBB()`; or NULL if it hasn't been created yet
-  BasicBlock* boundscheckfail_bb;
-
   /// Get a BasicBlock containing code indicating a bounds-check failure for `ptr`.
   /// We can dynamically jump to this block to report a bounds-check failure.
   BasicBlock* boundsCheckFailBB(Value* ptr) {
-    boundscheckfail_bb = BasicBlock::Create(F.getContext(), "", &F);
-    DMSIRBuilder Builder(boundscheckfail_bb, DMSIRBuilder::BEGINNING, &added_insts);
-    insertBoundsCheckFail(ptr, Builder);
+    BasicBlock* bb = BasicBlock::Create(F.getContext(), "", &F);
+    DMSIRBuilder Builder(bb, DMSIRBuilder::BEGINNING, &added_insts);
+    call_dms_boundscheckfail(ptr, Builder);
     Builder.CreateUnreachable();
-    assert(wellFormed(*boundscheckfail_bb));
-    return boundscheckfail_bb;
+    assert(wellFormed(*bb));
+    return bb;
   }
 
   /// Let the Builder's current block be A.

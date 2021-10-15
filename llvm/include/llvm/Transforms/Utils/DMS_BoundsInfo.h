@@ -350,7 +350,7 @@ public:
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
   ///
   /// Returns the Call instruction if one was inserted, or else NULL
-  Instruction* store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const;
+  CallInst* store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const;
 
   /// Insert dynamic instructions to load bounds info for the given `ptr`.
   /// Bounds info for this `ptr` should have been previously stored with
