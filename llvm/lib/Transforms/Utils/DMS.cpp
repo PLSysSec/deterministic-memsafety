@@ -853,6 +853,11 @@ private:
 
     if (settings.do_pointer_encoding) pointer_encoding_is_complete = true;
 
+    LLVM_DEBUG(
+      dbgs() << "DMS: finished an iteration through function " << F.getName()
+        << "; total of " << F.size() << " blocks and " << bounds_infos.numTrackedPtrs() << " bounds-tracked ptrs\n";
+    );
+
     return IterationResult { changed, static_results };
   }
 

@@ -22,15 +22,16 @@ static const char* store_bounds_inf_func = "__dms_store_infinite_bounds";
 ///
 /// Returns the "base" (minimum inbounds pointer value) of the allocation,
 /// as an LLVM `Value` of type `i8*`.
-/// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
+/// Or, if the `kind` is UNKNOWN, returns NULL.
 /// The `kind` should not be NOTDEFINEDYET.
 Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
 	switch (kind) {
 		case NOTDEFINEDYET:
 			llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
 		case UNKNOWN:
-		case INFINITE:
 			return NULL;
+		case INFINITE:
+			return Builder.Insert(Constant::getNullValue(Builder.getInt8PtrTy()));
 		case STATIC:
 			return info.static_info.base_as_llvm_value(cur_ptr, Builder);
 		case DYNAMIC:
@@ -48,15 +49,16 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
 ///
 /// Returns the "max" (maximum inbounds pointer value) of the allocation,
 /// as an LLVM `Value` of type `i8*`.
-/// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
+/// Or, if the `kind` is UNKNOWN, returns NULL.
 /// The `kind` should not be NOTDEFINEDYET.
 Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
 	switch (kind) {
 		case NOTDEFINEDYET:
 			llvm_unreachable("max_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
 		case UNKNOWN:
-		case INFINITE:
 			return NULL;
+		case INFINITE:
+			return Builder.CreateIntToPtr(Constant::getAllOnesValue(Builder.getInt64Ty()), Builder.getInt8PtrTy());
 		case STATIC:
 			return info.static_info.max_as_llvm_value(cur_ptr, Builder);
 		case DYNAMIC:
@@ -316,9 +318,9 @@ BoundsInfo BoundsInfos::get_binfo_noalias(const Value* ptr) {
 					return map.lookup(gepinst);
 				}
 				case Instruction::IntToPtr: {
-					// return a NOTDEFINEDYET; ideally, we have alias information, and an
-					// alias will have bounds info
-					return BoundsInfo();
+					// ideally, we have alias information, and some alias will have bounds
+					// info
+					return BoundsInfo::notdefinedyet();
 				}
 				default: {
 					dbgs() << "unhandled constant expression:\n";
@@ -522,40 +524,15 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 					assert(prev_iteration_dyninfo->base.offset == 0);
 					assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
 					for (auto& tuple : incoming_binfos) {
+						Value* incoming_ptr = std::get<0>(tuple);
 						const BoundsInfo incoming_binfo = std::get<1>(tuple);
 						BasicBlock* incoming_bb = std::get<2>(tuple);
 						const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
-						switch (incoming_binfo.get_kind()) {
-							case BoundsInfo::NOTDEFINEDYET:
-							case BoundsInfo::UNKNOWN:
-							case BoundsInfo::INFINITE:
-								llvm_unreachable("Bad incoming_binfo.kind here");
-							case BoundsInfo::STATIC:
-								// for now we just assume that static bounds don't
-								// change from iteration to iteration
-								break;
-							case BoundsInfo::DYNAMIC:
-							case BoundsInfo::DYNAMIC_MERGED:
-							{
-								const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo.dynamic_info();
-								if (incoming_dyninfo->base.offset != 0) {
-									// need to recalculate base_phi
-									base_phi = NULL;
-									break;
-								}
-								const Value* incoming_base = incoming_dyninfo->base.ptr;
-								if (incoming_base != old_base) {
-									// need to recalculate base_phi
-									base_phi = NULL;
-									break;
-								}
-								// if we get here, this incoming block is still good and doesn't need recalculating
-								break;
-							}
-							default:
-								llvm_unreachable("Missing BoundsInfo.kind case");
+						Value* incoming_base = incoming_binfo.base_as_llvm_value(incoming_ptr, Builder);
+						assert(incoming_base);
+						if (incoming_base != old_base) {
+							base_phi->setIncomingValueForBlock(incoming_bb, incoming_base);
 						}
-						if (!base_phi) break;
 					}
 				} else {
 					// prev_iteration base was not a phi. we'll have to insert a fresh phi
@@ -564,40 +541,15 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 					assert(prev_iteration_dyninfo->max.offset == 0);
 					assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
 					for (auto& tuple : incoming_binfos) {
+						Value* incoming_ptr = std::get<0>(tuple);
 						const BoundsInfo incoming_binfo = std::get<1>(tuple);
 						BasicBlock* incoming_bb = std::get<2>(tuple);
 						const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
-						switch (incoming_binfo.get_kind()) {
-							case BoundsInfo::NOTDEFINEDYET:
-							case BoundsInfo::UNKNOWN:
-							case BoundsInfo::INFINITE:
-								llvm_unreachable("Bad incoming_binfo.kind here");
-							case BoundsInfo::STATIC:
-								// for now we just assume that static bounds don't
-								// change from iteration to iteration
-								break;
-							case BoundsInfo::DYNAMIC:
-							case BoundsInfo::DYNAMIC_MERGED:
-							{
-								const BoundsInfo::DynamicBoundsInfo* incoming_dyninfo = incoming_binfo.dynamic_info();
-								if (incoming_dyninfo->max.offset != 0) {
-									// need to recalculate max_phi
-									max_phi = NULL;
-									break;
-								}
-								const Value* incoming_max = incoming_dyninfo->max.ptr;
-								if (incoming_max != old_max) {
-									// need to recalculate max_phi
-									max_phi = NULL;
-									break;
-								}
-								// if we get here, this incoming block is still good and doesn't need recalculating
-								break;
-							}
-							default:
-								llvm_unreachable("Missing BoundsInfo.kind case");
+						Value* incoming_max = incoming_binfo.max_as_llvm_value(incoming_ptr, Builder);
+						assert(incoming_max);
+						if (incoming_max != old_max) {
+							max_phi->setIncomingValueForBlock(incoming_bb, incoming_max);
 						}
-						if (!max_phi) break;
 					}
 				} else {
 					// prev_iteration max was not a phi. we'll have to insert a fresh phi

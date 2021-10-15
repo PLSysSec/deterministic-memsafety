@@ -257,6 +257,9 @@ public:
   /// constructing a BoundsInfo; for instance, DenseMap.lookup() will use this
   /// constructor to construct a BoundsInfo if the key is not found in the map.
   explicit BoundsInfo() : kind(NOTDEFINEDYET), info(StaticBoundsInfo()) {}
+  static BoundsInfo notdefinedyet() {
+    return BoundsInfo();
+  }
 
   BoundsInfo(const BoundsInfo& other) :
     kind(other.kind), info(other.info) {
@@ -430,6 +433,10 @@ public:
   /// Copy the bounds for the input pointer (must be operand 0) to the output
   /// pointer
   void propagate_bounds_id(Instruction& inst);
+
+  size_t numTrackedPtrs() const {
+    return map.size();
+  }
 
 private:
   const DataLayout& DL;
