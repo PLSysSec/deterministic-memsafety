@@ -278,17 +278,59 @@ BoundsInfos::BoundsInfos(
 }
 
 /// Get the bounds information for the given pointer.
-BoundsInfo BoundsInfos::get_binfo(const Value* ptr) const {
-	if (is_null_ptr(ptr)) {
-		return BoundsInfo::infinite();
-	}
-	BoundsInfo binfo = map.lookup(ptr);
+BoundsInfo BoundsInfos::get_binfo(const Value* ptr) {
+	BoundsInfo binfo = get_binfo_noalias(ptr);
 	if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
 	// if bounds info isn't defined, see if it's defined for any alias of this pointer
 	for (const Value* alias : pointer_aliases[ptr]) {
-		if (is_null_ptr(alias)) return BoundsInfo::infinite();
-		binfo = map.lookup(alias);
+		binfo = get_binfo_noalias(alias);
 		if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+	}
+	return binfo;
+}
+
+/// Like `get_binfo()`, but doesn't check aliases of the given ptr, if any
+/// exist. This is used internally by `get_binfo()`.
+BoundsInfo BoundsInfos::get_binfo_noalias(const Value* ptr) {
+	assert(ptr->getType()->isPointerTy());
+	BoundsInfo binfo = map.lookup(ptr);
+	if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+	if (const Constant* constant = dyn_cast<const Constant>(ptr)) {
+		if (constant->isNullValue()) {
+			return BoundsInfo::infinite();
+		} else if (isa<UndefValue>(constant)) {
+			// this includes both undef and poison
+			return BoundsInfo::infinite();
+		} else if (const ConstantExpr* expr = dyn_cast<ConstantExpr>(constant)) {
+			// it's a pointer created by a compile-time constant expression
+			switch (expr->getOpcode()) {
+				case Instruction::BitCast: {
+					// bitcast doesn't change the bounds
+					return get_binfo_noalias(expr->getOperand(0));
+				}
+				case Instruction::GetElementPtr: {
+					// constant-GEP expression
+					Instruction* inst = expr->getAsInstruction();
+					GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
+					propagate_bounds(*gepinst, DL);
+					return map.lookup(gepinst);
+				}
+				case Instruction::IntToPtr: {
+					// return a NOTDEFINEDYET; ideally, we have alias information, and an
+					// alias will have bounds info
+					return BoundsInfo();
+				}
+				default: {
+					dbgs() << "unhandled constant expression:\n";
+					expr->dump();
+					llvm_unreachable("getting bounds info for unhandled constant expression");
+				}
+			}
+		} else {
+			dbgs() << "unhandled constant:\n";
+			constant->dump();
+			llvm_unreachable("unhandled constant type (not an expression)");
+		}
 	}
 	return binfo;
 }
@@ -345,10 +387,7 @@ void BoundsInfos::propagate_bounds_id(Instruction& inst) {
 }
 
 /// Propagate bounds information for a GEP instruction.
-void BoundsInfos::propagate_bounds(
-	GetElementPtrInst& gep,
-	GEPResultClassification& grc
-) {
+void BoundsInfos::propagate_bounds(GetElementPtrInst& gep, const DataLayout& DL) {
 	// propagate the input pointer's bounds to the new pointer. We let
 	// the new pointer still have access to the whole allocation
 	Value* input_ptr = gep.getPointerOperand();
@@ -364,10 +403,11 @@ void BoundsInfos::propagate_bounds(
 			break;
 		case BoundsInfo::STATIC: {
 			const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
-			if (grc.offset_is_constant) {
+			const GEPConstantOffset gco = computeGEPOffset(gep, DL);
+			if (gco.is_constant) {
 				map[&gep] = BoundsInfo::static_bounds(
-					static_info->low_offset + grc.constant_offset,
-					static_info->high_offset - grc.constant_offset
+					static_info->low_offset + gco.offset,
+					static_info->high_offset - gco.offset
 				);
 			} else {
 				// bounds of the new pointer aren't known statically

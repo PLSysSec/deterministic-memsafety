@@ -412,16 +412,16 @@ public:
   }
 
   /// Get the bounds information for the given pointer.
-  BoundsInfo get_binfo(const Value* ptr) const;
+  BoundsInfo get_binfo(const Value* ptr);
 
   /// Is there any bounds information for the given pointer?
-  bool is_binfo_present(const Value* ptr) const {
+  bool is_binfo_present(const Value* ptr) {
     return get_binfo(ptr).get_kind() != BoundsInfo::NOTDEFINEDYET;
   }
 
   void propagate_bounds(StoreInst&);
   void propagate_bounds(AllocaInst&);
-  void propagate_bounds(GetElementPtrInst&, GEPResultClassification&);
+  void propagate_bounds(GetElementPtrInst&, const DataLayout&);
   void propagate_bounds(SelectInst&);
   void propagate_bounds(IntToPtrInst&, PointerKind inttoptr_kind);
   void propagate_bounds(PHINode&);
@@ -441,6 +441,10 @@ private:
   /// Reference to the `pointer_aliases` for this function; see notes on
   /// `pointer_aliases` in `DMSAnalysis`
   DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
+
+  /// Like `get_binfo()`, but doesn't check aliases of the given ptr, if any
+  /// exist. This is used internally by `get_binfo()`.
+  BoundsInfo get_binfo_noalias(const Value* ptr);
 
   /// Value type for the below map
   class BoundsStoringCall final {
@@ -473,17 +477,6 @@ private:
   /// stored pointer has changed, we can remove the Call instruction and
   /// generate a new one.
   DenseMap<const StoreInst*, BoundsStoringCall> store_bounds_calls;
-
-  /// Is the given Value a null pointer
-  static bool is_null_ptr(const Value* v) {
-    if (!v->getType()->isPointerTy()) return false;
-    if (const Constant* c = dyn_cast<const Constant>(v)) {
-      if (c->isNullValue()) {
-        return true;
-      }
-    }
-    return false;
-  }
 };
 
 } // end namespace

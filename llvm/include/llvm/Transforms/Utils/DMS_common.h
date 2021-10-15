@@ -5,6 +5,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/IR/Value.h"
+#include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
 
 /// Struct exists because we can't use C++17's std::optional.
@@ -21,23 +22,21 @@ struct IsAllocatingCall {
   static IsAllocatingCall allocating(llvm::Value* size) { return IsAllocatingCall { true, size }; }
 };
 
-/// Describes the classification of a GEP result, as determined by
-/// `classifyGEPResult()`.
-struct GEPResultClassification {
-  /// Classification of the result of the given `gep`.
-  PointerStatus classification;
-  /// Was the total offset of the GEP considered a constant?
-  /// (If `override_constant_offset` is non-NULL, this will always be `true`, of
-  /// course.)
-  bool offset_is_constant;
-  /// If `offset_is_constant` is `true`, then this holds the value of the
-  /// constant offset, in _bytes_.
-  /// (If `override_constant_offset` is non-NULL, `classifyGEPResult` will
-  /// copy that value to `constant_offset`.)
-  llvm::APInt constant_offset;
-  /// If `constant_offset` is nonzero, do we consider it as zero anyways because
-  /// it is a "trustworthy" struct offset?
-  bool trustworthy_struct_offset;
+/// If computing the allocation size requires inserting dynamic instructions,
+/// use `Builder`
+IsAllocatingCall isAllocatingCall(const llvm::CallBase&, llvm::DMSIRBuilder& Builder);
+
+/// this struct would be a std::optional if we could use C++17
+struct GEPConstantOffset {
+  /// Is the GEP's total offset a compile-time constant
+  bool is_constant;
+  /// If `is_constant` is true, this is the value of the constant offset, in
+  /// bytes
+  llvm::APInt offset;
 };
+
+/// Determine whether the GEP's total offset is a compile-time constant, and if
+/// so, what constant
+GEPConstantOffset computeGEPOffset(const llvm::GetElementPtrInst&, const llvm::DataLayout&);
 
 #endif
