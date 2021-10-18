@@ -177,6 +177,18 @@ public:
   }
 
   PointerStatus getStatus(const Value* ptr) const {
+    PointerStatus status = getStatus_noalias(ptr);
+    if (status.kind != PointerKind::NOTDEFINEDYET) return status;
+    // if status isn't defined, see if it's defined for any alias of this pointer
+    for (const Value* alias : pointer_aliases[ptr]) {
+      status = getStatus_noalias(alias);
+      if (status.kind != PointerKind::NOTDEFINEDYET) return status;
+    }
+    return status;
+  }
+
+  private:
+  PointerStatus getStatus_noalias(const Value* ptr) const {
     auto it = map.find(ptr);
     if (it != map.end()) {
       // found it in the map
@@ -209,29 +221,22 @@ public:
             GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
             return classifyGEPResult_cached(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL, added_insts).classification;
           }
+          case Instruction::IntToPtr: {
+            // ideally, we have alias information, and some alias will have a status.
+            // (this comes up with constant IntToPtrs introduced by our pointer
+            // encoding)
+            return PointerStatus::notdefinedyet();
+          }
           default: {
-            // see if this constant expression has an alias.
-            // if so, maybe that alias has a status.
-            // (this comes up with constant IntToPtr which can sometimes be
-            // introduced by our pointer encoding)
-            if (pointer_aliases.count(expr)) {
-              for (const Value* alias : pointer_aliases[expr]) {
-                PointerStatus alias_status = getStatus(alias);
-                if (alias_status.kind != PointerKind::NOTDEFINEDYET) {
-                  return alias_status;
-                }
-              }
-              LLVM_DEBUG(dbgs() << "unhandled constant expression has aliases, but no aliases have a status\n");
-            }
-            LLVM_DEBUG(dbgs() << "unhandled constant expression:\n");
-            LLVM_DEBUG(expr->dump());
+            dbgs() << "unhandled constant expression:\n";
+            expr->dump();
             llvm_unreachable("getting status of unhandled constant expression");
           }
         }
       } else {
         // a constant, but not null and not a constant expression.
-        LLVM_DEBUG(dbgs() << "constant pointer of unhandled kind:\n");
-        LLVM_DEBUG(constant->dump());
+        dbgs() << "constant pointer of unhandled kind:\n";
+        constant->dump();
         llvm_unreachable("getting status of constant pointer of unhandled kind");
       }
     } else {
@@ -240,6 +245,7 @@ public:
     }
   }
 
+  public:
   MapEqualityResult<const Value*> isEqualTo(const PointerStatuses& other) const {
     // since we assert in `mark_as()` that we never explicitly mark anything
     // NOTDEFINEDYET, we can just check that the `map`s contain exactly the same
