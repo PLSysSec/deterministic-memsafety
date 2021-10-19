@@ -176,18 +176,33 @@ public:
     map[ptr] = status;
   }
 
+  /// Get the status of `ptr`. If necessary, check its aliases, and those
+  /// aliases' aliases, etc
   PointerStatus getStatus(const Value* ptr) const {
+    SmallDenseSet<const Value*, 4> tried_ptrs;
+    return getStatus_checking_aliases_except(ptr, tried_ptrs);
+  }
+
+  private:
+  /// Get the status of `ptr`. If necessary, check its aliases, and those
+  /// aliases' aliases, etc. However, don't recurse into any aliases listed in
+  /// `norecurse`. (We use this to avoid infinite recursion.)
+  PointerStatus getStatus_checking_aliases_except(const Value* ptr, SmallDenseSet<const Value*, 4>& norecurse) const {
     PointerStatus status = getStatus_noalias(ptr);
     if (status.kind != PointerKind::NOTDEFINEDYET) return status;
     // if status isn't defined, see if it's defined for any alias of this pointer
+    norecurse.insert(ptr);
     for (const Value* alias : pointer_aliases[ptr]) {
-      status = getStatus_noalias(alias);
+      if (norecurse.insert(alias).second) {
+        status = getStatus_checking_aliases_except(alias, norecurse);
+      }
       if (status.kind != PointerKind::NOTDEFINEDYET) return status;
     }
     return status;
   }
 
-  private:
+  /// Get the status of `ptr`. This function doesn't consider aliases of `ptr`;
+  /// if `ptr` itself doesn't have a status, returns `PointerStatus::notdefinedyet()`.
   PointerStatus getStatus_noalias(const Value* ptr) const {
     auto it = map.find(ptr);
     if (it != map.end()) {
