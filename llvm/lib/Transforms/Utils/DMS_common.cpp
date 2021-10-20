@@ -50,11 +50,9 @@ static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
 /// Mangled name of the store_bounds function
 static const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
 /// Mangled name of the store_infinite_bounds function
-/// TODO: real mangled name
-static const char* store_bounds_inf_func = "__dms_store_infinite_bounds";
+static const char* store_bounds_inf_func = "_ZN5__dms27__dms_store_infinite_boundsEPv";
 /// Mangled name of the boundscheckfail function
-/// TODO: real mangled name
-static const char* boundscheckfail_func = "__dms_boundscheckfail";
+static const char* boundscheckfail_func = "_ZN5__dms21__dms_boundscheckfailEPv";
 
 /// Convenience function to create calls to our runtime support function
 /// `__dms_store_bounds()`.
