@@ -45,6 +45,32 @@ GEPConstantOffset computeGEPOffset(const GetElementPtrInst& gep, const DataLayou
   return gco;
 }
 
+static void verifyGVUserIsWellFormed(const User* user) {
+  if (auto* I = dyn_cast<Instruction>(user)) {
+    if (!I->getParent()) {
+      errs() << "The following instruction doesn't have a parent:\n";
+      I->dump();
+      llvm_unreachable("verifyGVUserIsWellFormed failed");
+    }
+  } else if (auto* C = dyn_cast<Constant>(user)) {
+    for (const User* C_user : C->users()) {
+      verifyGVUserIsWellFormed(C_user);
+    }
+  }
+}
+
+/// This function iterates using the same pattern in `GlobalDCEPass`,
+/// to ensure that no GV users are Instructions without a Block parent.
+/// (If there were, `GlobalDCEPass` will crash later.)
+void verifyGVUsersAreWellFormed(const Function& F) {
+  const Module* mod = F.getParent();
+  for (const GlobalValue& gv : mod->global_values()) {
+    for (const User* user : gv.users()) {
+      verifyGVUserIsWellFormed(user);
+    }
+  }
+}
+
 /// Mangled name of the get_bounds function
 static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
 /// Mangled name of the store_bounds function

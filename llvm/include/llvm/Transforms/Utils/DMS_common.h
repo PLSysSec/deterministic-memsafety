@@ -39,6 +39,11 @@ struct GEPConstantOffset {
 /// so, what constant
 GEPConstantOffset computeGEPOffset(const llvm::GetElementPtrInst&, const llvm::DataLayout&);
 
+/// This function iterates using the same pattern in `GlobalDCEPass`,
+/// to ensure that no GV users are Instructions without a Block parent.
+/// (If there were, `GlobalDCEPass` will crash later.)
+void verifyGVUsersAreWellFormed(const llvm::Function& F);
+
 /// Convenience function to create calls to our runtime support function
 /// `__dms_store_bounds()`.
 ///

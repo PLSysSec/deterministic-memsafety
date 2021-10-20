@@ -17,6 +17,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/Local.h"
 
@@ -559,6 +560,14 @@ public:
       dbgs() << "Final IR after DMS pass:\n";
       F.dump();
     );
+
+    if (verifyFunction(F, &errs())) {
+      errs() << "Verify failed for function " << F.getNameOrAsOperand() << " after DMS\n";
+      errs() << "Function IR is:\n";
+      F.dump();
+    }
+
+    verifyGVUsersAreWellFormed(F);
 
     return res.static_results;
   }
