@@ -258,7 +258,7 @@ BoundsInfos::BoundsInfos(
 }
 
 /// Get the bounds information for the given pointer.
-BoundsInfo BoundsInfos::get_binfo(const Value* ptr) {
+BoundsInfo BoundsInfos::get_binfo(const Value* ptr) const {
 	BoundsInfo binfo = get_binfo_noalias(ptr);
 	if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
 	// if bounds info isn't defined, see if it's defined for any alias of this pointer
@@ -271,7 +271,7 @@ BoundsInfo BoundsInfos::get_binfo(const Value* ptr) {
 
 /// Like `get_binfo()`, but doesn't check aliases of the given ptr, if any
 /// exist. This is used internally by `get_binfo()`.
-BoundsInfo BoundsInfos::get_binfo_noalias(const Value* ptr) {
+BoundsInfo BoundsInfos::get_binfo_noalias(const Value* ptr) const {
 	assert(ptr->getType()->isPointerTy());
 	BoundsInfo binfo = map.lookup(ptr);
 	if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
@@ -292,8 +292,9 @@ BoundsInfo BoundsInfos::get_binfo_noalias(const Value* ptr) {
 					// constant-GEP expression
 					Instruction* inst = expr->getAsInstruction();
 					GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-					propagate_bounds(*gepinst, DL);
-					return map.lookup(gepinst);
+					BoundsInfo ret = bounds_info_for_gep(*gepinst, DL);
+					inst->deleteValue();
+					return ret;
 				}
 				case Instruction::IntToPtr: {
 					// ideally, we have alias information, and some alias will have bounds
@@ -366,26 +367,23 @@ void BoundsInfos::propagate_bounds_id(Instruction& inst) {
 	map[&inst] = get_binfo(input_ptr);
 }
 
-/// Propagate bounds information for a GEP instruction.
-void BoundsInfos::propagate_bounds(GetElementPtrInst& gep, const DataLayout& DL) {
-	// propagate the input pointer's bounds to the new pointer. We let
-	// the new pointer still have access to the whole allocation
+BoundsInfo BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep, const DataLayout& DL) const {
+	// the pointer resulting from the GEP still gets access to the whole allocation,
+	// ie the same access that the GEP's input pointer had
 	Value* input_ptr = gep.getPointerOperand();
 	const BoundsInfo binfo = get_binfo(input_ptr);
 	switch (binfo.get_kind()) {
 		case BoundsInfo::NOTDEFINEDYET:
 			llvm_unreachable("GEP input ptr's BoundsInfo should be defined (at least UNKNOWN)");
 		case BoundsInfo::UNKNOWN:
-			map[&gep] = binfo;
-			break;
+			return binfo;
 		case BoundsInfo::INFINITE:
-			map[&gep] = binfo;
-			break;
+			return binfo;
 		case BoundsInfo::STATIC: {
 			const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
 			const GEPConstantOffset gco = computeGEPOffset(gep, DL);
 			if (gco.is_constant) {
-				map[&gep] = BoundsInfo::static_bounds(
+				return BoundsInfo::static_bounds(
 					static_info->low_offset + gco.offset,
 					static_info->high_offset - gco.offset
 				);
@@ -398,20 +396,23 @@ void BoundsInfos::propagate_bounds(GetElementPtrInst& gep, const DataLayout& DL)
 				const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, -input_static_info->low_offset);
 				// `max` is `input_ptr` plus the input pointer's high_offset
 				const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, input_static_info->high_offset);
-				map[&gep] = BoundsInfo::dynamic_bounds(base, max);
+				return BoundsInfo::dynamic_bounds(base, max);
 			}
-			break;
 		}
 		case BoundsInfo::DYNAMIC:
 		case BoundsInfo::DYNAMIC_MERGED:
 		{
 			// regardless of the GEP offset, the `base` and `max` don't change
-			map[&gep] = binfo;
-			break;
+			return binfo;
 		}
 		default:
 			llvm_unreachable("Missing BoundsInfo.kind case");
 	}
+}
+
+/// Propagate bounds information for a GEP instruction.
+void BoundsInfos::propagate_bounds(GetElementPtrInst& gep, const DataLayout& DL) {
+	map[&gep] = bounds_info_for_gep(gep, DL);
 }
 
 void BoundsInfos::propagate_bounds(SelectInst& select) {

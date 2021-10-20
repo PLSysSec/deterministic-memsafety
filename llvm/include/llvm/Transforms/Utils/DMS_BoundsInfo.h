@@ -415,7 +415,7 @@ public:
   }
 
   /// Get the bounds information for the given pointer.
-  BoundsInfo get_binfo(const Value* ptr);
+  BoundsInfo get_binfo(const Value* ptr) const;
 
   /// Is there any bounds information for the given pointer?
   bool is_binfo_present(const Value* ptr) {
@@ -451,7 +451,9 @@ private:
 
   /// Like `get_binfo()`, but doesn't check aliases of the given ptr, if any
   /// exist. This is used internally by `get_binfo()`.
-  BoundsInfo get_binfo_noalias(const Value* ptr);
+  BoundsInfo get_binfo_noalias(const Value* ptr) const;
+
+  BoundsInfo bounds_info_for_gep(GetElementPtrInst& gep, const DataLayout& DL) const;
 
   /// Value type for the below map
   class BoundsStoringCall final {
