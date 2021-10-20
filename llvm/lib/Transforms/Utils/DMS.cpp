@@ -2199,19 +2199,19 @@ static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::o
 /// "well-formed" means:
 ///   - the block has exactly one terminator instruction
 ///   - the terminator instruction is at the end
-///   - all PHI instructions (if they exist) come first
+///   - all PHI instructions and/or landingpad instructions (if they exist) come first
 static bool wellFormed(const BasicBlock& bb) {
   const Instruction* terminator = bb.getTerminator();
   if (!terminator) return false;
   for (const Instruction& I : bb) {
     if (I.isTerminator() && &I != terminator) return false;
   }
-  bool have_non_phi = false;
+  bool have_non_phi_or_landingpad = false;
   for (const Instruction& I : bb) {
-    if (isa<PHINode>(I)) {
-      if (have_non_phi) return false;
+    if (isa<PHINode>(I) || isa<LandingPadInst>(I)) {
+      if (have_non_phi_or_landingpad) return false;
     } else {
-      have_non_phi = true;
+      have_non_phi_or_landingpad = true;
     }
   }
   return true;
