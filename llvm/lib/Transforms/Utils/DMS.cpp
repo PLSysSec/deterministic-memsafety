@@ -1482,7 +1482,7 @@ private:
         return sw_bounds_check(addr, binfo, Builder, new_blocks);
       }
       case PointerKind::UNKNOWN: {
-        dbgs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
+        errs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
         const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
         return sw_bounds_check(addr, binfo, Builder, new_blocks);
       }
@@ -1549,7 +1549,7 @@ private:
       case BoundsInfo::NOTDEFINEDYET:
         llvm_unreachable("Can't sw_bounds_check with NOTDEFINEDYET bounds");
       case BoundsInfo::UNKNOWN:
-        dbgs() << "warning: bounds info unknown for " << ptr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
+        errs() << "warning: bounds info unknown for " << ptr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
         return false;
       case BoundsInfo::INFINITE:
         // bounds check passes by default

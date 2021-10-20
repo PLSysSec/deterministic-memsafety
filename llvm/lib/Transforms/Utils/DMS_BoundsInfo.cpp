@@ -193,11 +193,11 @@ CallInst* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const
 			return call_dms_store_infinite_bounds(cur_ptr, Builder);
 		}
 		case BoundsInfo::UNKNOWN: {
-			DEBUG_WITH_TYPE("DMS", dbgs() << "DMS:   warning: bounds info unknown for " << cur_ptr->getNameOrAsOperand() << "; considering it as infinite bounds\n");
+			errs() << "warning: bounds info unknown for " << cur_ptr->getNameOrAsOperand() << "; considering it as infinite bounds\n";
 			return call_dms_store_infinite_bounds(cur_ptr, Builder);
 		}
 		case BoundsInfo::NOTDEFINEDYET: {
-			dbgs() << "error during store_dynamic for " << cur_ptr->getNameOrAsOperand() << "\n";
+			errs() << "error during store_dynamic for " << cur_ptr->getNameOrAsOperand() << "\n";
 			llvm_unreachable("store_dynamic: bounds info should be defined (at least UNKNOWN)");
 		}
 		default: {
