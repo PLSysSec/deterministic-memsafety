@@ -1275,8 +1275,6 @@ private:
         }
         case Instruction::PHI: {
           PHINode& phi = cast<PHINode>(inst);
-          DMSIRBuilder BeforePhi(&phi, DMSIRBuilder::BEFORE, &added_insts);
-          DMSIRBuilder AfterPhi(&block, DMSIRBuilder::BEGINNING, &added_insts);
           if (phi.getType()->isPointerTy()) {
             SmallVector<StatusWithBlock, 4> incoming_statuses;
             for (const Use& use : phi.incoming_values()) {
