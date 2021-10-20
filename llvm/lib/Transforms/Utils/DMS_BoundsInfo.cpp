@@ -463,7 +463,6 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 			bb
 		));
 	}
-	DMSIRBuilder Builder(&phi, DMSIRBuilder::BEFORE, &added_insts);
 	const BoundsInfo prev_iteration_binfo = get_binfo(&phi);
 	assert(incoming_binfos.size() >= 1);
 	bool any_incoming_bounds_are_dynamic = false;
@@ -506,7 +505,11 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 						const BoundsInfo incoming_binfo = std::get<1>(tuple);
 						BasicBlock* incoming_bb = std::get<2>(tuple);
 						const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
-						Value* incoming_base = incoming_binfo.base_as_llvm_value(incoming_ptr, Builder);
+						// if dynamic instructions are necessary to compute phi
+						// incoming value, insert them at the end of the
+						// corresponding block, not here
+						DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
+						Value* incoming_base = incoming_binfo.base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
 						assert(incoming_base);
 						if (incoming_base != old_base) {
 							base_phi->setIncomingValueForBlock(incoming_bb, incoming_base);
@@ -523,7 +526,11 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 						const BoundsInfo incoming_binfo = std::get<1>(tuple);
 						BasicBlock* incoming_bb = std::get<2>(tuple);
 						const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
-						Value* incoming_max = incoming_binfo.max_as_llvm_value(incoming_ptr, Builder);
+						// if dynamic instructions are necessary to compute phi
+						// incoming value, insert them at the end of the
+						// corresponding block, not here
+						DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
+						Value* incoming_max = incoming_binfo.max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
 						assert(incoming_max);
 						if (incoming_max != old_max) {
 							max_phi->setIncomingValueForBlock(incoming_bb, incoming_max);
@@ -536,7 +543,8 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 				// prev_iteration boundsinfo was not dynamic. we'll have to insert fresh phis
 			}
 			if (!base_phi) {
-				base_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
+				DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
+				base_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues());
 				added_insts.insert(base_phi);
 				for (auto& tuple : incoming_binfos) {
 					Value* incoming_ptr = std::get<0>(tuple);
@@ -553,7 +561,8 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 				assert(base_phi->isComplete());
 			}
 			if (!max_phi) {
-				max_phi = Builder.CreatePHI(Builder.getInt8PtrTy(), phi.getNumIncomingValues());
+				DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
+				max_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues());
 				added_insts.insert(max_phi);
 				for (auto& tuple : incoming_binfos) {
 					Value* incoming_ptr = std::get<0>(tuple);
@@ -590,9 +599,11 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 			// have to update the boundsinfo
 			BoundsInfo merged_binfo = BoundsInfo::infinite(); // just the initial value we start the merge with
 			assert(phi.getNumIncomingValues() >= 1);
+
+			DMSIRBuilder PostPhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
 			for (auto& tuple : incoming_binfos) {
 				const BoundsInfo binfo = std::get<1>(tuple);
-				merged_binfo = BoundsInfo::merge(merged_binfo, binfo, &phi, Builder);
+				merged_binfo = BoundsInfo::merge(merged_binfo, binfo, &phi, PostPhiBuilder);
 			}
 			map[&phi] = merged_binfo;
 		}
