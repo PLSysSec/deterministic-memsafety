@@ -45,6 +45,28 @@ GEPConstantOffset computeGEPOffset(const GetElementPtrInst& gep, const DataLayou
   return gco;
 }
 
+/// Returns `true` if the block is well-formed. For this function's purposes,
+/// "well-formed" means:
+///   - the block has exactly one terminator instruction
+///   - the terminator instruction is at the end
+///   - all PHI instructions and/or landingpad instructions (if they exist) come first
+bool wellFormed(const BasicBlock& bb) {
+  const Instruction* terminator = bb.getTerminator();
+  if (!terminator) return false;
+  for (const Instruction& I : bb) {
+    if (I.isTerminator() && &I != terminator) return false;
+  }
+  bool have_non_phi_or_landingpad = false;
+  for (const Instruction& I : bb) {
+    if (isa<PHINode>(I) || isa<LandingPadInst>(I)) {
+      if (have_non_phi_or_landingpad) return false;
+    } else {
+      have_non_phi_or_landingpad = true;
+    }
+  }
+  return true;
+}
+
 static void verifyGVUserIsWellFormed(const User* user) {
   if (auto* I = dyn_cast<Instruction>(user)) {
     if (!I->getParent()) {

@@ -48,7 +48,6 @@ struct MapEqualityResult {
 
 template <typename K, typename V, unsigned N> static MapEqualityResult<K> mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
-static bool wellFormed(const BasicBlock& bb);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
 
@@ -1507,7 +1506,8 @@ private:
             );
             BasicBlock* failbb = boundsCheckFailBB(addr);
             new_blocks.push_back(failbb);
-            insertCondJumpTo(needs_check, failbb, Builder, new_blocks);
+            BasicBlock* newbb = Builder.insertCondJumpTo(needs_check, failbb);
+            new_blocks.push_back(newbb);
             return true;
           } else {
             // do nothing: static bounds check passes, so we don't need to
@@ -1521,7 +1521,8 @@ private:
             Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
             Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
           );
-          BasicBlock* cont = insertCondJumpTo(needs_check, boundscheck, Builder, new_blocks);
+          BasicBlock* cont = Builder.insertCondJumpTo(needs_check, boundscheck);
+          new_blocks.push_back(cont);
           DMSIRBuilder BoundsCheckBuilder(boundscheck, DMSIRBuilder::BEGINNING, &added_insts);
           Instruction* br = BoundsCheckBuilder.CreateBr(cont);
           BoundsCheckBuilder.SetInsertPoint(br);
@@ -1612,7 +1613,8 @@ private:
     );
     BasicBlock* failbb = boundsCheckFailBB(ptr);
     new_blocks.push_back(failbb);
-    insertCondJumpTo(Fail, failbb, Builder, new_blocks);
+    BasicBlock* newbb = Builder.insertCondJumpTo(Fail, failbb);
+    new_blocks.push_back(newbb);
   }
 
   /// Get a BasicBlock containing code indicating a bounds-check failure for `ptr`.
@@ -1624,46 +1626,6 @@ private:
     Builder.CreateUnreachable();
     assert(wellFormed(*bb));
     return bb;
-  }
-
-  /// Let the Builder's current block be A.
-  /// Split A at the Builder's current insertion point. Everything before
-  /// the Builder's insertion point stays in A, while everything after it
-  /// is moved to a new block B.
-  /// At the end of A, insert a conditional jump based on `cond`.
-  /// If `cond` is true, execution jumps to `true_bb`; else, it continues
-  /// in B.
-  ///
-  /// Since block B is created/inserted, this function also adds it to
-  /// `new_blocks`.
-  ///
-  /// To be safe, assume that `Builder` is invalidated by this function.
-  ///
-  /// Returns the new block B, where execution continues if it doesn't branch
-  /// to `true_bb`.
-  BasicBlock* insertCondJumpTo(
-    Value* cond,
-    BasicBlock* true_bb,
-    DMSIRBuilder& Builder,
-    SmallVector<BasicBlock*, 4>& new_blocks
-  ) {
-    BasicBlock* A = Builder.GetInsertBlock();
-    BasicBlock::iterator I = Builder.GetInsertPoint();
-    BasicBlock* B = A->splitBasicBlock(I);
-    new_blocks.push_back(B);
-    // To be safe, assume that `Builder` is invalidated by the above operation
-    // (docs say that the iterator `I` is invalidated).
-
-    // replace A's terminator with a condbr jumping to either
-    // `true_bb` or B as appropriate
-    BasicBlock::iterator A_end = A->getTerminator()->eraseFromParent();
-    DMSIRBuilder NewBuilder(A, A_end, &added_insts);
-    NewBuilder.CreateCondBr(cond, true_bb, B);
-
-    assert(wellFormed(*A));
-    assert(wellFormed(*B));
-
-    return B;
   }
 
   /// Create and return the "encoded" version of `ptr`, assuming it has the
@@ -2193,28 +2155,6 @@ static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::o
       break;
     }
   }
-}
-
-/// Returns `true` if the block is well-formed. For this function's purposes,
-/// "well-formed" means:
-///   - the block has exactly one terminator instruction
-///   - the terminator instruction is at the end
-///   - all PHI instructions and/or landingpad instructions (if they exist) come first
-static bool wellFormed(const BasicBlock& bb) {
-  const Instruction* terminator = bb.getTerminator();
-  if (!terminator) return false;
-  for (const Instruction& I : bb) {
-    if (I.isTerminator() && &I != terminator) return false;
-  }
-  bool have_non_phi_or_landingpad = false;
-  for (const Instruction& I : bb) {
-    if (isa<PHINode>(I) || isa<LandingPadInst>(I)) {
-      if (have_non_phi_or_landingpad) return false;
-    } else {
-      have_non_phi_or_landingpad = true;
-    }
-  }
-  return true;
 }
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep) {

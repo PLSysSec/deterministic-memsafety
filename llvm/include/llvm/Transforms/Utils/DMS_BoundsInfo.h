@@ -403,7 +403,7 @@ private:
 
 public:
   BoundsInfos(
-    const Function&,
+    Function&,
     const DataLayout&,
     DenseSet<const Instruction*>& added_insts,
     DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases

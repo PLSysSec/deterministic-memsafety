@@ -39,6 +39,13 @@ struct GEPConstantOffset {
 /// so, what constant
 GEPConstantOffset computeGEPOffset(const llvm::GetElementPtrInst&, const llvm::DataLayout&);
 
+/// Returns `true` if the block is well-formed. For this function's purposes,
+/// "well-formed" means:
+///   - the block has exactly one terminator instruction
+///   - the terminator instruction is at the end
+///   - all PHI instructions and/or landingpad instructions (if they exist) come first
+bool wellFormed(const llvm::BasicBlock& bb);
+
 /// This function iterates using the same pattern in `GlobalDCEPass`,
 /// to ensure that no GV users are Instructions without a Block parent.
 /// (If there were, `GlobalDCEPass` will crash later.)

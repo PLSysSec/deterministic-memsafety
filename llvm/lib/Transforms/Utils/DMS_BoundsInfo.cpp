@@ -228,16 +228,60 @@ BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(Value* ptr, DMSIRBuilder&
 }
 
 BoundsInfos::BoundsInfos(
-	const Function& F,
+	Function& F,
 	const DataLayout& DL,
 	DenseSet<const Instruction*>& added_insts,
 	DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
 ) : DL(DL), added_insts(added_insts), pointer_aliases(pointer_aliases) {
-	// For now, if any function parameters are pointers, mark their bounds info
-	// as UNKNOWN
-	for (const Argument& arg : F.args()) {
-		if (arg.getType()->isPointerTy()) {
-			map[&arg] = BoundsInfo::unknown();
+	if (F.getName() == "main" && F.getNumOperands() == 2) {
+		Value* argc = F.getArg(0);
+		Value* argv = F.getArg(1);
+		assert(argv->getType()->isPointerTy());
+		{
+			// bounds for argv: it's an array of size argc
+			DMSIRBuilder Builder(&F.getEntryBlock(), DMSIRBuilder::BEGINNING, &added_insts);
+			static const APInt pointer_size_in_bytes = APInt(/* val = */ 8, /* bits = */ 64);
+			static const APInt one = APInt(/* val = */ 1, /* bits = */ 64);
+			Value* argvMax = Builder.add_offset_to_ptr(argv,
+				/* argc * pointer_size_in_bytes - 1 */
+				Builder.CreateSub(
+					Builder.CreateMul(argc, Builder.getInt(pointer_size_in_bytes)), Builder.getInt(one)
+				)
+			);
+			map[argv] = BoundsInfo::dynamic_bounds(argv, argvMax);
+		}
+		{
+			// bounds for each of the strings in argv:
+			// for now, just assume infinite (so we won't bounds-check accesses to the
+			// strings in argv)
+			// In the future, instead we could call strlen() on each of them
+			// dynamically, in order to establish dynamic bounds
+			// At any rate, we need a dynamic for-loop, in order to call
+			// __dms_store_infinite_bounds() on each argv element, since we don't know
+			// how many argv elements there are statically
+			BasicBlock& Entry = F.getEntryBlock();
+			BasicBlock* forloopbody = Entry.splitBasicBlock(Entry.getFirstInsertionPt());
+			DMSIRBuilder Builder(forloopbody, forloopbody->getFirstInsertionPt(), &added_insts);
+			PHINode* loopindex = Builder.CreatePHI(Builder.getInt32Ty(), 2, "__dms_argc_loopindex");
+			loopindex->addIncoming(Builder.getIntN(/* bits = */ 32, /* val = */ 0), &Entry);
+			Value* charptr = Builder.CreateLoad(
+				Builder.getInt8PtrTy(),
+				Builder.CreateGEP(Builder.getInt8PtrTy(), argv, loopindex)
+			);
+			map[charptr] = BoundsInfo::infinite();
+			call_dms_store_infinite_bounds(charptr, Builder);
+			Value* incd_loopindex = Builder.CreateAdd(loopindex, Builder.getIntN(/* bits = */ 32, /* val = */ 1));
+			loopindex->addIncoming(incd_loopindex, forloopbody);
+			Value* cond = Builder.CreateICmpULT(incd_loopindex, argc);
+			Builder.insertCondJumpTo(cond, forloopbody);
+		}
+	} else {
+		// For now, if any function parameters are pointers, mark their bounds info
+		// as UNKNOWN
+		for (const Argument& arg : F.args()) {
+			if (arg.getType()->isPointerTy()) {
+				map[&arg] = BoundsInfo::unknown();
+			}
 		}
 	}
 
