@@ -514,7 +514,6 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 	assert(incoming_binfos.size() >= 1);
 	bool any_incoming_bounds_are_dynamic = false;
 	bool any_incoming_bounds_are_unknown = false;
-	bool any_incoming_bounds_are_notdefinedyet = false;
 	for (auto& tuple : incoming_binfos) {
 		const BoundsInfo incoming_binfo = std::get<1>(tuple);
 		if (incoming_binfo.is_dynamic()) {
@@ -523,76 +522,57 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 		if (incoming_binfo.get_kind() == BoundsInfo::UNKNOWN) {
 			any_incoming_bounds_are_unknown = true;
 		}
-		if (incoming_binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
-			any_incoming_bounds_are_notdefinedyet = true;
-		}
 	}
 	if (any_incoming_bounds_are_unknown) {
 		map[&phi] = BoundsInfo::unknown();
 	} else if (any_incoming_bounds_are_dynamic) {
-		if (any_incoming_bounds_are_notdefinedyet) {
-			// in this case, just mark UNKNOWN for this iteration; we'll
-			// insert PHIs and compute the proper dynamic bounds in the next
-			// iteration, when everything is defined
-			map[&phi] = BoundsInfo::unknown();
-		} else {
-			// in this case, we'll use PHIs to select the proper dynamic
-			// `base` and `max`, much as we used PHIs for the dynamic_kind
-			// above.
-			// Of course, if we already inserted PHIs in a previous iteration,
-			// let's not insert them again.
-			PHINode* base_phi = NULL;
-			PHINode* max_phi = NULL;
-			if (const BoundsInfo::DynamicBoundsInfo* prev_iteration_dyninfo = prev_iteration_binfo.dynamic_info()) {
-				if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->base.ptr))) {
-					assert(prev_iteration_dyninfo->base.offset == 0);
-					assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
-					for (auto& tuple : incoming_binfos) {
-						Value* incoming_ptr = std::get<0>(tuple);
-						const BoundsInfo incoming_binfo = std::get<1>(tuple);
-						BasicBlock* incoming_bb = std::get<2>(tuple);
-						const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
-						// if dynamic instructions are necessary to compute phi
-						// incoming value, insert them at the end of the
-						// corresponding block, not here
-						DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
-						Value* incoming_base = incoming_binfo.base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
-						assert(incoming_base);
-						if (incoming_base != old_base) {
-							base_phi->setIncomingValueForBlock(incoming_bb, incoming_base);
-						}
+		// in this case, we'll use PHIs to select the proper dynamic
+		// `base` and `max`, much as we used PHIs for the dynamic_kind
+		// above.
+		// Of course, if we already inserted PHIs in a previous iteration,
+		// let's not insert them again.
+		PHINode* base_phi = NULL;
+		PHINode* max_phi = NULL;
+		if (const BoundsInfo::DynamicBoundsInfo* prev_iteration_dyninfo = prev_iteration_binfo.dynamic_info()) {
+			if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->base.ptr))) {
+				assert(prev_iteration_dyninfo->base.offset == 0);
+				assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
+				for (auto& tuple : incoming_binfos) {
+					Value* incoming_ptr = std::get<0>(tuple);
+					const BoundsInfo incoming_binfo = std::get<1>(tuple);
+					BasicBlock* incoming_bb = std::get<2>(tuple);
+					// if dynamic instructions are necessary to compute phi
+					// incoming value, insert them at the end of the
+					// corresponding block, not here
+					DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
+					Value* incoming_base;
+					if (incoming_binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
+						// for now, treat this input to the phi as INFINITE bounds.
+						// this will be updated on a future iteration if necessary, once the
+						// incoming pointer has defined bounds.
+						// We use INFINITE instead of UNKNOWN because with UNKNOWN, we force
+						// all dependent pointers to be UNKNOWN, and this could force this
+						// phi input to be UNKNOWN in the next iteration and result in a
+						// false fixpoint where everything is UNKNOWN.
+						// Instead, INFINITE allows us to compute the
+						// most-permissive-possible bounds for this phi input for the next
+						// iteration.
+						incoming_base = BoundsInfo::infinite().base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+					} else {
+						incoming_base = incoming_binfo.base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
 					}
-				} else {
-					// prev_iteration base was not a phi. we'll have to insert a fresh phi
-				}
-				if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->max.ptr))) {
-					assert(prev_iteration_dyninfo->max.offset == 0);
-					assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
-					for (auto& tuple : incoming_binfos) {
-						Value* incoming_ptr = std::get<0>(tuple);
-						const BoundsInfo incoming_binfo = std::get<1>(tuple);
-						BasicBlock* incoming_bb = std::get<2>(tuple);
-						const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
-						// if dynamic instructions are necessary to compute phi
-						// incoming value, insert them at the end of the
-						// corresponding block, not here
-						DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
-						Value* incoming_max = incoming_binfo.max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
-						assert(incoming_max);
-						if (incoming_max != old_max) {
-							max_phi->setIncomingValueForBlock(incoming_bb, incoming_max);
-						}
+					assert(incoming_base);
+					const Value* old_base = base_phi->getIncomingValueForBlock(incoming_bb);
+					if (incoming_base != old_base) {
+						base_phi->setIncomingValueForBlock(incoming_bb, incoming_base);
 					}
-				} else {
-					// prev_iteration max was not a phi. we'll have to insert a fresh phi
 				}
 			} else {
-				// prev_iteration boundsinfo was not dynamic. we'll have to insert fresh phis
+				// prev_iteration base was not a phi. we'll have to insert a fresh phi
 			}
-			if (!base_phi) {
-				DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
-				base_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues());
-				added_insts.insert(base_phi);
+			if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->max.ptr))) {
+				assert(prev_iteration_dyninfo->max.offset == 0);
+				assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
 				for (auto& tuple : incoming_binfos) {
 					Value* incoming_ptr = std::get<0>(tuple);
 					const BoundsInfo incoming_binfo = std::get<1>(tuple);
@@ -601,32 +581,82 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 					// incoming value, insert them at the end of the
 					// corresponding block, not here
 					DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
-					Value* base = incoming_binfo.base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
-					assert(base);
-					base_phi->addIncoming(base, incoming_bb);
+					Value* incoming_max;
+					if (incoming_binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
+						// see notes above for the base_phi case
+						incoming_max = BoundsInfo::infinite().max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+					} else {
+						incoming_max = incoming_binfo.max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+					}
+					assert(incoming_max);
+					const Value* old_max = max_phi->getIncomingValueForBlock(incoming_bb);
+					if (incoming_max != old_max) {
+						max_phi->setIncomingValueForBlock(incoming_bb, incoming_max);
+					}
 				}
-				assert(base_phi->isComplete());
+			} else {
+				// prev_iteration max was not a phi. we'll have to insert a fresh phi
 			}
-			if (!max_phi) {
-				DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
-				max_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues());
-				added_insts.insert(max_phi);
-				for (auto& tuple : incoming_binfos) {
-					Value* incoming_ptr = std::get<0>(tuple);
-					const BoundsInfo incoming_binfo = std::get<1>(tuple);
-					BasicBlock* incoming_bb = std::get<2>(tuple);
-					// if dynamic instructions are necessary to compute phi
-					// incoming value, insert them at the end of the
-					// corresponding block, not here
-					DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
-					Value* max = incoming_binfo.max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
-					assert(max);
-					max_phi->addIncoming(max, incoming_bb);
-				}
-				assert(max_phi->isComplete());
-			}
-			map[&phi] = BoundsInfo::dynamic_bounds(base_phi, max_phi);
+		} else {
+			// prev_iteration boundsinfo was not dynamic. we'll have to insert fresh phis
 		}
+		if (!base_phi) {
+			DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
+			base_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues());
+			added_insts.insert(base_phi);
+			for (auto& tuple : incoming_binfos) {
+				Value* incoming_ptr = std::get<0>(tuple);
+				const BoundsInfo incoming_binfo = std::get<1>(tuple);
+				BasicBlock* incoming_bb = std::get<2>(tuple);
+				// if dynamic instructions are necessary to compute phi
+				// incoming value, insert them at the end of the
+				// corresponding block, not here
+				DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
+				Value* base;
+				if (incoming_binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
+					// for now, treat this input to the phi as INFINITE bounds.
+					// this will be updated on a future iteration if necessary, once the
+					// incoming pointer has defined bounds.
+					// We use INFINITE instead of UNKNOWN because with UNKNOWN, we force
+					// all dependent pointers to be UNKNOWN, and this could force this phi
+					// input to be UNKNOWN in the next iteration and result in a false
+					// fixpoint where everything is UNKNOWN.
+					// Instead, INFINITE allows us to compute the most-permissive-possible
+					// bounds for this phi input for the next iteration.
+					base = BoundsInfo::infinite().base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+				} else {
+					base = incoming_binfo.base_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+				}
+				assert(base);
+				base_phi->addIncoming(base, incoming_bb);
+			}
+			assert(base_phi->isComplete());
+		}
+		if (!max_phi) {
+			DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
+			max_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues());
+			added_insts.insert(max_phi);
+			for (auto& tuple : incoming_binfos) {
+				Value* incoming_ptr = std::get<0>(tuple);
+				const BoundsInfo incoming_binfo = std::get<1>(tuple);
+				BasicBlock* incoming_bb = std::get<2>(tuple);
+				// if dynamic instructions are necessary to compute phi
+				// incoming value, insert them at the end of the
+				// corresponding block, not here
+				DMSIRBuilder IncomingBlockBuilder(incoming_bb, DMSIRBuilder::END, &added_insts);
+				Value* max;
+				if (incoming_binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
+					// see notes above for the base_phi case
+					max = BoundsInfo::infinite().max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+				} else {
+					max = incoming_binfo.max_as_llvm_value(incoming_ptr, IncomingBlockBuilder);
+				}
+				assert(max);
+				max_phi->addIncoming(max, incoming_bb);
+			}
+			assert(max_phi->isComplete());
+		}
+		map[&phi] = BoundsInfo::dynamic_bounds(base_phi, max_phi);
 	} else {
 		// no incoming bounds are dynamic. let's just merge them statically
 		bool any_merge_inputs_changed = false;
