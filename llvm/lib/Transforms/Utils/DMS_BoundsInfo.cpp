@@ -233,22 +233,24 @@ BoundsInfos::BoundsInfos(
 	DenseSet<const Instruction*>& added_insts,
 	DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
 ) : DL(DL), added_insts(added_insts), pointer_aliases(pointer_aliases) {
-	if (F.getName() == "main" && F.getNumOperands() == 2) {
+	LLVM_DEBUG(dbgs() << "Initializing bounds infos for function " << F.getNameOrAsOperand() << " with " << F.arg_size() << " operands\n");
+	if (F.getName() == "main" && F.arg_size() == 2) {
+		LLVM_DEBUG(dbgs() << "This is a 'main' function, setting bounds for argv\n");
 		Value* argc = F.getArg(0);
 		Value* argv = F.getArg(1);
 		assert(argv->getType()->isPointerTy());
 		{
 			// bounds for argv: it's an array of size argc
 			DMSIRBuilder Builder(&F.getEntryBlock(), DMSIRBuilder::BEGINNING, &added_insts);
-			static const APInt pointer_size_in_bytes = APInt(/* val = */ 8, /* bits = */ 64);
-			static const APInt one = APInt(/* val = */ 1, /* bits = */ 64);
 			Value* argvMax = Builder.add_offset_to_ptr(argv,
 				/* argc * pointer_size_in_bytes - 1 */
 				Builder.CreateSub(
-					Builder.CreateMul(argc, Builder.getInt(pointer_size_in_bytes)), Builder.getInt(one)
+					Builder.CreateMul(argc, ConstantInt::get(argc->getType(), 8)),
+					ConstantInt::get(argc->getType(), 1, /* signed = */ true)
 				)
 			);
 			map[argv] = BoundsInfo::dynamic_bounds(argv, argvMax);
+			dbgs() << "Setting bounds for " << argv->getNameOrAsOperand() << " to dynamic\n";
 		}
 		{
 			// bounds for each of the strings in argv:
