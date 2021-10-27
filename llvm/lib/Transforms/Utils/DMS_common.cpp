@@ -109,8 +109,8 @@ static const char* boundscheckfail_func = "_ZN5__dms21__dms_boundscheckfailEPv";
 /// necessarily `void*`). They should be UNENCODED values, ie with all upper
 /// bits clear.
 CallInst* call_dms_store_bounds(Value* ptr, Value* base, Value* max, DMSIRBuilder& Builder) {
-	Module* mod = Builder.GetInsertBlock()->getModule();
-	static Type* CharStarTy = Builder.getInt8PtrTy();
+  Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharStarTy = Builder.getInt8PtrTy();
   static FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
   FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
   return Builder.CreateCall(StoreBounds, {Builder.castToCharStar(ptr), Builder.castToCharStar(base), Builder.castToCharStar(max)});
@@ -122,8 +122,8 @@ CallInst* call_dms_store_bounds(Value* ptr, Value* base, Value* max, DMSIRBuilde
 /// The `ptr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
 CallInst* call_dms_store_infinite_bounds(Value* ptr, DMSIRBuilder& Builder) {
-	Module* mod = Builder.GetInsertBlock()->getModule();
-	static Type* CharStarTy = Builder.getInt8PtrTy();
+  Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharStarTy = Builder.getInt8PtrTy();
   static FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
   FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
   return Builder.CreateCall(StoreBoundsInf, {Builder.castToCharStar(ptr)});
@@ -135,12 +135,12 @@ CallInst* call_dms_store_infinite_bounds(Value* ptr, DMSIRBuilder& Builder) {
 /// The `ptr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
 CallInst* call_dms_get_bounds(Value* ptr, DMSIRBuilder& Builder) {
-	Module* mod = Builder.GetInsertBlock()->getModule();
-	static Type* CharStarTy = Builder.getInt8PtrTy();
-	static Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
-	FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
-	FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
-	return Builder.CreateCall(GetBounds, {Builder.castToCharStar(ptr)});
+  Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharStarTy = Builder.getInt8PtrTy();
+  static Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
+  FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
+  FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
+  return Builder.CreateCall(GetBounds, {Builder.castToCharStar(ptr)});
 }
 
 /// Convenience function to create calls to our runtime support function

@@ -422,6 +422,7 @@ BoundsInfo BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep, const DataLa
 		case BoundsInfo::NOTDEFINEDYET:
 			llvm_unreachable("GEP input ptr's BoundsInfo should be defined (at least UNKNOWN)");
 		case BoundsInfo::UNKNOWN:
+			LLVM_DEBUG(dbgs() << "GEP input ptr has unknown bounds\n");
 			return binfo;
 		case BoundsInfo::INFINITE:
 			return binfo;
