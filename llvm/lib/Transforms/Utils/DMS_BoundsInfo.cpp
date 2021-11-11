@@ -188,6 +188,15 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 CallInst* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const {
 	assert(cur_ptr);
 	assert(cur_ptr->getType()->isPointerTy());
+	if (Constant* const_cur_ptr = dyn_cast<Constant>(cur_ptr)) {
+		if (const_cur_ptr->isNullValue()) {
+			// No need to store bounds for the constant-NULL pointer.
+			// If we ever ask for bounds of a NULL pointer dynamically, our runtime
+			// just gives us infinite bounds without actually doing a lookup for the
+			// NULL pointer
+			return NULL;
+		}
+	}
 	switch (kind) {
 		case BoundsInfo::INFINITE: {
 			return call_dms_store_infinite_bounds(cur_ptr, Builder);
@@ -250,7 +259,7 @@ BoundsInfos::BoundsInfos(
 				)
 			);
 			map[argv] = BoundsInfo::dynamic_bounds(argv, argvMax);
-			dbgs() << "Setting bounds for " << argv->getNameOrAsOperand() << " to dynamic\n";
+			LLVM_DEBUG(dbgs() << "Setting bounds for " << argv->getNameOrAsOperand() << " to dynamic\n");
 		}
 		{
 			// bounds for each of the strings in argv:

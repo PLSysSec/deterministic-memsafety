@@ -34,6 +34,7 @@ void __dms_store_bounds(void* ptr, void* base, void* max) {
 /// Mark that the dynamic bounds for `ptr` should be considered infinite.
 /// `ptr` should be an UNENCODED value, ie with all upper bits clear.
 void __dms_store_infinite_bounds(void* ptr) {
+  if (ptr == NULL) return; // null ptr always has infinite bounds; doesn't need to be stored in hashtable
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
   *h = DynamicBounds(true);
 }
@@ -41,6 +42,7 @@ void __dms_store_infinite_bounds(void* ptr) {
 /// Get the (previously stored) dynamic bounds for `ptr`.
 /// `ptr` should be an UNENCODED value, ie with all upper bits clear.
 DynamicBounds __dms_get_bounds(void* ptr) {
+  if (ptr == NULL) return DynamicBounds(true); // null ptr always has infinite bounds; we never need to bounds-check it
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
   return *h;
 }
@@ -50,7 +52,8 @@ DynamicBounds __dms_get_bounds(void* ptr) {
 __attribute__((noreturn))
 void __dms_boundscheckfail(void* ptr) {
   fprintf(stderr, "Aborting due to bounds check failure for %p\n", ptr);
-  abort();
+  __sanitizer::ReportErrorSummary("Bounds check failure");
+  __sanitizer::Abort();
 }
 
 } // end namespace
