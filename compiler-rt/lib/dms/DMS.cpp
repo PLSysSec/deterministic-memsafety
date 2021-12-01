@@ -27,6 +27,7 @@ namespace __dms {
 /// Mark that the dynamic bounds for `ptr` are `base` and `max`.
 /// `ptr` should be an UNENCODED value, ie with all upper bits clear.
 void __dms_store_bounds(void* ptr, void* base, void* max) {
+  if (ptr == NULL) return; // null ptr always has infinite bounds; doesn't need to be stored in hashtable. Even if this call was trying to establish more restrictive bounds for a nullptr, it's safe to extend them to infinite, bc it will trap on dereference anyway, no need for bounds check
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
   *h = DynamicBounds(base, max);
 }
