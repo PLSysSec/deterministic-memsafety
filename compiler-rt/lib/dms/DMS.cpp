@@ -1,17 +1,26 @@
 #include <stdlib.h>
+#include <stdint.h>
 
 /// Interpreted as in DynamicBoundsInfo in the LLVM pass
 struct DynamicBounds {
-  bool infinite; // if `true`, then consider this to be infinite bounds; `base` and `max` may not be valid
   void* base;
   void* max;
-
-  DynamicBounds() : infinite(false), base(NULL), max(NULL) {}
-  DynamicBounds(void* base, void* max) : infinite(false), base(base), max(max) {}
-  DynamicBounds(bool infinite) : infinite(infinite), base(NULL), max(NULL) {}
+  uint64_t infinite; // if nonzero (true), then consider this to be infinite bounds; `base` and `max` may not be valid
+    // we use 'uint64_t' just to make the struct layout blindingly obvious and avoid any possible ABI mismatch with the calling code
 };
 
+DynamicBounds dynamic_bounds(void* base, void* max);
+DynamicBounds infinite_bounds();
+
 // -- above this line, mirror all changes to dms_interface.h -- //
+
+DynamicBounds dynamic_bounds(void* base, void* max) {
+  return DynamicBounds { base, max, 0 };
+}
+
+DynamicBounds infinite_bounds() {
+  return DynamicBounds { NULL, NULL, 1 };
+}
 
 #include "sanitizer_common/sanitizer_addrhashmap.h"
 #include <stdio.h>
@@ -29,7 +38,7 @@ namespace __dms {
 void __dms_store_bounds(void* ptr, void* base, void* max) {
   if (ptr == NULL) return; // null ptr always has infinite bounds; doesn't need to be stored in hashtable. Even if this call was trying to establish more restrictive bounds for a nullptr, it's safe to extend them to infinite, bc it will trap on dereference anyway, no need for bounds check
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
-  *h = DynamicBounds(base, max);
+  *h = dynamic_bounds(base, max);
 }
 
 /// Mark that the dynamic bounds for `ptr` should be considered infinite.
@@ -37,15 +46,15 @@ void __dms_store_bounds(void* ptr, void* base, void* max) {
 void __dms_store_infinite_bounds(void* ptr) {
   if (ptr == NULL) return; // null ptr always has infinite bounds; doesn't need to be stored in hashtable
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
-  *h = DynamicBounds(true);
+  *h = infinite_bounds();
 }
 
 /// Get the (previously stored) dynamic bounds for `ptr`.
 /// `ptr` should be an UNENCODED value, ie with all upper bits clear.
 DynamicBounds __dms_get_bounds(void* ptr) {
-  if (ptr == NULL) return DynamicBounds(true); // null ptr always has infinite bounds; we never need to bounds-check it
+  if (ptr == NULL) return infinite_bounds(); // null ptr always has infinite bounds; we never need to bounds-check it
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
-  return *h;
+  return DynamicBounds(*h);
 }
 
 /// Call this to indicate that a bounds check failed for `ptr`.

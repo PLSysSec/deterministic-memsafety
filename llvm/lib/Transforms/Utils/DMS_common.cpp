@@ -137,7 +137,8 @@ CallInst* call_dms_store_infinite_bounds(Value* ptr, DMSIRBuilder& Builder) {
 CallInst* call_dms_get_bounds(Value* ptr, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
-  static Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy});
+  static Type* Int64Ty = Builder.getInt64Ty();
+  static Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy, Int64Ty});
   FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
   FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
   return Builder.CreateCall(GetBounds, {Builder.castToCharStar(ptr)});

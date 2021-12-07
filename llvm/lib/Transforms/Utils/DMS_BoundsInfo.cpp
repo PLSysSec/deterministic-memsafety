@@ -7,6 +7,13 @@ using namespace llvm;
 
 #define DEBUG_TYPE "DMS-bounds-info"
 
+static Value* get_min_ptr_value(DMSIRBuilder& Builder) {
+	return Builder.Insert(Constant::getNullValue(Builder.getInt8PtrTy()));
+}
+static Value* get_max_ptr_value(DMSIRBuilder& Builder) {
+	return Builder.CreateIntToPtr(Constant::getAllOnesValue(Builder.getInt64Ty()), Builder.getInt8PtrTy());
+}
+
 /// `cur_ptr`: the pointer value for which these bounds apply.
 /// Can be any pointer type.
 ///
@@ -23,7 +30,7 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
 		case UNKNOWN:
 			return NULL;
 		case INFINITE:
-			return Builder.Insert(Constant::getNullValue(Builder.getInt8PtrTy()));
+			return get_min_ptr_value(Builder);
 		case STATIC:
 			return info.static_info.base_as_llvm_value(cur_ptr, Builder);
 		case DYNAMIC:
@@ -50,7 +57,7 @@ Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) cons
 		case UNKNOWN:
 			return NULL;
 		case INFINITE:
-			return Builder.CreateIntToPtr(Constant::getAllOnesValue(Builder.getInt64Ty()), Builder.getInt8PtrTy());
+			return get_max_ptr_value(Builder);
 		case STATIC:
 			return info.static_info.max_as_llvm_value(cur_ptr, Builder);
 		case DYNAMIC:
@@ -231,9 +238,19 @@ BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(Value* ptr, DMSIRBuilder&
 	assert(ptr);
 	assert(ptr->getType()->isPointerTy());
   Value* dynbounds = call_dms_get_bounds(ptr, Builder);
-	Value* base = Builder.CreateExtractValue(dynbounds, 0);
-	Value* max = Builder.CreateExtractValue(dynbounds, 1);
-	return BoundsInfo::DynamicBoundsInfo(base, max);
+	Value* infinite = Builder.CreateExtractValue(dynbounds, 2);
+	Value* isInfinite = Builder.CreateICmpNE(infinite, Builder.getInt64(0));
+	Value* base = Builder.CreateSelect(
+		isInfinite,
+		get_min_ptr_value(Builder),
+		Builder.CreateExtractValue(dynbounds, 0)
+	);
+	Value* max = Builder.CreateSelect(
+		isInfinite,
+		get_max_ptr_value(Builder),
+		Builder.CreateExtractValue(dynbounds, 1)
+	);
+	return DynamicBoundsInfo(base, max);
 }
 
 BoundsInfos::BoundsInfos(
