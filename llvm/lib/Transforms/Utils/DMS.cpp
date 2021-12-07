@@ -1150,9 +1150,9 @@ private:
               }
             } else if (settings.do_pointer_encoding) {
               // insert the instructions to interpret the encoded pointer
-              DMSIRBuilder AfterLoad(&load, DMSIRBuilder::AFTER, NULL); // we explicitly don't want to add these to inserted_insts; we still want to track and process them in future iterations
-              auto tuple = decode_ptr(&load, AfterLoad);
-              Value* decoded_ptr = std::get<0>(tuple);
+              DMSIRBuilder AfterLoad_NoTrack(&load, DMSIRBuilder::AFTER, NULL); // a builder which explicitly doesn't add its instructions to inserted_insts; we still want to track and process them in future iterations
+              auto tuple = decode_ptr(&load, AfterLoad_NoTrack);
+              Instruction* decoded_ptr = std::get<0>(tuple);
               PointerStatus loaded_ptr_status = std::get<1>(tuple);
               User* decode_user = std::get<2>(tuple);
               // replace all uses of `load` with the decoded ptr, except of
@@ -1173,7 +1173,8 @@ private:
                 // pointer, we could/should wait until it is needed for a SW
                 // bounds check. I'm envisioning some type of laziness solution
                 // inside BoundsInfo.
-                BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(decoded_ptr, AfterLoad);
+                DMSIRBuilder Builder(decoded_ptr, DMSIRBuilder::AFTER, &added_insts);
+                BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(decoded_ptr, Builder);
                 bounds_infos.mark_as(&load, BoundsInfo(std::move(loadedInfo)));
               }
             } else {
@@ -1665,7 +1666,7 @@ private:
   ///
   /// Specifically, we check bits 48-49 to learn the pointer type, then clear
   /// them so the pointer is valid for use. See notes on `encode_ptr`.
-  std::tuple<Value*, PointerStatus, User*> decode_ptr(Value* encoded_ptr, DMSIRBuilder& Builder) {
+  std::tuple<Instruction*, PointerStatus, User*> decode_ptr(Value* encoded_ptr, DMSIRBuilder& Builder) {
     Value* encoded_ptr_as_int = Builder.CreatePtrToInt(encoded_ptr, Builder.getInt64Ty());
     Value* dynamic_kind = Builder.CreateAnd(encoded_ptr_as_int, DynamicKindMasks::dynamic_kind_mask);
     Value* decoded_ptr_as_int = Builder.CreateAnd(encoded_ptr_as_int, ~DynamicKindMasks::dynamic_kind_mask);
@@ -1689,7 +1690,11 @@ private:
     pointer_aliases[encoded_ptr].insert(decoded_ptr_as_ptr);
     pointer_aliases[decoded_ptr_as_ptr].insert(encoded_ptr);
 
-    return std::make_tuple(decoded_ptr_as_ptr, status, cast<User>(encoded_ptr_as_int));
+    return std::make_tuple(
+      cast<Instruction>(decoded_ptr_as_ptr),
+      status,
+      cast<User>(encoded_ptr_as_int)
+    );
   }
 
   // Inject an instruction sequence to increment the given global counter, right

@@ -94,7 +94,7 @@ void verifyGVUsersAreWellFormed(const Function& F) {
 }
 
 /// Mangled name of the get_bounds function
-static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPv";
+static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPvPS0_S1_";
 /// Mangled name of the store_bounds function
 static const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
 /// Mangled name of the store_infinite_bounds function
@@ -134,14 +134,19 @@ CallInst* call_dms_store_infinite_bounds(Value* ptr, DMSIRBuilder& Builder) {
 ///
 /// The `ptr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
-CallInst* call_dms_get_bounds(Value* ptr, DMSIRBuilder& Builder) {
+///
+/// `output_base` and `output_max` are output parameters and should have LLVM
+/// type i8**.
+CallInst* call_dms_get_bounds(Value* ptr, Value* output_base, Value* output_max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharTy = Builder.getInt8Ty();
   static Type* CharStarTy = Builder.getInt8PtrTy();
-  static Type* Int64Ty = Builder.getInt64Ty();
-  static Type* GetBoundsRetTy = StructType::get(mod->getContext(), {CharStarTy, CharStarTy, Int64Ty});
-  FunctionType* GetBoundsTy = FunctionType::get(GetBoundsRetTy, CharStarTy, /* IsVarArgs = */ false);
+  static Type* CharStarStarTy = CharStarTy->getPointerTo();
+  FunctionType* GetBoundsTy = FunctionType::get(CharTy, {CharStarTy, CharStarStarTy, CharStarStarTy}, /* IsVarArgs = */ false);
   FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
-  return Builder.CreateCall(GetBounds, {Builder.castToCharStar(ptr)});
+  assert(output_base->getType() == CharStarStarTy);
+  assert(output_max->getType() == CharStarStarTy);
+  return Builder.CreateCall(GetBounds, {Builder.castToCharStar(ptr), output_base, output_max});
 }
 
 /// Convenience function to create calls to our runtime support function

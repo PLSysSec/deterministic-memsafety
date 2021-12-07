@@ -71,7 +71,10 @@ llvm::CallInst* call_dms_store_infinite_bounds(llvm::Value* ptr, llvm::DMSIRBuil
 ///
 /// The `ptr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
-llvm::CallInst* call_dms_get_bounds(llvm::Value* ptr, llvm::DMSIRBuilder& Builder);
+///
+/// `output_base` and `output_max` are output parameters and should have LLVM
+/// type i8**.
+llvm::CallInst* call_dms_get_bounds(llvm::Value* ptr, llvm::Value* output_base, llvm::Value* output_max, llvm::DMSIRBuilder& Builder);
 
 /// Convenience function to create calls to our runtime support function
 /// `__dms_boundscheckfail()`.

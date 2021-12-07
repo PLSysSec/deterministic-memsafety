@@ -51,10 +51,16 @@ void __dms_store_infinite_bounds(void* ptr) {
 
 /// Get the (previously stored) dynamic bounds for `ptr`.
 /// `ptr` should be an UNENCODED value, ie with all upper bits clear.
-DynamicBounds __dms_get_bounds(void* ptr) {
-  if (ptr == NULL) return infinite_bounds(); // null ptr always has infinite bounds; we never need to bounds-check it
+///
+/// If this returns true (nonzero), then `ptr` has been marked as infinite bounds.
+/// If this returns false (zero), then this writes the base and max to the
+/// output parameters `base` and `max`.
+char __dms_get_bounds(void* ptr, void** base, void** max) {
+  if (ptr == NULL) return 1; // null ptr always has infinite bounds; we never need to bounds-check it
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
-  return DynamicBounds(*h);
+  *base = h->base;
+  *max = h->max;
+  return 0;
 }
 
 /// Call this to indicate that a bounds check failed for `ptr`.
