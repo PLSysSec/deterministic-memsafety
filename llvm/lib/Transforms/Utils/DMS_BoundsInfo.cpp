@@ -105,7 +105,7 @@ BoundsInfo BoundsInfo::merge(
     const StaticBoundsInfo &a_info = A.info.static_info;
     const StaticBoundsInfo &b_info = B.info.static_info;
     return BoundsInfo::static_bounds(
-      a_info.low_offset.slt(b_info.low_offset) ? a_info.low_offset : b_info.low_offset,
+      a_info.low_offset.sgt(b_info.low_offset) ? a_info.low_offset : b_info.low_offset,
       a_info.high_offset.slt(b_info.high_offset) ? a_info.high_offset : b_info.high_offset
     );
   }
@@ -484,8 +484,8 @@ BoundsInfo BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep, const DataLa
         // and actually, we don't care what the dynamic GEP offset is:
         // it doesn't change the `base` and `max` of the allocation
         const BoundsInfo::StaticBoundsInfo* input_static_info = binfo.static_info();
-        // `base` is `input_ptr` minus the input pointer's low_offset
-        const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, -input_static_info->low_offset);
+        // `base` is `input_ptr` plus the input pointer's low_offset
+        const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, input_static_info->low_offset);
         // `max` is `input_ptr` plus the input pointer's high_offset
         const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, input_static_info->high_offset);
         return BoundsInfo::dynamic_bounds(base, max);

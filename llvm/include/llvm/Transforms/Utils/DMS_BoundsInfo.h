@@ -62,16 +62,13 @@ public:
   ///
   /// Suppose the pointer value is P. If the `low_offset` is L and the
   /// `high_offset` is H, that means we know that the allocation extends at
-  /// least from (P - L) to (P + H), inclusive.
+  /// least from (P + L) to (P + H), inclusive.
   /// Notes:
   ///   - `low_offset` and `high_offset` are in bytes.
-  ///   - In the common case (where we know P is inbounds) `low_offset` and
-  ///     `high_offset` will both be nonnegative. `low_offset` is implicitly
-  ///     subtracted, as noted above.
+  ///   - In the common case (where we know P is inbounds) `low_offset` will
+  ///     be <= 0 and `high_offset` will be >= 0.
   ///   - Values of 0 in both fields indicates a pointer valid for exactly the
   ///     single byte it points to.
-  ///   - Greater values in either of these fields lead to more permissive
-  ///     (larger) bounds.
   class StaticBoundsInfo final {
   public:
     APInt low_offset;
@@ -95,7 +92,7 @@ public:
     /// Returns the "base" (minimum inbounds pointer value) of the allocation,
     /// as an LLVM `Value` of type `i8*`.
     Value* base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
-      return Builder.add_offset_to_ptr(cur_ptr, -low_offset);
+      return Builder.add_offset_to_ptr(cur_ptr, low_offset);
     }
 
     /// `cur_ptr`: the pointer value for which these static bounds apply.
