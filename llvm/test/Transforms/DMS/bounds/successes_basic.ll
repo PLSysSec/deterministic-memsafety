@@ -6,17 +6,37 @@
 ; (we do test with several different optimization levels)
 
 define i32 @main(i32 %argc, i8** nocapture readonly %argv) {
+	call i8 @dynboundscheck()
 	call i64 @storeload()
 	call i64 @storeload_mod(i32 %argc)
 	call i64 @storeload_becameclean(i32 %argc)
 	call i64 @load_mod_deref()
 	call i64 @load_mod_deref_nonconst(i32 %argc)
 	call i64 @storeload_null()
+	call i64 @access_global()
 	ret i32 0
 }
 
+; do a dereference that requires a dynamic bounds check
+define i8 @dynboundscheck() noinline {
+	%mallocsize = call i64 @get_mallocsize()
+	%cleanptr = call i8* @malloc(i64 %mallocsize)
+	%offset = call i64 @get_offset()
+	%dirtyptr = getelementptr i8, i8* %cleanptr, i64 %offset
+	%loaded = load volatile i8, i8* %dirtyptr
+	ret i8 %loaded
+}
+define i64 @get_mallocsize() noinline {
+	ret i64 234
+}
+define i64 @get_offset() noinline {
+	ret i64 67
+}
+declare noalias i8* @malloc(i64) nounwind
+declare void @free(i8*) nounwind
+
 ; storing and loading an ordinary pointer
-define i64 @storeload() {
+define i64 @storeload() noinline {
 	%ptrstorage = alloca i64*, align 4
 
 	; here's the pointer
@@ -35,7 +55,7 @@ define i64 @storeload() {
 }
 
 ; storing and loading a modified/dirty pointer
-define i64 @storeload_mod(i32 %offset) {
+define i64 @storeload_mod(i32 %offset) noinline {
 	%ptrstorage = alloca i64*, align 4
 
 	; here's the pointer
@@ -55,7 +75,7 @@ define i64 @storeload_mod(i32 %offset) {
 }
 
 ; storing and loading a pointer which was modified/dirty and then became clean
-define i64 @storeload_becameclean(i32 %offset) {
+define i64 @storeload_becameclean(i32 %offset) noinline {
 	%ptrstorage = alloca i64*, align 4
 
 	; here's the pointer
@@ -78,7 +98,7 @@ define i64 @storeload_becameclean(i32 %offset) {
 }
 
 ; loading a pointer, modifying it by a constant, then dereferencing it
-define i64 @load_mod_deref() {
+define i64 @load_mod_deref() noinline {
 	%ptrstorage = alloca i64*, align 4
 
 	; here's the pointer
@@ -100,7 +120,7 @@ define i64 @load_mod_deref() {
 }
 
 ; loading a pointer, modifying it by a nonconstant, then dereferencing it
-define i64 @load_mod_deref_nonconst(i32 %offset) {
+define i64 @load_mod_deref_nonconst(i32 %offset) noinline {
 	%ptrstorage = alloca i64*, align 4
 
 	; here's the pointer
@@ -122,7 +142,7 @@ define i64 @load_mod_deref_nonconst(i32 %offset) {
 }
 
 ; storing and loading a NULL pointer
-define i64 @storeload_null() {
+define i64 @storeload_null() noinline {
 	%ptrstorage = alloca i64*, align 4
 
 	; store NULL
@@ -131,5 +151,18 @@ define i64 @storeload_null() {
 	; load NULL
 	%loadedptr = load volatile i64*, i64** %ptrstorage, align 4
 
+	ret i64 0
+}
+
+; access various offsets in a global string
+@str = private unnamed_addr constant [13 x i8] c"Hello world\0A\00", align 1
+define i64 @access_global() noinline {
+	%ptrstorage = alloca i8*, align 8
+	store volatile i8* getelementptr ([13 x i8], [13 x i8]* @str, i64 0, i64 0), i8** %ptrstorage, align 8
+	%strptr = load volatile i8*, i8** %ptrstorage, align 8
+	%ptr1 = getelementptr i8, i8* %strptr, i64 0
+	%loaded1 = load volatile i8, i8* %ptr1, align 1
+	%ptr2 = getelementptr i8, i8* %strptr, i64 12
+	%loaded2 = load volatile i8, i8* %ptr2, align 1
 	ret i64 0
 }

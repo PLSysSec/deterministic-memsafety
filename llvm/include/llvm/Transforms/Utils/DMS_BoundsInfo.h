@@ -56,6 +56,8 @@ public:
     }
   }
 
+  std::string pretty() const;
+
   /// Statically known bounds info.
   ///
   /// Suppose the pointer value is P. If the `low_offset` is L and the

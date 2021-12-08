@@ -3,6 +3,8 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/Support/Debug.h"
 
+#include <sstream>  // ostringstream
+
 using namespace llvm;
 
 #define DEBUG_TYPE "DMS-bounds-info"
@@ -12,6 +14,19 @@ static Value* get_min_ptr_value(DMSIRBuilder& Builder) {
 }
 static Value* get_max_ptr_value(DMSIRBuilder& Builder) {
   return Builder.CreateIntToPtr(Constant::getAllOnesValue(Builder.getInt64Ty()), Builder.getInt8PtrTy());
+}
+
+std::string BoundsInfo::pretty() const {
+  switch (kind) {
+    case STATIC: {
+      const StaticBoundsInfo* sinfo = static_info();
+      std::ostringstream out;
+      out << "STATIC [" << sinfo->low_offset.getLimitedValue() << "," << sinfo->high_offset.getLimitedValue() << "]";
+      return out.str();
+    }
+    default:
+      return pretty_kind();
+  }
 }
 
 /// `cur_ptr`: the pointer value for which these bounds apply.
@@ -461,7 +476,7 @@ BoundsInfo BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep, const DataLa
       const GEPConstantOffset gco = computeGEPOffset(gep, DL);
       if (gco.is_constant) {
         return BoundsInfo::static_bounds(
-          static_info->low_offset + gco.offset,
+          static_info->low_offset - gco.offset,
           static_info->high_offset - gco.offset
         );
       } else {
