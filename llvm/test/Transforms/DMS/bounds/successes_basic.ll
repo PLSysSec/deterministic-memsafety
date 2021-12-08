@@ -6,6 +6,7 @@
 ; (we do test with several different optimization levels)
 
 define i32 @main(i32 %argc, i8** nocapture readonly %argv) {
+	call i8 @staticboundscheck()
 	call i8 @dynboundscheck()
 	call i64 @storeload()
 	call i64 @storeload_mod(i32 %argc)
@@ -17,23 +18,34 @@ define i32 @main(i32 %argc, i8** nocapture readonly %argv) {
 	ret i32 0
 }
 
+declare noalias i8* @malloc(i64) nounwind
+declare void @free(i8*) nounwind
+
+; do a dereference that requires a static bounds check
+define i8 @staticboundscheck() noinline {
+	%cleanptr = call i8* @malloc(i64 234)
+	%dirtyptr = getelementptr i8, i8* %cleanptr, i64 67
+	%loaded = load volatile i8, i8* %dirtyptr
+	ret i8 %loaded
+}
+
 ; do a dereference that requires a dynamic bounds check
 define i8 @dynboundscheck() noinline {
-	%mallocsize = call i64 @get_mallocsize()
+	%mallocsize = call i64 @get_mallocsize(i64 117)
 	%cleanptr = call i8* @malloc(i64 %mallocsize)
-	%offset = call i64 @get_offset()
+	%offset = call i64 @get_offset(i64 50)
 	%dirtyptr = getelementptr i8, i8* %cleanptr, i64 %offset
 	%loaded = load volatile i8, i8* %dirtyptr
 	ret i8 %loaded
 }
-define i64 @get_mallocsize() noinline {
-	ret i64 234
+define i64 @get_mallocsize(i64 %a) noinline {
+	%b = mul i64 %a, 2
+	ret i64 %b
 }
-define i64 @get_offset() noinline {
-	ret i64 67
+define i64 @get_offset(i64 %a) noinline {
+	%b = add i64 %a, 17
+	ret i64 %b
 }
-declare noalias i8* @malloc(i64) nounwind
-declare void @free(i8*) nounwind
 
 ; storing and loading an ordinary pointer
 define i64 @storeload() noinline {
