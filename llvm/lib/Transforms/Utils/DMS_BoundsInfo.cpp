@@ -543,6 +543,19 @@ void BoundsInfos::propagate_bounds(IntToPtrInst& inttoptr, PointerKind inttoptr_
   }
 }
 
+/// the loaded_ptr may be different from the literal result of the `load` due to
+/// pointer encoding
+void BoundsInfos::propagate_bounds(LoadInst& load, Instruction* loaded_ptr) {
+  // compute the bounds of the loaded pointer dynamically. this requires the
+  // decoded pointer value.
+  // TODO: Instead of loading bounds info right when we load the pointer, we
+  // could/should wait until it is needed for a SW bounds check. I'm envisioning
+  // some type of laziness solution inside BoundsInfo.
+  DMSIRBuilder Builder(loaded_ptr, DMSIRBuilder::AFTER, &added_insts);
+  BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(loaded_ptr, Builder);
+  map[&load] = BoundsInfo(std::move(loadedInfo));
+}
+
 void BoundsInfos::propagate_bounds(PHINode& phi) {
   // if the PHI isn't choosing between pointers, we have nothing to do
   if (!phi.getType()->isPointerTy()) return;

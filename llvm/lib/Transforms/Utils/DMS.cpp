@@ -1167,15 +1167,7 @@ private:
               // store this mapping in `loaded_val_statuses`; see notes there
               loaded_val_statuses[&load] = loaded_ptr_status;
               if (settings.add_sw_spatial_checks) {
-                // compute the bounds of the loaded pointer dynamically. this
-                // requires the decoded pointer value.
-                // TODO: Instead of loading bounds info right when we load the
-                // pointer, we could/should wait until it is needed for a SW
-                // bounds check. I'm envisioning some type of laziness solution
-                // inside BoundsInfo.
-                DMSIRBuilder Builder(decoded_ptr, DMSIRBuilder::AFTER, &added_insts);
-                BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(decoded_ptr, Builder);
-                bounds_infos.mark_as(&load, BoundsInfo(std::move(loadedInfo)));
+                bounds_infos.propagate_bounds(load, decoded_ptr);
               }
             } else {
               // when not `do_pointer_encoding`, we're allowed to pass NULL
@@ -1185,14 +1177,8 @@ private:
                 // bounds info remains valid from iteration to iteration (our
                 // fixpoint won't change the bounds info here), so we only need to
                 // insert the instructions computing it the first time.
-                // TODO: Instead of loading bounds info right when we load the
-                // pointer, we could/should wait until it is needed for a SW
-                // bounds check. I'm envisioning some type of laziness solution
-                // inside BoundsInfo.
                 if (!bounds_infos.is_binfo_present(&load)) {
-                  DMSIRBuilder AfterLoad(&load, DMSIRBuilder::AFTER, &added_insts);
-                  BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(&load, AfterLoad);
-                  bounds_infos.mark_as(&load, BoundsInfo(std::move(loadedInfo)));
+                  bounds_infos.propagate_bounds(load, &load);
                 }
               }
             }

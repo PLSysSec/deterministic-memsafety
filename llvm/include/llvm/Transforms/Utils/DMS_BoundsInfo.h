@@ -426,6 +426,7 @@ public:
   void propagate_bounds(GetElementPtrInst&, const DataLayout&);
   void propagate_bounds(SelectInst&);
   void propagate_bounds(IntToPtrInst&, PointerKind inttoptr_kind);
+  void propagate_bounds(LoadInst& load, Instruction* loaded_ptr); // the loaded_ptr may be different from the literal result of the `load` due to pointer encoding
   void propagate_bounds(PHINode&);
   void propagate_bounds(CallBase& call, IsAllocatingCall& IAC);
 
