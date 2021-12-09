@@ -16,9 +16,7 @@ define i32 @main(i32 %argc, i8** nocapture readonly %argv) {
   call i32 @phi_both_static(i32 2)
   call i32 @phi_both_dynamic(i32 2)
   call i32 @phi_static_dynamic(i32 2)
-  %arr = alloca [16 x i32]
-  %arrptr = bitcast [16 x i32]* %arr to i32*
-  call i32 @loop_array(i32* %arrptr, i32 12)
+  call i32 @loop_array(i32 12)
   call i8 @loop_nt_array()
   ret i32 0
 }
@@ -310,12 +308,14 @@ end:
 }
 
 ; walk an array in a loop, dereferencing every element
-define i32 @loop_array(i32* %arr, i32 %len) noinline {
+define i32 @loop_array(i32 %len) noinline {
 start:
+  %arr = alloca [16 x i32]
+  %arrptr = bitcast [16 x i32]* %arr to i32*
   br label %loop
 
 loop:
-  %curptr = phi i32* [ %arr, %start ], [ %newptr, %loop ]
+  %curptr = phi i32* [ %arrptr, %start ], [ %newptr, %loop ]
   %accumulator = phi i32 [ 0, %start ], [ %newacc, %loop ]
   %i = phi i32 [ 0, %start ], [ %newi, %loop ]
   %loaded = load i32, i32* %curptr
