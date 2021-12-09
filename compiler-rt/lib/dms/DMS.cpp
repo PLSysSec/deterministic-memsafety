@@ -58,9 +58,18 @@ void __dms_store_infinite_bounds(void* ptr) {
 char __dms_get_bounds(void* ptr, void** base, void** max) {
   if (ptr == NULL) return 1; // null ptr always has infinite bounds; we never need to bounds-check it
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
-  *base = h->base;
-  *max = h->max;
-  return 0;
+  if (h.created()) {
+    fprintf(stderr, "Bounds lookup failed: no bounds for %p\n", ptr);
+    __sanitizer::ReportErrorSummary("Bounds lookup failure");
+    __sanitizer::Abort();
+  }
+  if (h->infinite) {
+    return 1;
+  } else {
+    *base = h->base;
+    *max = h->max;
+    return 0;
+  }
 }
 
 /// Call this to indicate that a bounds check failed for `ptr`.
