@@ -335,7 +335,6 @@ BoundsInfos::BoundsInfos(
 
   // Mark appropriate bounds info for global variables. We know this bounds
   // information statically
-  DMSIRBuilder Builder(&F.getEntryBlock(), DMSIRBuilder::BEGINNING, &added_insts);
   for (GlobalValue& gv : F.getParent()->global_values()) {
     assert(gv.getType()->isPointerTy());
     Type* globalType = gv.getValueType();
@@ -344,17 +343,59 @@ BoundsInfos::BoundsInfos(
       map[&gv] = BoundsInfo::static_bounds(
         zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
       );
-      if (isMain) {
-        // also store these bounds in the dynamic table.
-        // this is necessary in case a pointer to this global is part of the
-        // initialization expression of another global:
-        // if we load such a pointer from the other global, we expect to find
-        // dynamic bounds info for it in the table.
-        // But we only need to do this once, at the top of main().
-        map[&gv].store_dynamic(&gv, Builder);
-      }
     } else {
       map[&gv] = BoundsInfo::unknown();
+    }
+  }
+
+  if (isMain) {
+    // search each global's initializer for any pointers to other globals.
+    // if we load such a pointer from this global, we expect to find
+    // dynamic bounds info for it in the table.
+    // so, here at the top of main(), we'll store bounds info for all
+    // such pointers to the table.
+    DMSIRBuilder Builder(&F.getEntryBlock(), DMSIRBuilder::BEGINNING, &added_insts);
+    for (GlobalObject& gobj : F.getParent()->global_objects()) {
+      if (GlobalVariable* gv = dyn_cast<GlobalVariable>(&gobj)) {
+        if (gv->hasInitializer()) {
+          Constant* initializer = gv->getInitializer();
+          store_info_for_all_ptr_exprs(initializer, Builder);
+        }
+      }
+    }
+  }
+}
+
+/// For all pointer expressions used in the given `Constant`, make entries in
+/// the dynamic bounds table for each pointer expression. (This includes, eg,
+/// pointers to global variables, GEPs of such pointers, etc.)
+///
+/// If dynamic instructions need to be inserted, use `Builder`.
+void BoundsInfos::store_info_for_all_ptr_exprs(Constant* c, DMSIRBuilder& Builder) {
+  if (GlobalValue* gv = dyn_cast<GlobalValue>(c)) {
+    BoundsInfo binfo = get_binfo(gv);
+    binfo.store_dynamic(gv, Builder);
+  } else if (ConstantAggregate* cagg = dyn_cast<ConstantAggregate>(c)) {
+    for (Value* op: cagg->operands()) {
+      // op must be a constant
+      store_info_for_all_ptr_exprs(cast<Constant>(op), Builder);
+    }
+  } else if (ConstantExpr* cexpr = dyn_cast<ConstantExpr>(c)) {
+    switch (cexpr->getOpcode()) {
+      case Instruction::BitCast:
+      case Instruction::AddrSpaceCast:
+      {
+        store_info_for_all_ptr_exprs(cexpr->getOperand(0), Builder);
+        break;
+      }
+      case Instruction::GetElementPtr: {
+        BoundsInfo binfo = get_binfo(cexpr);
+        binfo.store_dynamic(cexpr, Builder);
+        break;
+      }
+      default: {
+        break;
+      }
     }
   }
 }

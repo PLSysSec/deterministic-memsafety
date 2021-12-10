@@ -449,6 +449,13 @@ private:
   /// `pointer_aliases` in `DMSAnalysis`
   DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
 
+  /// For all pointer expressions used in the given `Constant`, make entries in
+  /// the dynamic bounds table for each pointer expression. (This includes, eg,
+  /// pointers to global variables, GEPs of such pointers, etc.)
+  ///
+  /// If dynamic instructions need to be inserted, use `Builder`.
+  void store_info_for_all_ptr_exprs(Constant*, DMSIRBuilder&);
+
   /// Like `get_binfo()`, but doesn't check aliases of the given ptr, if any
   /// exist. This is used internally by `get_binfo()`.
   BoundsInfo get_binfo_noalias(const Value* ptr) const;

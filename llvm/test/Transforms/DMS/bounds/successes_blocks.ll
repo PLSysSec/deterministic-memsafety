@@ -19,6 +19,7 @@ define i32 @main(i32 %argc, i8** nocapture readonly %argv) {
   call i32 @loop_array(i32 12)
   call i8 @loop_nt_array()
   call i32 @loop_global_nt_array()
+  call i32 @loop_global_nt_array2()
   ret i32 0
 }
 
@@ -352,6 +353,7 @@ end:
   ret i8 %newacc
 }
 
+; this example inspired by a real pattern in 464.h264ref
 @a = dso_local global i8 0, align 1
 @b = dso_local global i8 0, align 1
 @c = dso_local global i8 0, align 1
@@ -368,6 +370,31 @@ body:
   store volatile i8 122, i8* %curptr, align 1
   %nexti = add nuw nsw i64 %i, 1
   %idx = getelementptr inbounds [4 x i8*], [4 x i8*]* @content, i64 0, i64 %nexti
+  %nextptr = load i8*, i8** %idx, align 8
+  %cond2 = icmp eq i8* %nextptr, null
+  br i1 %cond2, label %end, label %body
+
+end:
+  ret i32 0
+}
+
+; this example also inspired by 464.h264ref (slightly less simplified this time)
+%struct.config = type { i32, i32, i32 }
+@config = dso_local global %struct.config zeroinitializer, align 4
+@Values = dso_local local_unnamed_addr global [4 x i8*] [i8* bitcast (%struct.config* @config to i8*), i8* getelementptr (i8, i8* bitcast (%struct.config* @config to i8*), i64 4), i8* getelementptr(i8, i8* bitcast (%struct.config* @config to i8*), i64 8), i8* null], align 16
+define i32 @loop_global_nt_array2() noinline {
+start:
+  %0 = load i8*, i8** getelementptr inbounds ([4 x i8*], [4 x i8*]* @Values, i64 0, i64 0), align 16
+  %cond1 = icmp eq i8* %0, null
+  br i1 %cond1, label %end, label %body
+
+body:
+  %i = phi i64 [ 0, %start ], [ %nexti, %body ]
+  %curptr = phi i8* [ %0, %start ], [ %nextptr, %body ]
+  %curptr_cast = bitcast i8* %curptr to i32*
+  store i32 23456, i32* %curptr_cast, align 4
+  %nexti = add nuw nsw i64 %i, 1
+  %idx = getelementptr inbounds [4 x i8*], [4 x i8*]* @Values, i64 0, i64 %nexti
   %nextptr = load i8*, i8** %idx, align 8
   %cond2 = icmp eq i8* %nextptr, null
   br i1 %cond2, label %end, label %body
