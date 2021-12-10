@@ -210,7 +210,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 CallInst* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const {
   assert(cur_ptr);
   assert(cur_ptr->getType()->isPointerTy());
-  if (Constant* const_cur_ptr = dyn_cast<Constant>(cur_ptr)) {
+  if (const Constant* const_cur_ptr = dyn_cast<Constant>(cur_ptr)) {
     if (const_cur_ptr->isNullValue()) {
       // No need to store bounds for the constant-NULL pointer.
       // If we ever ask for bounds of a NULL pointer dynamically, our runtime
@@ -279,8 +279,9 @@ BoundsInfos::BoundsInfos(
   DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
 ) : DL(DL), added_insts(added_insts), pointer_aliases(pointer_aliases) {
   LLVM_DEBUG(dbgs() << "Initializing bounds infos for function " << F.getNameOrAsOperand() << " with " << F.arg_size() << " operands\n");
-  if (F.getName() == "main" && F.arg_size() == 2) {
-    LLVM_DEBUG(dbgs() << "This is a 'main' function, setting bounds for argv\n");
+  bool isMain = F.getName() == "main" && F.arg_size() == 2;
+  if (isMain) {
+    LLVM_DEBUG(dbgs() << "This is a 'main' function, setting bounds for argv and globals\n");
     Value* argc = F.getArg(0);
     Value* argv = F.getArg(1);
     assert(argv->getType()->isPointerTy());
@@ -334,7 +335,8 @@ BoundsInfos::BoundsInfos(
 
   // Mark appropriate bounds info for global variables. We know this bounds
   // information statically
-  for (const GlobalValue& gv : F.getParent()->global_values()) {
+  DMSIRBuilder Builder(&F.getEntryBlock(), DMSIRBuilder::BEGINNING, &added_insts);
+  for (GlobalValue& gv : F.getParent()->global_values()) {
     assert(gv.getType()->isPointerTy());
     Type* globalType = gv.getValueType();
     if (globalType->isSized()) {
@@ -342,6 +344,15 @@ BoundsInfos::BoundsInfos(
       map[&gv] = BoundsInfo::static_bounds(
         zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
       );
+      if (isMain) {
+        // also store these bounds in the dynamic table.
+        // this is necessary in case a pointer to this global is part of the
+        // initialization expression of another global:
+        // if we load such a pointer from the other global, we expect to find
+        // dynamic bounds info for it in the table.
+        // But we only need to do this once, at the top of main().
+        map[&gv].store_dynamic(&gv, Builder);
+      }
     } else {
       map[&gv] = BoundsInfo::unknown();
     }
@@ -546,8 +557,10 @@ void BoundsInfos::propagate_bounds(IntToPtrInst& inttoptr, PointerKind inttoptr_
 /// the loaded_ptr may be different from the literal result of the `load` due to
 /// pointer encoding
 void BoundsInfos::propagate_bounds(LoadInst& load, Instruction* loaded_ptr) {
-  // compute the bounds of the loaded pointer dynamically. this requires the
-  // decoded pointer value.
+  // if the load isn't loading a pointer, we have nothing to do
+  if (!load.getType()->isPointerTy()) return;
+  // compute the bounds of the loaded pointer. if we need to do a dynamic lookup
+  // in the global bounds table, this requires the decoded pointer value.
   // TODO: Instead of loading bounds info right when we load the pointer, we
   // could/should wait until it is needed for a SW bounds check. I'm envisioning
   // some type of laziness solution inside BoundsInfo.
