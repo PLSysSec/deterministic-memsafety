@@ -18,7 +18,7 @@ define i32 @main(i32 %argc, i8** nocapture readonly %argv) {
   call i32 @phi_static_dynamic(i32 2)
   call i32 @loop_array(i32 12)
   call i8 @loop_nt_array()
-  call i32 @loop_with_const_geps()
+  call i32 @loop_global_nt_array()
   ret i32 0
 }
 
@@ -352,12 +352,11 @@ end:
   ret i8 %newacc
 }
 
-; this example minimized from a problem originally observed in 464.h264ref
 @a = dso_local global i8 0, align 1
 @b = dso_local global i8 0, align 1
 @c = dso_local global i8 0, align 1
 @content = dso_local local_unnamed_addr global [4 x i8*] [i8* @a, i8* @b, i8* @c, i8* null], align 16
-define i32 @loop_with_const_geps() noinline {
+define i32 @loop_global_nt_array() noinline {
 start:
   %0 = load i8*, i8** getelementptr inbounds ([4 x i8*], [4 x i8*]* @content, i64 0, i64 0), align 16
   %cond1 = icmp eq i8* %0, null
