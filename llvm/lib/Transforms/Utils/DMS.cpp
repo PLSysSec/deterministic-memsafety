@@ -835,7 +835,8 @@ private:
   /// have reached fixpoint).
   void addSpatialSafetySWChecks() {
     IterationResult res = doIteration(NULL, false);
-    assert(!res.changed && "we should have reached fixpoint before calling instrument()");
+    assert(!res.changed && "we should have reached fixpoint before calling addSpatialSafetySWChecks()");
+    BoundsInfos::module_initialization(*F.getParent(), added_insts, pointer_aliases);
     doIteration(NULL, true);
     // `doIteration` with add_spatial_sw_checks=true will sometimes split basic
     // blocks, which is a problem when it's also trying to iterate over all the

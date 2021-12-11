@@ -2,6 +2,7 @@
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <sstream>  // ostringstream
 
@@ -347,23 +348,50 @@ BoundsInfos::BoundsInfos(
       map[&gv] = BoundsInfo::unknown();
     }
   }
+}
 
-  if (isMain) {
-    // search each global's initializer for any pointers to other globals.
-    // if we load such a pointer from this global, we expect to find
-    // dynamic bounds info for it in the table.
-    // so, here at the top of main(), we'll store bounds info for all
-    // such pointers to the table.
-    DMSIRBuilder Builder(&F.getEntryBlock(), DMSIRBuilder::BEGINNING, &added_insts);
-    for (GlobalObject& gobj : F.getParent()->global_objects()) {
-      if (GlobalVariable* gv = dyn_cast<GlobalVariable>(&gobj)) {
-        if (gv->hasInitializer()) {
-          Constant* initializer = gv->getInitializer();
-          store_info_for_all_ptr_exprs(initializer, Builder);
-        }
+/// Call this (at least) once for each source _module_ (not function)
+void BoundsInfos::module_initialization(
+  Module& mod,
+  DenseSet<const Instruction*>& added_insts,
+  DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+) {
+  // the problem we're solving here is that global initializers could contain
+  // pointers to other globals.
+  // If we load one of these pointers from a global, we expect to find dynamic
+  // bounds info for it in the table.
+  // But, there was never a `Store` instruction storing the pointer to that
+  // memory, so our hooks never ensured that bounds info for it was added to
+  // the table.
+  // Hence, this function exists to add all such pointers to the table.
+  // This is done once per module, and initializing the table happens in an
+  // LLVM module-level global constructor.
+
+	// if this function already exists in the module, assume we've already added
+	// this initialization code
+	if (mod.getFunction("__DMS_bounds_initialization")) {
+		return;
+	}
+
+  // This `new_func` does the initialization
+  FunctionType* FuncTy = FunctionType::get(Type::getVoidTy(mod.getContext()), {}, false);
+	Function* new_func = cast<Function>(mod.getOrInsertFunction("__DMS_bounds_initialization", FuncTy).getCallee());
+	new_func->setLinkage(GlobalValue::PrivateLinkage);
+	BasicBlock* EntryBlock = BasicBlock::Create(mod.getContext(), "entry", new_func);
+  DMSIRBuilder Builder(EntryBlock, DMSIRBuilder::BEGINNING, &added_insts);
+  BoundsInfos binfos(*new_func, mod.getDataLayout(), added_insts, pointer_aliases);
+  for (GlobalObject& gobj : mod.global_objects()) {
+    if (GlobalVariable* gv = dyn_cast<GlobalVariable>(&gobj)) {
+      if (gv->hasInitializer()) {
+        Constant* initializer = gv->getInitializer();
+        binfos.store_info_for_all_ptr_exprs(initializer, Builder);
       }
     }
   }
+  Builder.CreateRetVoid();
+  // Ensure `new_func` is called during module construction. 65535 should ensure
+  // it's called after any other such hooks
+  appendToGlobalCtors(mod, new_func, 65535);
 }
 
 /// For all pointer expressions used in the given `Constant`, make entries in

@@ -408,6 +408,13 @@ public:
     DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
   );
 
+  /// Call this (at least) once for each source _module_ (not function)
+  static void module_initialization(
+    Module&,
+    DenseSet<const Instruction*>& added_insts,
+    DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+  );
+
   /// Mark the given pointer as having the given bounds information.
   void mark_as(const Value* ptr, const BoundsInfo binfo) {
     map[ptr] = binfo;
