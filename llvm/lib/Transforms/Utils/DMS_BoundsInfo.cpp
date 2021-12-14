@@ -161,6 +161,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
   const DynamicBoundsInfo& b_info,
   DMSIRBuilder& Builder
 ) {
+  if (a_info == b_info) return BoundsInfo(a_info); // this also avoids forcing, if both a_info and b_info are still lazy but equivalent
   PointerWithOffset base;
   PointerWithOffset max;
   const PointerWithOffset& a_base = a_info.getBase();
