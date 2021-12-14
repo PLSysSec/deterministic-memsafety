@@ -209,6 +209,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 /// Insert dynamic instructions to store this bounds info.
 ///
 /// `cur_ptr` is the pointer which these bounds are for.
+/// (This should be a _decoded_ pointer value.)
 ///
 /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
 ///
@@ -501,12 +502,18 @@ BoundsInfo BoundsInfos::get_binfo_noalias(const Value* ptr) const {
 }
 
 /// Propagate bounds information for a Store instruction.
-void BoundsInfos::propagate_bounds(StoreInst& store) {
+///
+/// Namely, we store the bounds info so that when this pointer is later loaded,
+/// we can get the bounds info back.
+///
+/// If `override_stored_ptr` is not NULL, then store bounds info for that,
+/// rather than the actual value being `store`d. This is used when we're storing
+/// an encoded value, in which case we need to store bounds info for the decoded
+/// value (which will be passed as `override_stored_ptr`)
+void BoundsInfos::propagate_bounds(StoreInst& store, Value* override_stored_ptr) {
   // if we aren't storing a pointer, we have nothing to do
-  Value* storedVal = store.getValueOperand();
+  Value* storedVal = override_stored_ptr == NULL ? store.getValueOperand() : override_stored_ptr;
   if (!storedVal->getType()->isPointerTy()) return;
-  // we store the bounds info so that when this pointer is later
-  // loaded, we can get the bounds info back
   BoundsInfo binfo = get_binfo(storedVal);
   bool need_regenerate_bounds_store;
   if (store_bounds_calls.count(&store) > 0) {

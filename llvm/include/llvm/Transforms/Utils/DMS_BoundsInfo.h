@@ -528,7 +528,7 @@ public:
     return get_binfo(ptr).get_kind() != BoundsInfo::NOTDEFINEDYET;
   }
 
-  void propagate_bounds(StoreInst&);
+  void propagate_bounds(StoreInst&, Value* override_stored_ptr);
   void propagate_bounds(AllocaInst&);
   void propagate_bounds(GetElementPtrInst&, const DataLayout&);
   void propagate_bounds(SelectInst&);

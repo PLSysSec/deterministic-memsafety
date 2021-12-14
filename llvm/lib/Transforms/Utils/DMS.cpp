@@ -1092,14 +1092,14 @@ private:
             // we count the stored pointer for stats purposes
             PointerStatus storedVal_status = ptr_statuses.getStatus(storedVal);
             COUNT_OP_AS_STATUS(store_vals, storedVal_status, &inst, "Storing a pointer");
+            OrigPointerAndStatus orig_ptr_and_status = original_stored_ptrs.lookup(&store);
             if (settings.add_sw_spatial_checks) {
-              bounds_infos.propagate_bounds(store);
+              bounds_infos.propagate_bounds(store, orig_ptr_and_status.orig_ptr);
             }
             // make sure the stored pointer is masked as necessary
             if (pointer_encoding_is_complete) {
               // if the status of the stored pointer has changed since last
               // iteration, we need to re-encode it using the updated status
-              OrigPointerAndStatus orig_ptr_and_status = original_stored_ptrs.lookup(&store);
               if (orig_ptr_and_status.status == storedVal_status) {
                 // nothing to do
               } else {
