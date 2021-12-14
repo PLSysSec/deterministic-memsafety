@@ -243,9 +243,17 @@ public:
             return classifyGEPResult_cached(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL, added_insts).classification;
           }
           case Instruction::IntToPtr: {
-            // ideally, we have alias information, and some alias will have a status.
-            // (this comes up with constant IntToPtrs introduced by our pointer
-            // encoding)
+            // if it's IntToPtr of zero, or any other number < 4K (corresponding
+            // to the first page of memory, which is unmapped), we can treat it
+            // as CLEAN, just like the null pointer
+            if (const ConstantInt* cint = dyn_cast<ConstantInt>(expr->getOperand(0))) {
+              if (cint->getValue().ult(4*1024)) {
+                return PointerStatus::clean();
+              }
+            }
+            // for other IntToPtrs, ideally, we have alias information, and some
+            // alias will have a status. (this comes up with constant IntToPtrs
+            // introduced by our pointer encoding)
             return PointerStatus::notdefinedyet();
           }
           default: {
