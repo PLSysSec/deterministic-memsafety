@@ -156,22 +156,115 @@ public:
   };
 
   /// Dynamically known bounds info
+  ///
+  /// This is computed lazily: it's either actual dynamic bounds info, or just
+  /// the information needed to (lazily) compute it if/when needed.
+  ///
+  /// Again this should be a discriminated union, but we can't use C++17 here
   struct DynamicBoundsInfo {
-    /// Pointer value representing the beginning of the allocation
-    /// (i.e., the minimum valid pointer value)
-    PointerWithOffset base;
-    /// Pointer value representing the end of the allocation
-    /// (i.e., the maximum valid pointer value)
-    PointerWithOffset max;
+    /// If this is `true`, `.lazy` is valid
+    /// If this is `false`, `.info` is valid
+    bool isLazy;
 
+    /// Gives the pointer value representing the beginning of the allocation
+    /// (i.e., the minimum valid pointer value). Forces the bounds info to be
+    /// computed if it hasn't been already.
+    const PointerWithOffset& getBase() const {
+      // we "cheat" the const here by calling the non-const `force()`
+      ((DynamicBoundsInfo*)this)->force();
+      return info.base;
+    }
+
+    /// Gives the pointer value representing the end of the allocation (i.e.,
+    /// the maximum valid pointer value). Forces the bounds info to be computed
+    /// if it hasn't been already.
+    const PointerWithOffset& getMax() const {
+      // we "cheat" the const here by calling the non-const `force()`
+      ((DynamicBoundsInfo*)this)->force();
+      return info.max;
+    }
+
+    void force() {
+      if (isLazy) {
+        info = lazy.force();
+        isLazy = false;
+      }
+    }
+
+  private:
+    /// Actual dynamic bounds info
+    struct Info {
+      /// Pointer value representing the beginning of the allocation
+      /// (i.e., the minimum valid pointer value)
+      PointerWithOffset base;
+      /// Pointer value representing the end of the allocation
+      /// (i.e., the maximum valid pointer value)
+      PointerWithOffset max;
+
+      explicit Info(Value* base, Value* max)
+        : base(PointerWithOffset(base)), max(PointerWithOffset(max)) {}
+      explicit Info(PointerWithOffset base, PointerWithOffset max)
+        : base(base), max(max) {}
+      Info() : base(PointerWithOffset()), max(PointerWithOffset()) {}
+
+      bool operator==(const Info& other) const {
+        return (base == other.base && max == other.max);
+      }
+      bool operator!=(const Info& other) const {
+        return !(*this == other);
+      }
+    };
+
+    /// Information needed to (lazily) compute the `Info` if/when needed
+    struct LazyInfo {
+      /// Dynamic info for which loaded ptr (this should be a _decoded_ ptr)
+      Instruction* loaded_ptr;
+      /// Reference to the `added_insts` where we note any instructions added
+      /// for bounds purposes. See notes on `added_insts` in `DMSAnalysis`
+      ///
+      /// This is allowed to be `NULL` only if we never `force()` this
+      /// `LazyInfo` (for instance if `DynamicBoundsInfo.isLazy` is `false`)
+      DenseSet<const Instruction*>* added_insts;
+
+      explicit LazyInfo(Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts)
+        : loaded_ptr(loaded_ptr), added_insts(&added_insts) {}
+      LazyInfo() : loaded_ptr(NULL), added_insts(NULL) {}
+
+      Info force();
+
+      bool operator==(const LazyInfo& other) const {
+        // don't need to check that added_insts are equal
+        return (loaded_ptr == other.loaded_ptr);
+      }
+      bool operator!=(const LazyInfo& other) const {
+        return !(*this == other);
+      }
+    };
+
+    Info info;
+    LazyInfo lazy;
+
+  public:
     explicit DynamicBoundsInfo(Value* base, Value* max)
-      : base(PointerWithOffset(base)), max(PointerWithOffset(max)) {}
+      : isLazy(false), info(Info(base, max)) {}
     explicit DynamicBoundsInfo(PointerWithOffset base, PointerWithOffset max)
-      : base(base), max(max) {}
-    DynamicBoundsInfo() : base(PointerWithOffset()), max(PointerWithOffset()) {}
+      : isLazy(false), info(Info(base, max)) {}
+    DynamicBoundsInfo() : isLazy(false), info(Info()) {}
+
+    static DynamicBoundsInfo LazyDynamicBoundsInfo(Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
+      DynamicBoundsInfo dyninfo;
+      dyninfo.isLazy = true;
+      dyninfo.lazy = LazyInfo(loaded_ptr, added_insts);
+      return dyninfo;
+    }
 
     bool operator==(const DynamicBoundsInfo& other) const {
-      return (base == other.base && max == other.max);
+      return (isLazy == other.isLazy &&
+        (isLazy ?
+          (lazy == other.lazy) :
+          (info == other.info)
+        )
+      );
     }
     bool operator!=(const DynamicBoundsInfo& other) const {
       return !(*this == other);
@@ -351,12 +444,19 @@ public:
   /// Returns the Call instruction if one was inserted, or else NULL
   CallInst* store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const;
 
-  /// Insert dynamic instructions to load bounds info for the given `ptr`.
+  /// Get a `DynamicBoundsInfo` representing dynamic bounds for the given `ptr`.
+  /// (This should be a _decoded_ pointer value.)
+  ///
+  /// Computes the actual bounds lazily, i.e., does not insert any dynamic
+  /// instructions unless/until this `DynamicBoundsInfo` is actually needed
+  /// for a bounds check.
+  ///
   /// Bounds info for this `ptr` should have been previously stored with
   /// `store_dynamic()`.
-  ///
-  /// Insert dynamic instructions using the given `DMSIRBuilder`.
-  static DynamicBoundsInfo load_dynamic(Value* ptr, DMSIRBuilder& Builder);
+  static DynamicBoundsInfo dynamic_bounds_for_ptr(
+    Instruction* ptr,
+    DenseSet<const Instruction*>& added_insts
+  );
 
 private:
   /// This should really be a union.  But C++ complains hard about implicitly

@@ -51,7 +51,7 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
       return info.static_info.base_as_llvm_value(cur_ptr, Builder);
     case DYNAMIC:
     case DYNAMIC_MERGED:
-      return info.dynamic_info.base.as_llvm_value(Builder);
+      return info.dynamic_info.getBase().as_llvm_value(Builder);
     default:
       llvm_unreachable("Missing BoundsInfo.kind case");
   }
@@ -78,7 +78,7 @@ Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) cons
       return info.static_info.max_as_llvm_value(cur_ptr, Builder);
     case DYNAMIC:
     case DYNAMIC_MERGED:
-      return info.dynamic_info.max.as_llvm_value(Builder);
+      return info.dynamic_info.getMax().as_llvm_value(Builder);
     default:
       llvm_unreachable("Missing BoundsInfo.kind case");
   }
@@ -142,8 +142,8 @@ BoundsInfo BoundsInfo::merge_static_dynamic(
   DMSIRBuilder& Builder
 ) {
   // these are the base and max from the dynamic side
-  Value* incoming_base = dynamic_info.base.as_llvm_value(Builder);
-  Value* incoming_max = dynamic_info.max.as_llvm_value(Builder);
+  Value* incoming_base = dynamic_info.getBase().as_llvm_value(Builder);
+  Value* incoming_max = dynamic_info.getMax().as_llvm_value(Builder);
   // these are the base and max from the static side
   Value* static_base = static_info.base_as_llvm_value(cur_ptr, Builder);
   Value* static_max = static_info.max_as_llvm_value(cur_ptr, Builder);
@@ -163,33 +163,37 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 ) {
   PointerWithOffset base;
   PointerWithOffset max;
-  if (a_info.base.ptr == b_info.base.ptr) {
+  const PointerWithOffset& a_base = a_info.getBase();
+  const PointerWithOffset& b_base = b_info.getBase();
+  const PointerWithOffset& a_max = a_info.getMax();
+  const PointerWithOffset& b_max = b_info.getMax();
+  if (a_base.ptr == b_base.ptr) {
     base = PointerWithOffset(
-      a_info.base.ptr,
-      a_info.base.offset.slt(b_info.base.offset) ? b_info.base.offset : a_info.base.offset
+      a_base.ptr,
+      a_base.offset.slt(b_base.offset) ? b_base.offset : a_base.offset
     );
   } else {
-    Value* a_base = a_info.base.as_llvm_value(Builder);
-    Value* b_base = b_info.base.as_llvm_value(Builder);
+    Value* a_base_val = a_base.as_llvm_value(Builder);
+    Value* b_base_val = b_base.as_llvm_value(Builder);
     Value* merged_base = Builder.CreateSelect(
-      Builder.CreateICmpULT(a_base, b_base),
-      b_base,
-      a_base
+      Builder.CreateICmpULT(a_base_val, b_base_val),
+      b_base_val,
+      a_base_val
     );
     base = PointerWithOffset(merged_base);
   }
-  if (a_info.max.ptr == b_info.max.ptr) {
+  if (a_max.ptr == b_max.ptr) {
     max = PointerWithOffset(
-      a_info.max.ptr,
-      a_info.max.offset.slt(b_info.max.offset) ? a_info.max.offset : b_info.max.offset
+      a_max.ptr,
+      a_max.offset.slt(b_max.offset) ? a_max.offset : b_max.offset
     );
   } else {
-    Value* a_max = a_info.max.as_llvm_value(Builder);
-    Value* b_max = b_info.max.as_llvm_value(Builder);
+    Value* a_max_val = a_max.as_llvm_value(Builder);
+    Value* b_max_val = b_max.as_llvm_value(Builder);
     Value* merged_max = Builder.CreateSelect(
-      Builder.CreateICmpULT(a_max, b_max),
-      a_max,
-      b_max
+      Builder.CreateICmpULT(a_max_val, b_max_val),
+      a_max_val,
+      b_max_val
     );
     max = PointerWithOffset(merged_max);
   }
@@ -245,20 +249,28 @@ CallInst* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const
   }
 }
 
-/// Insert dynamic instructions to load bounds info for the given `ptr`.
-/// `ptr` can be of any pointer type.
-/// Bounds info for this `ptr` should have been previously stored with
-/// `store_dynamic_boundsinfo`.
+/// Get a `DynamicBoundsInfo` representing dynamic bounds for the given `ptr`.
+/// (This should be a _decoded_ pointer value.)
 ///
-/// Insert dynamic instructions using the given `DMSIRBuilder`.
-BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(Value* ptr, DMSIRBuilder& Builder) {
-  assert(ptr);
-  assert(ptr->getType()->isPointerTy());
-  LLVM_DEBUG(dbgs() << "Inserting a call to load dynamic bounds info for " << ptr->getNameOrAsOperand() << "\n");
+/// Computes the actual bounds lazily, i.e., does not insert any dynamic
+/// instructions unless/until this `DynamicBoundsInfo` is actually needed
+/// for a bounds check.
+///
+/// Bounds info for this `ptr` should have been previously stored with
+/// `store_dynamic()`.
+BoundsInfo::DynamicBoundsInfo BoundsInfo::dynamic_bounds_for_ptr(Instruction* ptr, DenseSet<const Instruction*>& added_insts) {
+  return DynamicBoundsInfo::LazyDynamicBoundsInfo(ptr, added_insts);
+}
+
+BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyInfo::force() {
+  assert(loaded_ptr);
+  assert(loaded_ptr->getType()->isPointerTy());
+  LLVM_DEBUG(dbgs() << "Inserting a call to load dynamic bounds info for " << loaded_ptr->getNameOrAsOperand() << "\n");
+  DMSIRBuilder Builder(loaded_ptr, DMSIRBuilder::AFTER, added_insts);
   static Type* CharStarTy = Builder.getInt8PtrTy();
   Value* output_base = Builder.CreateAlloca(CharStarTy);
   Value* output_max = Builder.CreateAlloca(CharStarTy);
-  Value* infinite = call_dms_get_bounds(ptr, output_base, output_max, Builder);
+  Value* infinite = call_dms_get_bounds(loaded_ptr, output_base, output_max, Builder);
   Value* isInfinite = Builder.CreateICmpNE(infinite, Builder.getInt8(0));
   Value* base = Builder.CreateSelect(
     isInfinite,
@@ -270,7 +282,7 @@ BoundsInfo::DynamicBoundsInfo BoundsInfo::load_dynamic(Value* ptr, DMSIRBuilder&
     get_max_ptr_value(Builder),
     Builder.CreateLoad(CharStarTy, output_max)
   );
-  return DynamicBoundsInfo(base, max);
+  return DynamicBoundsInfo::Info(base, max);
 }
 
 BoundsInfos::BoundsInfos(
@@ -628,14 +640,11 @@ void BoundsInfos::propagate_bounds(IntToPtrInst& inttoptr, PointerKind inttoptr_
 void BoundsInfos::propagate_bounds(LoadInst& load, Instruction* loaded_ptr) {
   // if the load isn't loading a pointer, we have nothing to do
   if (!load.getType()->isPointerTy()) return;
-  // compute the bounds of the loaded pointer. if we need to do a dynamic lookup
-  // in the global bounds table, this requires the decoded pointer value.
-  // TODO: Instead of loading bounds info right when we load the pointer, we
-  // could/should wait until it is needed for a SW bounds check. I'm envisioning
-  // some type of laziness solution inside BoundsInfo.
-  DMSIRBuilder Builder(loaded_ptr, DMSIRBuilder::AFTER, &added_insts);
-  BoundsInfo::DynamicBoundsInfo loadedInfo = BoundsInfo::load_dynamic(loaded_ptr, Builder);
-  map[&load] = BoundsInfo(std::move(loadedInfo));
+  // compute the bounds of the loaded pointer. if we need to (eventually,
+  // lazily) do a dynamic lookup in the global bounds table, this requires the
+  // decoded pointer value.
+  BoundsInfo::DynamicBoundsInfo dyninfo = BoundsInfo::dynamic_bounds_for_ptr(loaded_ptr, added_insts);
+  map[&load] = BoundsInfo(std::move(dyninfo));
 }
 
 void BoundsInfos::propagate_bounds(PHINode& phi) {
@@ -675,8 +684,8 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
     PHINode* base_phi = NULL;
     PHINode* max_phi = NULL;
     if (const BoundsInfo::DynamicBoundsInfo* prev_iteration_dyninfo = prev_iteration_binfo.dynamic_info()) {
-      if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->base.ptr))) {
-        assert(prev_iteration_dyninfo->base.offset == 0);
+      if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->getBase().ptr))) {
+        assert(prev_iteration_dyninfo->getBase().offset == 0);
         assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
         for (auto& tuple : incoming_binfos) {
           Value* incoming_ptr = std::get<0>(tuple);
@@ -711,8 +720,8 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
       } else {
         // prev_iteration base was not a phi. we'll have to insert a fresh phi
       }
-      if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->max.ptr))) {
-        assert(prev_iteration_dyninfo->max.offset == 0);
+      if ((max_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->getMax().ptr))) {
+        assert(prev_iteration_dyninfo->getMax().offset == 0);
         assert(incoming_binfos.size() == max_phi->getNumIncomingValues());
         for (auto& tuple : incoming_binfos) {
           Value* incoming_ptr = std::get<0>(tuple);

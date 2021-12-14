@@ -1596,8 +1596,8 @@ private:
   ) {
     ptr = Builder.castToCharStar(ptr);
     Value* Fail = Builder.CreateLogicalOr(
-      Builder.CreateICmpULT(ptr, binfo.base.as_llvm_value(Builder)),
-      Builder.CreateICmpUGT(ptr, binfo.max.as_llvm_value(Builder))
+      Builder.CreateICmpULT(ptr, binfo.getBase().as_llvm_value(Builder)),
+      Builder.CreateICmpUGT(ptr, binfo.getMax().as_llvm_value(Builder))
     );
     BasicBlock* failbb = boundsCheckFailBB(ptr);
     new_blocks.push_back(failbb);

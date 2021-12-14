@@ -15,6 +15,7 @@ define i32 @main(i32 %argc, i8** nocapture readonly %argv) {
 	call i64 @load_mod_deref_nonconst(i32 %argc)
 	call i64 @storeload_null()
 	call i64 @access_global()
+	call i64 @fwrite_to_stderr()
 	ret i32 0
 }
 
@@ -177,4 +178,18 @@ define i64 @access_global() noinline {
 	%ptr2 = getelementptr i8, i8* %strptr, i64 12
 	%loaded2 = load volatile i8, i8* %ptr2, align 1
 	ret i64 0
+}
+
+; call fwrite to stderr
+%struct._IO_FILE = type { i32, i8*, i8*, i8*, i8*, i8*, i8*, i8*, i8*, i8*, i8*, i8*, %struct._IO_marker*, %struct._IO_FILE*, i32, i32, i64, i16, i8, [1 x i8], i8*, i64, %struct._IO_codecvt*, %struct._IO_wide_data*, %struct._IO_FILE*, i8*, i64, i32, [20 x i8] }
+%struct._IO_marker = type opaque
+%struct._IO_codecvt = type opaque
+%struct._IO_wide_data = type opaque
+@stderr = external dso_local local_unnamed_addr global %struct._IO_FILE*, align 8
+@hi = private unnamed_addr constant [4 x i8] c"hi\0A\00", align 1
+declare noundef i64 @fwrite(i8* nocapture noundef, i64 noundef, i64 noundef, %struct._IO_FILE* nocapture noundef) local_unnamed_addr
+define i64 @fwrite_to_stderr() noinline {
+	%1 = load %struct._IO_FILE*, %struct._IO_FILE** @stderr, align 8
+	%ret = call i64 @fwrite(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @hi, i64 0, i64 0), i64 3, i64 1, %struct._IO_FILE* %1)
+	ret i64 %ret
 }
