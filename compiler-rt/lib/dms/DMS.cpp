@@ -24,6 +24,7 @@ DynamicBounds infinite_bounds() {
 
 #include "sanitizer_common/sanitizer_addrhashmap.h"
 #include <stdio.h>
+#include <assert.h>
 
 // AddrHashMap docs recommend a prime for the template arg. It appears to be the
 // number of buckets in the hashtable.
@@ -66,6 +67,7 @@ char __dms_get_bounds(void* ptr, void** base, void** max) {
   if (h->infinite) {
     return 1;
   } else {
+    assert(base && max && "base and max must not be NULL here");
     *base = h->base;
     *max = h->max;
     return 0;
