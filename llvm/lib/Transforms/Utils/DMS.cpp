@@ -217,6 +217,12 @@ public:
       } else if (isa<UndefValue>(constant)) {
         // undef values, which includes poison values, can be considered CLEAN
         return PointerStatus::clean();
+      } else if (isa<GlobalValue>(constant)) {
+        // global values can be considered CLEAN
+        // usually they'll be marked CLEAN in the actual `map`, but there are
+        // edge cases, such as when a PHI gets status in a predecessor block but
+        // the predecessor block hasn't been processed yet (eg due to a loop)
+        return PointerStatus::clean();
       } else if (const ConstantExpr* expr = dyn_cast<ConstantExpr>(constant)) {
         // it's a pointer created by a compile-time constant expression
         if (expr->isGEPWithNoNotionalOverIndexing()) {
@@ -249,7 +255,7 @@ public:
           }
         }
       } else {
-        // a constant, but not null and not a constant expression.
+        // a constant, but not null, a global, or a constant expression.
         dbgs() << "constant pointer of unhandled kind:\n";
         constant->dump();
         llvm_unreachable("getting status of constant pointer of unhandled kind");
