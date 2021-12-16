@@ -1406,9 +1406,14 @@ private:
           }
           break;
       }
+      DEBUG_WITH_TYPE("DMS-bounds-info",
+        if (inst.getType()->isPointerTy()) {
+          dbgs() << "DMS:     bounds info for the produced pointer " << inst.getNameOrAsOperand() << " is " << bounds_infos.get_binfo(&inst).pretty() << "\n";
+        }
+      );
       DEBUG_WITH_TYPE("DMS-inst-processing",
         if (inst.getType()->isPointerTy()) {
-          dbgs() << "DMS:     bounds info for the produced pointer is " << bounds_infos.get_binfo(&inst).pretty() << "\n";
+          dbgs() << "DMS:     bounds info for the produced pointer " << inst.getNameOrAsOperand() << " is " << bounds_infos.get_binfo(&inst).pretty() << "\n";
         }
         auto num_new_insts = added_insts.size() - num_added_insts_before_processing_this_inst;
         if (num_new_insts > 0) dbgs() << "DMS:   " << num_new_insts << " new instructions added while processing this instruction\n";

@@ -8,32 +8,45 @@ using namespace llvm;
 
 extern const APInt zero;
 
+CallNameInfo getCallNameInfo(const CallBase& call) {
+  Function* callee = call.getCalledFunction();
+  if (!callee) {
+    return CallNameInfo(CallNameInfo::INDIRECTCALL);
+  } else if (!callee->hasName()) {
+    return CallNameInfo(CallNameInfo::ANONCALL);
+  } else {
+    return CallNameInfo(CallNameInfo::NAMEDCALL, callee->getName());
+  }
+}
+
 /// If computing the allocation size requires inserting dynamic instructions,
 /// use `Builder`
 IsAllocatingCall isAllocatingCall(const CallBase &call, DMSIRBuilder& Builder) {
-  Function* callee = call.getCalledFunction();
-  if (!callee) {
-    // we assume indirect calls aren't allocating
-    return IsAllocatingCall::not_allocating();
+  CallNameInfo CNI = getCallNameInfo(call);
+  switch (CNI.kind) {
+    case CallNameInfo::INDIRECTCALL:
+      // we assume indirect calls aren't allocating
+      return IsAllocatingCall::not_allocating(CNI);
+    case CallNameInfo::ANONCALL:
+      // we assume anonymous functions aren't allocating
+      return IsAllocatingCall::not_allocating(CNI);
+    case CallNameInfo::NAMEDCALL:
+      if (CNI.name == "malloc") {
+        return IsAllocatingCall::allocating(call.getArgOperand(0), CNI);
+      } else if (CNI.name == "realloc") {
+        return IsAllocatingCall::allocating(call.getArgOperand(1), CNI);
+      } else if (CNI.name == "calloc") {
+        return IsAllocatingCall::allocating(Builder.CreateMul(
+          call.getArgOperand(0),
+          call.getArgOperand(1)
+        ), CNI);
+      } else if (CNI.name == "aligned_alloc") {
+        return IsAllocatingCall::allocating(call.getArgOperand(1), CNI);
+      }
+      return IsAllocatingCall::not_allocating(CNI);
+    default:
+      llvm_unreachable("Missing CNI.kind case");
   }
-  if (!callee->hasName()) {
-    // we assume anonymous functions aren't allocating
-    return IsAllocatingCall::not_allocating();
-  }
-  StringRef name = callee->getName();
-  if (name == "malloc") {
-    return IsAllocatingCall::allocating(call.getArgOperand(0));
-  } else if (name == "realloc") {
-    return IsAllocatingCall::allocating(call.getArgOperand(1));
-  } else if (name == "calloc") {
-    return IsAllocatingCall::allocating(Builder.CreateMul(
-      call.getArgOperand(0),
-      call.getArgOperand(1)
-    ));
-  } else if (name == "aligned_alloc") {
-    return IsAllocatingCall::allocating(call.getArgOperand(1));
-  }
-  return IsAllocatingCall::not_allocating();
 }
 
 /// Determine whether the GEP's total offset is a compile-time constant, and if

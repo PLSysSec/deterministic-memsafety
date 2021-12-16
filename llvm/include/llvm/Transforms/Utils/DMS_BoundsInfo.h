@@ -76,6 +76,9 @@ public:
 
     explicit StaticBoundsInfo(APInt low_offset, APInt high_offset)
       : low_offset(low_offset), high_offset(high_offset) {}
+    explicit StaticBoundsInfo(uint64_t low_offset, uint64_t high_offset)
+      : low_offset(APInt(/* numBits = */ 64, /* val = */ low_offset)),
+        high_offset(APInt(/* numBits = */ 64, /* val = */ high_offset)) {}
     StaticBoundsInfo() : low_offset(zero), high_offset(minusone) {}
 
     bool operator==(const StaticBoundsInfo& other) const {
@@ -314,6 +317,11 @@ public:
   /// Construct a BoundsInfo with the given static `low_offset` and
   /// `high_offset`
   static BoundsInfo static_bounds(APInt low_offset, APInt high_offset) {
+    return BoundsInfo(StaticBoundsInfo(low_offset, high_offset));
+  }
+  /// Construct a BoundsInfo with the given static `low_offset` and
+  /// `high_offset`
+  static BoundsInfo static_bounds(uint64_t low_offset, uint64_t high_offset) {
     return BoundsInfo(StaticBoundsInfo(low_offset, high_offset));
   }
 

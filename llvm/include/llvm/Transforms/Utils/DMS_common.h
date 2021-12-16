@@ -4,9 +4,41 @@
 #define DMS_COMMON_H
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
+
+struct CallNameInfo {
+  enum CallKind {
+    /// Call of a function pointer, or etc
+    INDIRECTCALL,
+    /// Call of an anonymous function
+    ANONCALL,
+    /// Call of a function we know the name of
+    NAMEDCALL,
+  };
+
+  /// Is the call indirect, anonymous, etc
+  CallKind kind;
+  /// If `kind` is `NAMEDCALL`, then this is the function name.
+  /// Otherwise, this is undefined
+  llvm::StringRef name;
+
+  CallNameInfo(CallKind kind) : kind(kind) {}
+  CallNameInfo(CallKind kind, llvm::StringRef name) : kind(kind), name(name) {}
+
+  bool operator==(const CallNameInfo& other) const {
+    if (kind != other.kind) return false;
+    if (kind == NAMEDCALL && name != other.name) return false;
+    return true;
+  }
+  bool operator!=(const CallNameInfo& other) const {
+    return !(*this == other);
+  }
+};
+
+CallNameInfo getCallNameInfo(const llvm::CallBase&);
 
 /// Struct exists because we can't use C++17's std::optional.
 /// Describes whether a call allocates memory, and if so, the size of
@@ -18,8 +50,11 @@ struct IsAllocatingCall {
   /// If it's not an allocating call, this field is invalid (and may be NULL).
   llvm::Value* allocation_bytes;
 
-  static IsAllocatingCall not_allocating() { return IsAllocatingCall { false, NULL }; }
-  static IsAllocatingCall allocating(llvm::Value* size) { return IsAllocatingCall { true, size }; }
+  /// also in case you need it, here's the CallNameInfo
+  CallNameInfo CNI;
+
+  static IsAllocatingCall not_allocating(CallNameInfo CNI) { return IsAllocatingCall { false, NULL, CNI }; }
+  static IsAllocatingCall allocating(llvm::Value* size, CallNameInfo CNI) { return IsAllocatingCall { true, size, CNI }; }
 };
 
 /// If computing the allocation size requires inserting dynamic instructions,
