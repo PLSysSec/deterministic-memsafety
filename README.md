@@ -3,11 +3,6 @@
 DMS implementation is at `llvm/lib/Transforms/Utils/DMS.cpp`, and DMS tests
 are at `llvm/test/Transforms/DMS`.
 
-There is also a script `summarize_dynamic_counts.sh` in the root of this repo
-which is useful for collecting results from running dynamically instrumented
-programs -- i.e., the data in the dynamically generated `dms_dynamic_counts`
-directories.
-
 ## Building
 
 To build, use the following:
@@ -18,13 +13,23 @@ cd build
 ninja
 ```
 
+Once you've built the first time, if you've made changes and want to rebuild,
+you don't have to run `cmake` again---just use `ninja`.
+
+### Debug vs Release builds
+
 For a release (optimized) build, you can add `-DCMAKE_BUILD_TYPE=Release` or
 `-DCMAKE_BUILD_TYPE=RelWithDebInfo` to the `cmake` command.
 If you do either of these, you may want to also re-enable assertions with
 `-DLLVM_ENABLE_ASSERTIONS=1`.
 
-Once you've built the first time, if you've made changes and want to rebuild,
-you don't have to run `cmake` again---just use `ninja`.
+Release builds are a lot faster than debug builds (both for compiling LLVM and
+for running LLVM, eg compiling SPEC), so unless you're debugging problems
+specifically related to LLVM, you may want to use a release build.
+
+You can also have both a release and a debug build at the same time, in
+separate build directories, by running `cmake` again with a different `-B`
+argument.
 
 ## Running tests
 
@@ -41,9 +46,10 @@ command, where `<option>` is one of:
   but just reports static statistics about clean/dirty pointers etc.
 * `paranoid-static`: same as `static`, but doesn't trust LLVM struct types --
   see comments in `DMS.h`.
-* `dynamic`: this runs the dynamic DMS pass, which instruments the code so
-  that at runtime it will count dynamic statistics about clean/dirty pointers
-  etc, and print those counts when the program finishes.
+* `dynamic`: this runs the dynamic DMS pass, which instruments the code so that
+  at runtime it will count dynamic statistics about clean/dirty pointers etc,
+  and print those counts to a file in `./dms_dynamic_counts` when the program
+  finishes.
 * `dynamic-stdout`: same as `dynamic`, but prints dynamic statistics to stdout
   instead of to a file in `./dms_dynamic_counts/`.
 * `bounds`: modifies the code to actually insert SW bounds checks on every
@@ -64,7 +70,7 @@ You can use either a `.ll` (text-format) or `.bc` (binary-format bitcode) file
 as input.
 To get detailed debugging information, add the `-debug` flag.
 
-### Dynamic DMS pass:
+### Dynamic DMS passes, including bounds-check insertion:
 
 From the `llvm` directory: `./build/bin/opt -passes=<pass> file.ll -o=file_instrumented.bc`
 where `<pass>` is either `dynamic-dms`, `dynamic-stdout-dms`, or `bounds-dms`.
@@ -72,6 +78,13 @@ where `<pass>` is either `dynamic-dms`, `dynamic-stdout-dms`, or `bounds-dms`.
 To get `.ll` _output_ instead of `.bc`, add the `-S` flag (and, to avoid
 confusion, change the extension of the output filename).
 To get detailed debugging information, add the `-debug` flag.
+
+## Collecting results from the dynamic-statistics DMS pass
+
+There is a script `summarize_dynamic_counts.sh` in the root of this repo which
+is useful for collecting results from running dynamically instrumented programs
+-- i.e., the data in the dynamically generated `dms_dynamic_counts`
+directories.
 
 ## Compiling with DMS passes -- the old way
 
