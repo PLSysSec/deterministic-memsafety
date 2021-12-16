@@ -58,6 +58,13 @@ command, where `<option>` is one of:
 You can also specify more than one of these options, comma-separated: e.g.,
 `-fdms=static,dynamic`.
 
+### Debugging
+
+To get debug logging, you can add the Clang flag `-mllvm -debug-only=DMS`.
+Even more logging is available with additional logging tags, which you can
+discover in the DMS source code.
+For instance, `-mllvm -debug-only=DMS,DMS-inst-processing`.
+
 ## Running the DMS passes on individual bitcode files
 
 ### Static DMS passes:
