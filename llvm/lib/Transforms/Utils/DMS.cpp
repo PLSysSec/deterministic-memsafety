@@ -505,8 +505,8 @@ public:
   struct StaticResults {
     // How many loads have a clean/dirty pointer as address
     StaticCounts load_addrs;
-    // How many stores have a clean/dirty pointer as address (we don't count the
-    // data being stored, even if it's a pointer)
+    // How many stores have a clean/dirty pointer as address (this doesn't count
+    // the data being stored, even if it's a pointer)
     StaticCounts store_addrs;
     // How many times are we storing a clean/dirty pointer to memory (this
     // doesn't care whether the address of the store is clean or dirty)
