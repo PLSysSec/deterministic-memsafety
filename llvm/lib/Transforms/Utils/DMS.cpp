@@ -1827,6 +1827,11 @@ PreservedAnalyses DynamicStdoutDMSPass::run(Function &F, FunctionAnalysisManager
 }
 
 PreservedAnalyses BoundsChecksDMSPass::run(Function &F, FunctionAnalysisManager &FAM) {
+  // Don't do any analysis or instrumentation on the special function __DMS_bounds_initialization
+  if (F.getName() == "__DMS_bounds_initialization") {
+    return PreservedAnalyses::all();
+  }
+
   DMSAnalysis::Settings settings;
   settings.trust_llvm_struct_types = true;
   settings.inttoptr_kind = PointerKind::CLEAN;
