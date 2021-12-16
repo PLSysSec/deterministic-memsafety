@@ -5,14 +5,8 @@
 struct DynamicBounds {
   void* base;
   void* max;
-  uint64_t infinite; // if nonzero (true), then consider this to be infinite bounds; `base` and `max` may not be valid
-    // we use 'uint64_t' just to make the struct layout blindingly obvious and avoid any possible ABI mismatch with the calling code
+  bool infinite; // if true, then consider this to be infinite bounds; `base` and `max` may not be valid
 };
-
-DynamicBounds dynamic_bounds(void* base, void* max);
-DynamicBounds infinite_bounds();
-
-// -- above this line, mirror all changes to dms_interface.h -- //
 
 DynamicBounds dynamic_bounds(void* base, void* max) {
   return DynamicBounds { base, max, 0 };
