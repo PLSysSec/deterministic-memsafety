@@ -220,7 +220,11 @@ public:
 
     /// Information needed to (lazily) compute the `Info` if/when needed
     struct LazyInfo {
+      /// Dynamic info for the pointer at which address (this should be a _decoded_ ptr)
+      Value* addr;
       /// Dynamic info for which loaded ptr (this should be a _decoded_ ptr)
+      /// Except for decoding, `loaded_ptr` should have been produced by loading
+      /// the above `addr`
       Instruction* loaded_ptr;
       /// Reference to the `added_insts` where we note any instructions added
       /// for bounds purposes. See notes on `added_insts` in `DMSAnalysis`
@@ -229,15 +233,15 @@ public:
       /// `LazyInfo` (for instance if `DynamicBoundsInfo.isLazy` is `false`)
       DenseSet<const Instruction*>* added_insts;
 
-      explicit LazyInfo(Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts)
-        : loaded_ptr(loaded_ptr), added_insts(&added_insts) {}
-      LazyInfo() : loaded_ptr(NULL), added_insts(NULL) {}
+      explicit LazyInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts)
+        : addr(addr), loaded_ptr(loaded_ptr), added_insts(&added_insts) {}
+      LazyInfo() : addr(NULL), loaded_ptr(NULL), added_insts(NULL) {}
 
       Info force();
 
       bool operator==(const LazyInfo& other) const {
         // don't need to check that added_insts are equal
-        return (loaded_ptr == other.loaded_ptr);
+        return (addr == other.addr && loaded_ptr == other.loaded_ptr);
       }
       bool operator!=(const LazyInfo& other) const {
         return !(*this == other);
@@ -254,10 +258,21 @@ public:
       : isLazy(false), info(Info(base, max)) {}
     DynamicBoundsInfo() : isLazy(false), info(Info()) {}
 
-    static DynamicBoundsInfo LazyDynamicBoundsInfo(Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
+    /// `addr`: Address of the pointer for which we need dynamic info (this
+    /// should be a _decoded_ ptr)
+    ///
+    /// `loaded_ptr`: Pointer value for which we need dynamic info (this should
+    /// be a _decoded_ ptr)
+    /// Except for decoding, `loaded_ptr` should have been produced by loading
+    /// the above `addr`
+    ///
+    /// `added_insts`: Reference to the `added_insts` where we note any
+    /// instructions added for bounds purposes. See notes on `added_insts` in
+    /// `DMSAnalysis`
+    static DynamicBoundsInfo LazyDynamicBoundsInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
       DynamicBoundsInfo dyninfo;
       dyninfo.isLazy = true;
-      dyninfo.lazy = LazyInfo(loaded_ptr, added_insts);
+      dyninfo.lazy = LazyInfo(addr, loaded_ptr, added_insts);
       return dyninfo;
     }
 
@@ -445,24 +460,28 @@ public:
 
   /// Insert dynamic instructions to store this bounds info.
   ///
-  /// `cur_ptr` is the pointer which these bounds are for.
+  /// `ptr` is the pointer this bounds info applies to; call it P. `addr` is &P.
+  /// Both `ptr` and `addr` need to be _decoded_ pointer values.
   ///
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
   ///
   /// Returns the Call instruction if one was inserted, or else NULL
-  CallInst* store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const;
+  CallInst* store_dynamic(Value* addr, Value* ptr, DMSIRBuilder& Builder) const;
 
-  /// Get a `DynamicBoundsInfo` representing dynamic bounds for the given `ptr`.
-  /// (This should be a _decoded_ pointer value.)
+  /// Get a `DynamicBoundsInfo` representing dynamic bounds for the pointer
+  /// `loaded_ptr`, which should have been loaded from the given `addr`. (I.e.,
+  /// `addr == &loaded_ptr`.)
+  /// (Both `addr` and `loaded_ptr` should be _decoded_ pointer values.)
   ///
   /// Computes the actual bounds lazily, i.e., does not insert any dynamic
   /// instructions unless/until this `DynamicBoundsInfo` is actually needed
   /// for a bounds check.
   ///
-  /// Bounds info for this `ptr` should have been previously stored with
+  /// Bounds info for this `addr` should have been previously stored with
   /// `store_dynamic()`.
   static DynamicBoundsInfo dynamic_bounds_for_ptr(
-    Instruction* ptr,
+    Value* addr,
+    Instruction* loaded_ptr,
     DenseSet<const Instruction*>& added_insts
   );
 
@@ -564,12 +583,13 @@ private:
   /// `pointer_aliases` in `DMSAnalysis`
   DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
 
-  /// For all pointer expressions used in the given `Constant`, make entries in
-  /// the dynamic bounds table for each pointer expression. (This includes, eg,
-  /// pointers to global variables, GEPs of such pointers, etc.)
+  /// For all pointer expressions used in the given `Constant` (which we assume
+  /// is the initializer for the given `addr`), make entries in the dynamic
+  /// bounds table for each pointer expression. (This includes, eg, pointers to
+  /// global variables, GEPs of such pointers, etc.)
   ///
   /// If dynamic instructions need to be inserted, use `Builder`.
-  void store_info_for_all_ptr_exprs(Constant*, DMSIRBuilder&);
+  void store_info_for_all_ptr_exprs(Value* addr, Constant*, DMSIRBuilder&);
 
   /// Like `get_binfo()`, but doesn't check aliases of the given ptr, if any
   /// exist. This is used internally by `get_binfo()`.

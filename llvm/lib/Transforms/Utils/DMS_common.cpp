@@ -116,41 +116,41 @@ static const char* store_bounds_inf_func = "_ZN5__dms27__dms_store_infinite_boun
 static const char* boundscheckfail_func = "_ZN5__dms21__dms_boundscheckfailEPv";
 
 /// Convenience function to create calls to our runtime support function
-/// `__dms_store_bounds()`.
+/// `__dms_store_bounds()`. See docs in dms_interface.h.
 ///
-/// The arguments `ptr`, `base`, and `max` can be any pointer type (not
+/// The arguments `addr`, `base`, and `max` can be any pointer type (not
 /// necessarily `void*`). They should be UNENCODED values, ie with all upper
 /// bits clear.
-CallInst* call_dms_store_bounds(Value* ptr, Value* base, Value* max, DMSIRBuilder& Builder) {
+CallInst* call_dms_store_bounds(Value* addr, Value* base, Value* max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
   FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
-  return Builder.CreateCall(StoreBounds, {Builder.castToCharStar(ptr), Builder.castToCharStar(base), Builder.castToCharStar(max)});
+  return Builder.CreateCall(StoreBounds, {Builder.castToCharStar(addr), Builder.castToCharStar(base), Builder.castToCharStar(max)});
 }
 
 /// Convenience function to create calls to our runtime support function
-/// `__dms_store_infinite_bounds()`.
+/// `__dms_store_infinite_bounds()`. See docs in dms_interface.h.
 ///
-/// The `ptr` argument can be any pointer type (not necessarily `void*`),
+/// The `addr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
-CallInst* call_dms_store_infinite_bounds(Value* ptr, DMSIRBuilder& Builder) {
+CallInst* call_dms_store_infinite_bounds(Value* addr, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
   FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
-  return Builder.CreateCall(StoreBoundsInf, {Builder.castToCharStar(ptr)});
+  return Builder.CreateCall(StoreBoundsInf, {Builder.castToCharStar(addr)});
 }
 
 /// Convenience function to create calls to our runtime support function
-/// `__dms_get_bounds()`.
+/// `__dms_get_bounds()`. See docs in dms_interface.h.
 ///
-/// The `ptr` argument can be any pointer type (not necessarily `void*`),
+/// The `addr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
 ///
 /// `output_base` and `output_max` are output parameters and should have LLVM
 /// type i8**.
-CallInst* call_dms_get_bounds(Value* ptr, Value* output_base, Value* output_max, DMSIRBuilder& Builder) {
+CallInst* call_dms_get_bounds(Value* addr, Value* output_base, Value* output_max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharTy = Builder.getInt8Ty();
   static Type* CharStarTy = Builder.getInt8PtrTy();
@@ -159,11 +159,11 @@ CallInst* call_dms_get_bounds(Value* ptr, Value* output_base, Value* output_max,
   FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
   assert(output_base->getType() == CharStarStarTy);
   assert(output_max->getType() == CharStarStarTy);
-  return Builder.CreateCall(GetBounds, {Builder.castToCharStar(ptr), output_base, output_max});
+  return Builder.CreateCall(GetBounds, {Builder.castToCharStar(addr), output_base, output_max});
 }
 
 /// Convenience function to create calls to our runtime support function
-/// `__dms_boundscheckfail()`.
+/// `__dms_boundscheckfail()`. See docs in dms_interface.h.
 ///
 /// The `ptr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.

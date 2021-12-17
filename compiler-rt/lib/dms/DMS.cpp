@@ -9,11 +9,11 @@ struct DynamicBounds {
 };
 
 DynamicBounds dynamic_bounds(void* base, void* max) {
-  return DynamicBounds { base, max, 0 };
+  return DynamicBounds { base, max, false };
 }
 
 DynamicBounds infinite_bounds() {
-  return DynamicBounds { NULL, NULL, 1 };
+  return DynamicBounds { NULL, NULL, true };
 }
 
 #include "sanitizer_common/sanitizer_addrhashmap.h"
@@ -28,33 +28,42 @@ static BoundsMap bounds_map;
 
 namespace __dms {
 
-/// Mark that the dynamic bounds for `ptr` are `base` and `max`.
-/// `ptr` should be an UNENCODED value, ie with all upper bits clear.
-void __dms_store_bounds(void* ptr, void* base, void* max) {
-  if (ptr == NULL) return; // null ptr always has infinite bounds; doesn't need to be stored in hashtable. Even if this call was trying to establish more restrictive bounds for a nullptr, it's safe to extend them to infinite, bc it will trap on dereference anyway, no need for bounds check
-  BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
+/// Mark that the dynamic bounds for the pointer P stored at location `addr` are
+/// `base` and `max`. (This implies that `addr` has type T** for some T.)
+/// In the normal case, `base` <= P <= `max`; `addr` is &P.
+/// Of course, `addr` should be an UNENCODED value, ie with all upper bits clear.
+/// (P is probably an encoded pointer value, and that's fine.)
+void __dms_store_bounds(void* addr, void* base, void* max) {
+  assert(addr != NULL);
+  BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)addr);
   *h = dynamic_bounds(base, max);
 }
 
-/// Mark that the dynamic bounds for `ptr` should be considered infinite.
-/// `ptr` should be an UNENCODED value, ie with all upper bits clear.
-void __dms_store_infinite_bounds(void* ptr) {
-  if (ptr == NULL) return; // null ptr always has infinite bounds; doesn't need to be stored in hashtable
-  BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
+/// Mark that the dynamic bounds for the pointer P stored at location `addr`
+/// should be considered infinite. (This implies that `addr` has type T** for
+/// some T.)
+/// Of course, `addr` should be an UNENCODED value, ie with all upper bits clear.
+/// (P is probably an encoded pointer value, and that's fine.)
+void __dms_store_infinite_bounds(void* addr) {
+  assert(addr != NULL);
+  BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)addr);
   *h = infinite_bounds();
 }
 
-/// Get the (previously stored) dynamic bounds for `ptr`.
-/// `ptr` should be an UNENCODED value, ie with all upper bits clear.
+/// Get the (previously stored) dynamic bounds for pointer P stored at location
+/// `addr`. (This implies that `addr` has type T** for some T.)
+/// Of course, `addr` should be an UNENCODED value, ie with all upper bits clear.
+/// (P is probably an encoded pointer value, and that's fine.)
 ///
-/// If this returns true (nonzero), then `ptr` has been marked as infinite bounds.
+/// If this returns true (nonzero), then P has been marked as infinite bounds.
 /// If this returns false (zero), then this writes the base and max to the
 /// output parameters `base` and `max`.
-char __dms_get_bounds(void* ptr, void** base, void** max) {
-  if (ptr == NULL) return 1; // null ptr always has infinite bounds; we never need to bounds-check it
-  BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)ptr);
+/// P will be required to satisfy `base` <= P <= `max`.
+char __dms_get_bounds(void* addr, void** base, void** max) {
+  assert(addr != NULL);
+  BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)addr);
   if (h.created()) {
-    fprintf(stderr, "Bounds lookup failed: no bounds for %p\n", ptr);
+    fprintf(stderr, "Bounds lookup failed: no bounds for the pointer at address %p\n", addr);
     __sanitizer::ReportErrorSummary("Bounds lookup failure");
     __sanitizer::Abort();
   }

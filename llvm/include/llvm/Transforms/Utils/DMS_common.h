@@ -87,32 +87,32 @@ bool wellFormed(const llvm::BasicBlock& bb);
 void verifyGVUsersAreWellFormed(const llvm::Function& F);
 
 /// Convenience function to create calls to our runtime support function
-/// `__dms_store_bounds()`.
+/// `__dms_store_bounds()`. See docs in dms_interface.h.
 ///
-/// The arguments `ptr`, `base`, and `max` can be any pointer type (not
+/// The arguments `addr`, `base`, and `max` can be any pointer type (not
 /// necessarily `void*`). They should be UNENCODED values, ie with all upper
 /// bits clear.
-llvm::CallInst* call_dms_store_bounds(llvm::Value* ptr, llvm::Value* base, llvm::Value* max, llvm::DMSIRBuilder& Builder);
+llvm::CallInst* call_dms_store_bounds(llvm::Value* addr, llvm::Value* base, llvm::Value* max, llvm::DMSIRBuilder& Builder);
 
 /// Convenience function to create calls to our runtime support function
-/// `__dms_store_infinite_bounds()`.
+/// `__dms_store_infinite_bounds()`. See docs in dms_interface.h.
 ///
-/// The `ptr` argument can be any pointer type (not necessarily `void*`),
+/// The `addr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
-llvm::CallInst* call_dms_store_infinite_bounds(llvm::Value* ptr, llvm::DMSIRBuilder& Builder);
+llvm::CallInst* call_dms_store_infinite_bounds(llvm::Value* addr, llvm::DMSIRBuilder& Builder);
 
 /// Convenience function to create calls to our runtime support function
-/// `__dms_get_bounds()`.
+/// `__dms_get_bounds()`. See docs in dms_interface.h.
 ///
-/// The `ptr` argument can be any pointer type (not necessarily `void*`),
+/// The `addr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
 ///
 /// `output_base` and `output_max` are output parameters and should have LLVM
 /// type i8**.
-llvm::CallInst* call_dms_get_bounds(llvm::Value* ptr, llvm::Value* output_base, llvm::Value* output_max, llvm::DMSIRBuilder& Builder);
+llvm::CallInst* call_dms_get_bounds(llvm::Value* addr, llvm::Value* output_base, llvm::Value* output_max, llvm::DMSIRBuilder& Builder);
 
 /// Convenience function to create calls to our runtime support function
-/// `__dms_boundscheckfail()`.
+/// `__dms_boundscheckfail()`. See docs in dms_interface.h.
 ///
 /// The `ptr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.

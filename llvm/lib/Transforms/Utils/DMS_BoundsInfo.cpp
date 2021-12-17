@@ -208,42 +208,37 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 
 /// Insert dynamic instructions to store this bounds info.
 ///
-/// `cur_ptr` is the pointer which these bounds are for.
-/// (This should be a _decoded_ pointer value.)
+/// `ptr` is the pointer this bounds info applies to; call it P. `addr` is &P.
+/// Both `ptr` and `addr` need to be _decoded_ pointer values.
 ///
 /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
 ///
 /// Returns the Call instruction if one was inserted, or else NULL
-CallInst* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const {
-  assert(cur_ptr);
-  assert(cur_ptr->getType()->isPointerTy());
-  if (const Constant* const_cur_ptr = dyn_cast<Constant>(cur_ptr)) {
-    if (const_cur_ptr->isNullValue()) {
-      // No need to store bounds for the constant-NULL pointer.
-      // If we ever ask for bounds of a NULL pointer dynamically, our runtime
-      // just gives us infinite bounds without actually doing a lookup for the
-      // NULL pointer
-      return NULL;
-    }
-  }
-  LLVM_DEBUG(dbgs() << "Inserting a call to store dynamic bounds info for " << cur_ptr->getNameOrAsOperand() << "\n");
+CallInst* BoundsInfo::store_dynamic(Value* addr, Value* ptr, DMSIRBuilder& Builder) const {
+  assert(ptr);
+  assert(addr);
+  assert(ptr->getType()->isPointerTy());
+  assert(addr->getType()->isPointerTy());
+  assert(cast<PointerType>(addr->getType())->getElementType()->isPointerTy());
+  //assert(cast<PointerType>(addr->getType())->getElementType() == ptr->getType());
+  LLVM_DEBUG(dbgs() << "Inserting a call to store dynamic bounds info for the pointer " << ptr->getNameOrAsOperand() << " stored at " << addr->getNameOrAsOperand() << "\n");
   switch (kind) {
     case BoundsInfo::INFINITE: {
-      return call_dms_store_infinite_bounds(cur_ptr, Builder);
+      return call_dms_store_infinite_bounds(addr, Builder);
     }
     case BoundsInfo::UNKNOWN: {
-      errs() << "warning: bounds info unknown for " << cur_ptr->getNameOrAsOperand() << "; considering it as infinite bounds\n";
-      return call_dms_store_infinite_bounds(cur_ptr, Builder);
+      errs() << "warning: bounds info unknown for the pointer " << ptr->getNameOrAsOperand() << " stored at " << addr->getNameOrAsOperand() << "; considering it as infinite bounds\n";
+      return call_dms_store_infinite_bounds(addr, Builder);
     }
     case BoundsInfo::NOTDEFINEDYET: {
-      errs() << "error during store_dynamic for " << cur_ptr->getNameOrAsOperand() << "\n";
+      errs() << "error during store_dynamic with ptr=" << ptr->getNameOrAsOperand() << ", addr=" << addr->getNameOrAsOperand() << "\n";
       llvm_unreachable("store_dynamic: bounds info should be defined (at least UNKNOWN)");
     }
     default: {
-      Value* base = base_as_llvm_value(cur_ptr, Builder);
-      Value* max = max_as_llvm_value(cur_ptr, Builder);
+      Value* base = base_as_llvm_value(ptr, Builder);
+      Value* max = max_as_llvm_value(ptr, Builder);
       if (base && max) {
-        return call_dms_store_bounds(cur_ptr, base, max, Builder);
+        return call_dms_store_bounds(addr, base, max, Builder);
       } else {
         llvm_unreachable("base and/or max are NULL, but boundsinfo is not INFINITE or UNKNOWN or NOTDEFINEDYET");
       }
@@ -251,28 +246,38 @@ CallInst* BoundsInfo::store_dynamic(Value* cur_ptr, DMSIRBuilder& Builder) const
   }
 }
 
-/// Get a `DynamicBoundsInfo` representing dynamic bounds for the given `ptr`.
-/// (This should be a _decoded_ pointer value.)
+/// Get a `DynamicBoundsInfo` representing dynamic bounds for the pointer
+/// `loaded_ptr`, which should have been loaded from the given `addr`. (I.e.,
+/// `addr == &loaded_ptr`.)
+/// (Both `addr` and `loaded_ptr` should be _decoded_ pointer values.)
 ///
 /// Computes the actual bounds lazily, i.e., does not insert any dynamic
 /// instructions unless/until this `DynamicBoundsInfo` is actually needed
 /// for a bounds check.
 ///
-/// Bounds info for this `ptr` should have been previously stored with
+/// Bounds info for this `addr` should have been previously stored with
 /// `store_dynamic()`.
-BoundsInfo::DynamicBoundsInfo BoundsInfo::dynamic_bounds_for_ptr(Instruction* ptr, DenseSet<const Instruction*>& added_insts) {
-  return DynamicBoundsInfo::LazyDynamicBoundsInfo(ptr, added_insts);
+BoundsInfo::DynamicBoundsInfo BoundsInfo::dynamic_bounds_for_ptr(
+  Value* addr,
+  Instruction* loaded_ptr,
+  DenseSet<const Instruction*>& added_insts
+) {
+  return DynamicBoundsInfo::LazyDynamicBoundsInfo(addr, loaded_ptr, added_insts);
 }
 
 BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyInfo::force() {
+  assert(addr);
   assert(loaded_ptr);
+  assert(addr->getType()->isPointerTy());
   assert(loaded_ptr->getType()->isPointerTy());
-  LLVM_DEBUG(dbgs() << "Inserting a call to load dynamic bounds info for " << loaded_ptr->getNameOrAsOperand() << "\n");
+  assert(cast<PointerType>(addr->getType())->getElementType()->isPointerTy());
+  //assert(cast<PointerType>(addr->getType())->getElementType() == loaded_ptr->getType());
+  LLVM_DEBUG(dbgs() << "Inserting a call to load dynamic bounds info for the pointer " << loaded_ptr->getNameOrAsOperand() << " loaded from " << addr->getNameOrAsOperand() << "\n");
   DMSIRBuilder Builder(loaded_ptr, DMSIRBuilder::AFTER, added_insts);
   static Type* CharStarTy = Builder.getInt8PtrTy();
   Value* output_base = Builder.CreateAlloca(CharStarTy);
   Value* output_max = Builder.CreateAlloca(CharStarTy);
-  Value* infinite = call_dms_get_bounds(loaded_ptr, output_base, output_max, Builder);
+  Value* infinite = call_dms_get_bounds(addr, output_base, output_max, Builder);
   Value* isInfinite = Builder.CreateICmpNE(infinite, Builder.getInt8(0));
   Value* base = Builder.CreateSelect(
     isInfinite,
@@ -320,19 +325,15 @@ BoundsInfos::BoundsInfos(
       // In the future, instead we could call strlen() on each of them
       // dynamically, in order to establish dynamic bounds
       // At any rate, we need a dynamic for-loop, in order to call
-      // __dms_store_infinite_bounds() on each argv element, since we don't know
+      // __dms_store_infinite_bounds() for each argv element, since we don't know
       // how many argv elements there are statically
       BasicBlock& Entry = F.getEntryBlock();
       BasicBlock* forloopbody = Entry.splitBasicBlock(Entry.getFirstInsertionPt());
       DMSIRBuilder Builder(forloopbody, forloopbody->getFirstInsertionPt(), &added_insts);
       PHINode* loopindex = Builder.CreatePHI(Builder.getInt32Ty(), 2, "__dms_argc_loopindex");
       loopindex->addIncoming(Builder.getIntN(/* bits = */ 32, /* val = */ 0), &Entry);
-      Value* charptr = Builder.CreateLoad(
-        Builder.getInt8PtrTy(),
-        Builder.CreateGEP(Builder.getInt8PtrTy(), argv, loopindex)
-      );
-      map[charptr] = BoundsInfo::infinite();
-      call_dms_store_infinite_bounds(charptr, Builder);
+      Value* stringptr = Builder.CreateGEP(Builder.getInt8PtrTy(), argv, loopindex);
+      call_dms_store_infinite_bounds(stringptr, Builder);
       Value* incd_loopindex = Builder.CreateAdd(loopindex, Builder.getIntN(/* bits = */ 32, /* val = */ 1));
       loopindex->addIncoming(incd_loopindex, forloopbody);
       Value* cond = Builder.CreateICmpULT(incd_loopindex, argc);
@@ -398,7 +399,7 @@ void BoundsInfos::module_initialization(
     if (GlobalVariable* gv = dyn_cast<GlobalVariable>(&gobj)) {
       if (gv->hasInitializer()) {
         Constant* initializer = gv->getInitializer();
-        binfos.store_info_for_all_ptr_exprs(initializer, Builder);
+        binfos.store_info_for_all_ptr_exprs(gv, initializer, Builder);
       }
     }
   }
@@ -408,31 +409,44 @@ void BoundsInfos::module_initialization(
   appendToGlobalCtors(mod, new_func, 65535);
 }
 
-/// For all pointer expressions used in the given `Constant`, make entries in
-/// the dynamic bounds table for each pointer expression. (This includes, eg,
-/// pointers to global variables, GEPs of such pointers, etc.)
+/// For all pointer expressions used in the given `Constant` (which we assume is
+/// the initializer for the given `addr`), make entries in the dynamic bounds
+/// table for each pointer expression. (This includes, eg, pointers to global
+/// variables, GEPs of such pointers, etc.)
 ///
 /// If dynamic instructions need to be inserted, use `Builder`.
-void BoundsInfos::store_info_for_all_ptr_exprs(Constant* c, DMSIRBuilder& Builder) {
+void BoundsInfos::store_info_for_all_ptr_exprs(Value* addr, Constant* c, DMSIRBuilder& Builder) {
   if (GlobalValue* gv = dyn_cast<GlobalValue>(c)) {
+    assert(gv->getType()->isPointerTy());
     BoundsInfo binfo = get_binfo(gv);
-    binfo.store_dynamic(gv, Builder);
+    binfo.store_dynamic(addr, gv, Builder);
+  } else if (c->getType()->isPointerTy() && c->isNullValue()) {
+    BoundsInfo binfo = get_binfo(c);
+    binfo.store_dynamic(addr, c, Builder);
   } else if (ConstantAggregate* cagg = dyn_cast<ConstantAggregate>(c)) {
-    for (Value* op: cagg->operands()) {
-      // op must be a constant
-      store_info_for_all_ptr_exprs(cast<Constant>(op), Builder);
+    for (unsigned i = 0; i < cagg->getNumOperands(); i++) {
+      Value* op = cagg->getOperand(i);
+      unsigned gepIndexSizeBits = DL.getIndexSizeInBits(cast<PointerType>(addr->getType())->getAddressSpace());
+      store_info_for_all_ptr_exprs(
+        Builder.CreateGEP(cagg->getType(), addr, {
+          Builder.getIntN(gepIndexSizeBits, 0),
+          Builder.getIntN(gepIndexSizeBits, i)
+        }),
+        cast<Constant>(op), // op must be a constant
+        Builder
+      );
     }
   } else if (ConstantExpr* cexpr = dyn_cast<ConstantExpr>(c)) {
     switch (cexpr->getOpcode()) {
       case Instruction::BitCast:
       case Instruction::AddrSpaceCast:
       {
-        store_info_for_all_ptr_exprs(cexpr->getOperand(0), Builder);
+        store_info_for_all_ptr_exprs(addr, cexpr->getOperand(0), Builder);
         break;
       }
       case Instruction::GetElementPtr: {
         BoundsInfo binfo = get_binfo(cexpr);
-        binfo.store_dynamic(cexpr, Builder);
+        binfo.store_dynamic(addr, cexpr, Builder);
         break;
       }
       default: {
@@ -535,7 +549,7 @@ void BoundsInfos::propagate_bounds(StoreInst& store, Value* override_stored_ptr)
   }
   if (need_regenerate_bounds_store) {
     DMSIRBuilder Builder(&store, DMSIRBuilder::AFTER, &added_insts);
-    Instruction* new_bounds_call = binfo.store_dynamic(storedVal, Builder);
+    Instruction* new_bounds_call = binfo.store_dynamic(store.getPointerOperand(), storedVal, Builder);
     store_bounds_calls[&store] = BoundsStoringCall(new_bounds_call, binfo);
   }
 }
@@ -651,7 +665,11 @@ void BoundsInfos::propagate_bounds(LoadInst& load, Instruction* loaded_ptr) {
   // compute the bounds of the loaded pointer. if we need to (eventually,
   // lazily) do a dynamic lookup in the global bounds table, this requires the
   // decoded pointer value.
-  BoundsInfo::DynamicBoundsInfo dyninfo = BoundsInfo::dynamic_bounds_for_ptr(loaded_ptr, added_insts);
+  BoundsInfo::DynamicBoundsInfo dyninfo = BoundsInfo::dynamic_bounds_for_ptr(
+    load.getPointerOperand(),
+    loaded_ptr,
+    added_insts
+  );
   map[&load] = BoundsInfo(std::move(dyninfo));
 }
 
