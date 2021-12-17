@@ -204,7 +204,7 @@ BoundsInfo BoundsInfos::get_binfo_noalias(const Value* ptr) const {
           // constant-GEP expression
           Instruction* inst = expr->getAsInstruction();
           GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-          BoundsInfo ret = bounds_info_for_gep(*gepinst, DL);
+          BoundsInfo ret = bounds_info_for_gep(*gepinst);
           inst->deleteValue();
           return ret;
         }
@@ -285,7 +285,7 @@ void BoundsInfos::propagate_bounds_id(Instruction& inst) {
   map[&inst] = get_binfo(input_ptr);
 }
 
-BoundsInfo BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep, const DataLayout& DL) const {
+BoundsInfo BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep) const {
   // the pointer resulting from the GEP still gets access to the whole allocation,
   // ie the same access that the GEP's input pointer had
   Value* input_ptr = gep.getPointerOperand();
@@ -330,8 +330,8 @@ BoundsInfo BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep, const DataLa
 }
 
 /// Propagate bounds information for a GEP instruction.
-void BoundsInfos::propagate_bounds(GetElementPtrInst& gep, const DataLayout& DL) {
-  map[&gep] = bounds_info_for_gep(gep, DL);
+void BoundsInfos::propagate_bounds(GetElementPtrInst& gep) {
+  map[&gep] = bounds_info_for_gep(gep);
 }
 
 void BoundsInfos::propagate_bounds(SelectInst& select) {

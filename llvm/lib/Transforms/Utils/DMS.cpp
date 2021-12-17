@@ -1245,7 +1245,7 @@ private:
           }
           // update bounds info
           if (settings.add_sw_spatial_checks) {
-            bounds_infos.propagate_bounds(gep, DL);
+            bounds_infos.propagate_bounds(gep);
           }
           break;
         }

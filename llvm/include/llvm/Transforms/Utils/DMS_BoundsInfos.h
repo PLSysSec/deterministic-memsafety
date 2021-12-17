@@ -43,7 +43,7 @@ public:
 
   void propagate_bounds(StoreInst&, Value* override_stored_ptr);
   void propagate_bounds(AllocaInst&);
-  void propagate_bounds(GetElementPtrInst&, const DataLayout&);
+  void propagate_bounds(GetElementPtrInst&);
   void propagate_bounds(SelectInst&);
   void propagate_bounds(IntToPtrInst&, PointerKind inttoptr_kind);
   void propagate_bounds(LoadInst& load, Instruction* loaded_ptr); // the loaded_ptr may be different from the literal result of the `load` due to pointer encoding
@@ -81,7 +81,7 @@ private:
   /// exist. This is used internally by `get_binfo()`.
   BoundsInfo get_binfo_noalias(const Value* ptr) const;
 
-  BoundsInfo bounds_info_for_gep(GetElementPtrInst& gep, const DataLayout& DL) const;
+  BoundsInfo bounds_info_for_gep(GetElementPtrInst& gep) const;
 
   /// Value type for the below map
   class BoundsStoringCall final {
