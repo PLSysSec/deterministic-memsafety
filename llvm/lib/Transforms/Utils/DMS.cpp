@@ -1,5 +1,6 @@
 #include "llvm/Transforms/Utils/DMS.h"
 #include "llvm/Transforms/Utils/DMS_BoundsInfo.h"
+#include "llvm/Transforms/Utils/DMS_BoundsInfos.h"
 #include "llvm/Transforms/Utils/DMS_common.h"
 #include "llvm/Transforms/Utils/DMS_DynamicResults.h"
 #include "llvm/Transforms/Utils/DMS_Induction.h"
