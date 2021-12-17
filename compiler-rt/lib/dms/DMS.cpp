@@ -3,17 +3,16 @@
 
 /// Interpreted as in DynamicBoundsInfo in the LLVM pass
 struct DynamicBounds {
-  void* base;
-  void* max;
-  bool infinite; // if true, then consider this to be infinite bounds; `base` and `max` may not be valid
+  void* base;  // NULL for infinite bounds
+  void* max;   // (void*)(-1) for infinite bounds
 };
 
 DynamicBounds dynamic_bounds(void* base, void* max) {
-  return DynamicBounds { base, max, false };
+  return DynamicBounds { base, max };
 }
 
 DynamicBounds infinite_bounds() {
-  return DynamicBounds { NULL, NULL, true };
+  return DynamicBounds { NULL, (void*)(-1) };
 }
 
 #include "sanitizer_common/sanitizer_addrhashmap.h"
@@ -55,11 +54,11 @@ void __dms_store_infinite_bounds(void* addr) {
 /// Of course, `addr` should be an UNENCODED value, ie with all upper bits clear.
 /// (P is probably an encoded pointer value, and that's fine.)
 ///
-/// If this returns true (nonzero), then P has been marked as infinite bounds.
-/// If this returns false (zero), then this writes the base and max to the
-/// output parameters `base` and `max`.
+/// This writes the base and max to the output parameters `base` and `max`.
 /// P will be required to satisfy `base` <= P <= `max`.
-char __dms_get_bounds(void* addr, void** base, void** max) {
+/// If P has been marked as infinite bounds, then `base` will be 0 and `max`
+/// will be 0xFFFFF...
+void __dms_get_bounds(void* addr, void** base, void** max) {
   assert(addr != NULL);
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)addr);
   if (h.created()) {
@@ -67,14 +66,9 @@ char __dms_get_bounds(void* addr, void** base, void** max) {
     __sanitizer::ReportErrorSummary("Bounds lookup failure");
     __sanitizer::Abort();
   }
-  if (h->infinite) {
-    return 1;
-  } else {
-    assert(base && max && "base and max must not be NULL here");
-    *base = h->base;
-    *max = h->max;
-    return 0;
-  }
+  assert(base && max && "base and max must not be NULL here");
+  *base = h->base;
+  *max = h->max;
 }
 
 /// Call this to indicate that a bounds check failed for `ptr`.

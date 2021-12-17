@@ -152,10 +152,9 @@ CallInst* call_dms_store_infinite_bounds(Value* addr, DMSIRBuilder& Builder) {
 /// type i8**.
 CallInst* call_dms_get_bounds(Value* addr, Value* output_base, Value* output_max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
-  static Type* CharTy = Builder.getInt8Ty();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static Type* CharStarStarTy = CharStarTy->getPointerTo();
-  FunctionType* GetBoundsTy = FunctionType::get(CharTy, {CharStarTy, CharStarStarTy, CharStarStarTy}, /* IsVarArgs = */ false);
+  FunctionType* GetBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarStarTy, CharStarStarTy}, /* IsVarArgs = */ false);
   FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
   assert(output_base->getType() == CharStarStarTy);
   assert(output_max->getType() == CharStarStarTy);

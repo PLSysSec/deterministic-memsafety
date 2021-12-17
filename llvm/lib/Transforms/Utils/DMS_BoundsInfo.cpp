@@ -277,18 +277,9 @@ BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyInfo::for
   static Type* CharStarTy = Builder.getInt8PtrTy();
   Value* output_base = Builder.CreateAlloca(CharStarTy);
   Value* output_max = Builder.CreateAlloca(CharStarTy);
-  Value* infinite = call_dms_get_bounds(addr, output_base, output_max, Builder);
-  Value* isInfinite = Builder.CreateICmpNE(infinite, Builder.getInt8(0));
-  Value* base = Builder.CreateSelect(
-    isInfinite,
-    get_min_ptr_value(Builder),
-    Builder.CreateLoad(CharStarTy, output_base)
-  );
-  Value* max = Builder.CreateSelect(
-    isInfinite,
-    get_max_ptr_value(Builder),
-    Builder.CreateLoad(CharStarTy, output_max)
-  );
+  call_dms_get_bounds(addr, output_base, output_max, Builder);
+  Value* base = Builder.CreateLoad(CharStarTy, output_base);
+  Value* max = Builder.CreateLoad(CharStarTy, output_max);
   return DynamicBoundsInfo::Info(base, max);
 }
 

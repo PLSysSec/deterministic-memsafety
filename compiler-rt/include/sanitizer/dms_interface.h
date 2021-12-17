@@ -22,11 +22,11 @@ void __dms_store_infinite_bounds(void* addr);
 /// Of course, `addr` should be an UNENCODED value, ie with all upper bits clear.
 /// (P is probably an encoded pointer value, and that's fine.)
 ///
-/// If this returns true (nonzero), then P has been marked as infinite bounds.
-/// If this returns false (zero), then this writes the base and max to the
-/// output parameters `base` and `max`.
+/// This writes the base and max to the output parameters `base` and `max`.
 /// P will be required to satisfy `base` <= P <= `max`.
-char __dms_get_bounds(void* addr, void** base, void** max);
+/// If P has been marked as infinite bounds, then `base` will be 0 and `max`
+/// will be 0xFFFFF...
+void __dms_get_bounds(void* addr, void** base, void** max);
 
 /// Call this to indicate that a bounds check failed for `ptr`.
 /// This function will not return.
