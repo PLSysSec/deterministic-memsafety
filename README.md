@@ -8,7 +8,7 @@ are at `llvm/test/Transforms/DMS`.
 To build, use the following:
 ```
 cd llvm
-cmake -G Ninja -B build -DLLVM_ENABLE_PROJECTS="clang;compiler-rt" -DLLVM_TARGETS_TO_BUILD="X86" .
+cmake -G Ninja -B build -DLLVM_ENABLE_PROJECTS="clang;compiler-rt" -DLLVM_TARGETS_TO_BUILD="X86" -DLLVM_ENABLE_BINDINGS=0 .
 cd build
 ninja
 ```
