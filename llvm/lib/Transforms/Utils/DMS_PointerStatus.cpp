@@ -279,7 +279,8 @@ PointerStatus PointerStatus::merge_with_phi(
   } else {
     // create a fresh phi
     DMSIRBuilder Builder(phi_block, DMSIRBuilder::BEGINNING, NULL);
-    PHINode* phi = Builder.CreatePHI(Builder.getInt64Ty(), 2);
+    std::string ptr_name = isa<ConstantExpr>(ptr) ? "constexpr" : ptr->getNameOrAsOperand();
+    PHINode* phi = Builder.CreatePHI(Builder.getInt64Ty(), 2, Twine(ptr_name, "_dynamic_kind"));
     assert(statuses.size() == pred_size(phi_block));
     for (const StatusWithBlock& swb : statuses) {
       assert(block_is_pred_of_block(swb.block, phi_block));
@@ -328,9 +329,10 @@ static PointerStatus merge_static_dynamic_nocache_direct(
       // merging BLEMISHED16 with any other x results in x.
       if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
       return PointerStatus::dynamic(Builder.CreateSelect(
-        Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
+        Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(DynamicKindMasks::clean), "isclean"),
         Builder.getInt64(DynamicKindMasks::blemished16),
-        dynamic_kind
+        dynamic_kind,
+        "merged_dynamic_kind"
       ));
     case PointerKind::BLEMISHED32:
     case PointerKind::BLEMISHED64:
@@ -340,9 +342,10 @@ static PointerStatus merge_static_dynamic_nocache_direct(
       // merging any of these with DYN_DIRTY results in DYN_DIRTY.
       if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
       return PointerStatus::dynamic(Builder.CreateSelect(
-        Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(DynamicKindMasks::dirty)),
+        Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(DynamicKindMasks::dirty), "isdirty"),
         Builder.getInt64(DynamicKindMasks::dirty),
-        Builder.getInt64(DynamicKindMasks::blemished_other)
+        Builder.getInt64(DynamicKindMasks::blemished_other),
+        "merged_dynamic_kind"
       ));
     case PointerKind::DIRTY:
     case PointerKind::UNKNOWN:
@@ -455,21 +458,24 @@ static Value* merge_two_dynamic_nocache_direct(
   Value* clean = Builder.getInt64(DynamicKindMasks::clean);
   Value* either_is_dirty = Builder.CreateLogicalOr(
     Builder.CreateICmpEQ(dynamic_kind_a, dirty),
-    Builder.CreateICmpEQ(dynamic_kind_b, dirty)
+    Builder.CreateICmpEQ(dynamic_kind_b, dirty),
+    "either_is_dirty"
   );
   Value* either_is_blemother = Builder.CreateLogicalOr(
     Builder.CreateICmpEQ(dynamic_kind_a, blemother),
-    Builder.CreateICmpEQ(dynamic_kind_b, blemother)
+    Builder.CreateICmpEQ(dynamic_kind_b, blemother),
+    "either_is_blemother"
   );
   Value* either_is_blem16 = Builder.CreateLogicalOr(
     Builder.CreateICmpEQ(dynamic_kind_a, blem16),
-    Builder.CreateICmpEQ(dynamic_kind_b, blem16)
+    Builder.CreateICmpEQ(dynamic_kind_b, blem16),
+    "either_is_blem16"
   );
   Value* merged_dynamic_kind =
     Builder.CreateSelect(either_is_dirty, dirty,
     Builder.CreateSelect(either_is_blemother, blemother,
     Builder.CreateSelect(either_is_blem16, blem16,
-    clean)));
+    clean)), "merged_dynamic_kind");
   return merged_dynamic_kind;
 }
 

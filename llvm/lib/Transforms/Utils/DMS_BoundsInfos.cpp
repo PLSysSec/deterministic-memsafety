@@ -25,7 +25,8 @@ BoundsInfos::BoundsInfos(
         /* argc * pointer_size_in_bytes - 1 */
         Builder.CreateSub(
           Builder.CreateMul(argc, ConstantInt::get(argc->getType(), 8)),
-          ConstantInt::get(argc->getType(), 1, /* signed = */ true)
+          ConstantInt::get(argc->getType(), 1, /* signed = */ true),
+					"argvMax"
         )
       );
       map[argv] = BoundsInfo::dynamic_bounds(argv, argvMax);
@@ -491,7 +492,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
     }
     if (!base_phi) {
       DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
-      base_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues());
+      base_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues(), Twine(phi.getNameOrAsOperand(), "_base"));
       added_insts.insert(base_phi);
       for (auto& tuple : incoming_binfos) {
         Value* incoming_ptr = std::get<0>(tuple);
@@ -523,7 +524,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
     }
     if (!max_phi) {
       DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
-      max_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues());
+      max_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues(), Twine(phi.getNameOrAsOperand(), "_max"));
       added_insts.insert(max_phi);
       for (auto& tuple : incoming_binfos) {
         Value* incoming_ptr = std::get<0>(tuple);

@@ -1506,9 +1506,11 @@ private:
           if (binfo.static_info()->fails(access_bytes)) {
             // we check the dynamic kind, if it is DYN_CLEAN or
             // DYN_BLEMISHED16 then we do nothing, else we SW-fail
+            std::string addr_name = isa<ConstantExpr>(addr) ? "constexpr" : addr->getNameOrAsOperand();
             Value* needs_check = Builder.CreateLogicalAnd(
-              Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
-              Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
+              Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean), Twine(addr_name, "_not_clean")),
+              Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16), Twine(addr_name, "_not_blem16")),
+              Twine(addr_name, "_needs_check")
             );
             BasicBlock* failbb = boundsCheckFailBB(addr);
             new_blocks.push_back(failbb);
@@ -1523,9 +1525,11 @@ private:
         } else {
           BasicBlock* boundscheck = BasicBlock::Create(F.getContext(), "", &F);
           new_blocks.push_back(boundscheck);
+          std::string addr_name = isa<ConstantExpr>(addr) ? "constexpr" : addr->getNameOrAsOperand();
           Value* needs_check = Builder.CreateLogicalAnd(
-            Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean)),
-            Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16))
+            Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean), Twine(addr_name, "_not_clean")),
+            Builder.CreateICmpNE(status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16), Twine(addr_name, "_not_blem16")),
+            Twine(addr_name, "_needs_check")
           );
           BasicBlock* cont = Builder.insertCondJumpTo(needs_check, boundscheck);
           new_blocks.push_back(cont);
@@ -1627,11 +1631,13 @@ private:
     DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
+    std::string ptr_name = isa<ConstantExpr>(ptr) ? "constexpr" : ptr->getNameOrAsOperand();
     Value* access_begin = Builder.castToCharStar(ptr);
-    Value* access_end = Builder.CreateGEP(Builder.getInt8Ty(), access_begin, {Builder.getInt64(access_bytes - 1)});
+    Value* access_end = Builder.CreateGEP(Builder.getInt8Ty(), access_begin, {Builder.getInt64(access_bytes - 1)}, Twine(ptr_name, "_access_end"));
     Value* Fail = Builder.CreateLogicalOr(
-      Builder.CreateICmpULT(access_begin, binfo.getBase().as_llvm_value(Builder)),
-      Builder.CreateICmpUGT(access_end, binfo.getMax().as_llvm_value(Builder))
+      Builder.CreateICmpULT(access_begin, binfo.getBase().as_llvm_value(Builder), Twine(ptr_name, "_oob_low")),
+      Builder.CreateICmpUGT(access_end, binfo.getMax().as_llvm_value(Builder), Twine(ptr_name, "_oob_high")),
+      Twine(ptr_name, "_bounds_fail")
     );
     BasicBlock* failbb = boundsCheckFailBB(ptr);
     new_blocks.push_back(failbb);
@@ -1659,11 +1665,12 @@ private:
   /// (We assume all pointers are userspace pointers, so 48-49 should be 0 for
   /// valid pointers.)
   Value* encode_ptr(Value* ptr, const PointerStatus& status, DMSIRBuilder& Builder) {
+    std::string ptr_name = isa<ConstantExpr>(ptr) ? "constexpr" : ptr->getNameOrAsOperand();
     // create `new_storedVal` which has the appropriate bits set
     Value* mask = status.to_dynamic_kind_mask(F.getContext());
     Value* ptr_as_int = Builder.CreatePtrToInt(ptr, Builder.getInt64Ty());
-    Value* masked_int = Builder.CreateOr(ptr_as_int, mask);
-    Value* encoded_ptr = Builder.CreateIntToPtr(masked_int, ptr->getType());
+    Value* masked_int = Builder.CreateOr(ptr_as_int, mask, Twine("masked_", ptr_name));
+    Value* encoded_ptr = Builder.CreateIntToPtr(masked_int, ptr->getType(), Twine("encoded_", ptr_name));
     // create a status and bounds override for the `encoded_ptr`, so
     // this relationship is preserved even in future passes. It will
     // always have the same status and boundsinfo as `ptr`.
@@ -1688,10 +1695,11 @@ private:
   /// Specifically, we check bits 48-49 to learn the pointer type, then clear
   /// them so the pointer is valid for use. See notes on `encode_ptr`.
   std::tuple<Instruction*, PointerStatus, User*> decode_ptr(Value* encoded_ptr, DMSIRBuilder& Builder) {
+    std::string ptr_name = isa<ConstantExpr>(encoded_ptr) ? "constexpr" : encoded_ptr->getNameOrAsOperand();
     Value* encoded_ptr_as_int = Builder.CreatePtrToInt(encoded_ptr, Builder.getInt64Ty());
-    Value* dynamic_kind = Builder.CreateAnd(encoded_ptr_as_int, DynamicKindMasks::dynamic_kind_mask);
+    Value* dynamic_kind = Builder.CreateAnd(encoded_ptr_as_int, DynamicKindMasks::dynamic_kind_mask, Twine(ptr_name, "_dynamic_kind"));
     Value* decoded_ptr_as_int = Builder.CreateAnd(encoded_ptr_as_int, ~DynamicKindMasks::dynamic_kind_mask);
-    Value* decoded_ptr_as_ptr = Builder.CreateIntToPtr(decoded_ptr_as_int, encoded_ptr->getType());
+    Value* decoded_ptr_as_ptr = Builder.CreateIntToPtr(decoded_ptr_as_int, encoded_ptr->getType(), Twine("decoded_", ptr_name));
     PointerStatus status = PointerStatus::dynamic(dynamic_kind);
 
     // create a status and bounds override for the `IntToPtr` which we just
@@ -1929,8 +1937,9 @@ static GEPResultClassification classifyGEPResult(
           // from BLEMISHED16 is arbitrarily blemished, and from arbitrarily
           // blemished is still arbitrarily blemished.
           DMSIRBuilder Builder(&gep, DMSIRBuilder::BEFORE, &added_insts);
+          std::string gep_name = isa<ConstantExpr>(gep) ? "constgep" : gep.getNameOrAsOperand();
           Value* dynamic_kind = Builder.CreateSelect(
-            Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16)),
+            Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16), Twine(gep_name, "_input_blem16")),
             Builder.getInt64(DynamicKindMasks::blemished_other),
             input_status.dynamic_kind
           );
@@ -2042,9 +2051,10 @@ static GEPResultClassification classifyGEPResult(
           // We need to dynamically check the kind in order to classify the
           // result.
           DMSIRBuilder Builder(&gep, DMSIRBuilder::BEFORE, &added_insts);
-          Value* is_clean = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean));
-          Value* is_blem16 = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16));
-          Value* is_blemother = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished_other));
+          std::string gep_name = isa<ConstantExpr>(gep) ? "constgep" : gep.getNameOrAsOperand();
+          Value* is_clean = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean), Twine(gep_name, "_input_clean"));
+          Value* is_blem16 = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16), Twine(gep_name, "_input_blem16"));
+          Value* is_blemother = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished_other), Twine(gep_name, "_input_blemother"));
           Value* dynamic_kind = Builder.getInt64(DynamicKindMasks::dirty);
           dynamic_kind = Builder.CreateSelect(
             is_clean,
