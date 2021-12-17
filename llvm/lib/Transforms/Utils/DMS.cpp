@@ -1249,26 +1249,17 @@ private:
           }
           break;
         }
-        case Instruction::BitCast: {
-          const BitCastInst& bitcast = cast<BitCastInst>(inst);
-          if (bitcast.getType()->isPointerTy()) {
-            const Value* input_ptr = bitcast.getOperand(0);
-            mark_as(ptr_statuses, &bitcast, ptr_statuses.getStatus(input_ptr));
-            pointer_aliases[input_ptr].insert(&bitcast);
-            pointer_aliases[&bitcast].insert(input_ptr);
+        case Instruction::BitCast:
+        case Instruction::AddrSpaceCast:
+        {
+          if (inst.getType()->isPointerTy()) {
+            const Value* input_ptr = inst.getOperand(0);
+            mark_as(ptr_statuses, &inst, ptr_statuses.getStatus(input_ptr));
+            pointer_aliases[input_ptr].insert(&inst);
+            pointer_aliases[&inst].insert(input_ptr);
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds_id(inst);
             }
-          }
-          break;
-        }
-        case Instruction::AddrSpaceCast: {
-          const Value* input_ptr = inst.getOperand(0);
-          mark_as(ptr_statuses, &inst, ptr_statuses.getStatus(input_ptr));
-          pointer_aliases[input_ptr].insert(&inst);
-          pointer_aliases[&inst].insert(input_ptr);
-          if (settings.add_sw_spatial_checks) {
-            bounds_infos.propagate_bounds_id(inst);
           }
           break;
         }
