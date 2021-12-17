@@ -24,9 +24,9 @@ public:
     // note bounds for the pointer -- at a bare minimum, marking the bounds
     // UNKNOWN instead of NOTDEFINEDYET.
     NOTDEFINEDYET = 0,
-    /// Bounds info is not known for this pointer. Dereferencing this
-    /// pointer is a compile-time error - we should know bounds info for
-    /// all pointers which are ever dereferenced.
+    /// Bounds info is not known for this pointer. In the future, dereferencing
+    /// these pointers should be a compile-time error - we should know bounds
+    /// info for all pointers which are ever dereferenced.
     UNKNOWN,
     /// Bounds info is known statically. Get it with `static_info()`
     STATIC,
@@ -92,8 +92,8 @@ public:
     ///
     /// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
     ///
-    /// Returns the "base" (minimum inbounds pointer value) of the allocation,
-    /// as an LLVM `Value` of type `i8*`.
+    /// Returns the "base" (pointer to the first byte) of the allocation, as an
+    /// LLVM `Value` of type `i8*`.
     Value* base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
       return Builder.add_offset_to_ptr(cur_ptr, low_offset);
     }
@@ -102,22 +102,24 @@ public:
     ///
     /// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
     ///
-    /// Returns the "max" (maximum inbounds pointer value) of the allocation,
-    /// as an LLVM `Value` of type `i8*`.
+    /// Returns the "max" (pointer to the last byte) of the allocation, as an
+    /// LLVM `Value` of type `i8*`.
     Value* max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
       return Builder.add_offset_to_ptr(cur_ptr, high_offset);
     }
 
-    /// Do the current bounds fail? Meaning, if we were to insert a SW bounds
-    /// check for this `StaticBoundsInfo` right now, would the check fail?
+    /// Do the current bounds fail? Meaning, if we were to perform a memory
+    /// access (of size `access_bytes`) with a pointer with these bounds, would
+    /// the SW bounds check fail?
     ///
-    /// Since the bounds are known statically, we can give an answer to this
-    /// statically and without inserting any dynamic instructions
-    bool fails() const {
+    /// Since the bounds are known statically, we can answer this statically and
+    /// without inserting any dynamic instructions
+    bool fails(unsigned access_bytes) const {
+      assert(access_bytes > 0);
       if (low_offset.isStrictlyPositive()) {
         // invalid pointer: too low
         return true;
-      } else if (high_offset.isNegative()) {
+      } else if (high_offset.slt(access_bytes - 1)) {
         // invalid pointer: too high
         return true;
       } else {
@@ -169,18 +171,16 @@ public:
     /// If this is `false`, `.info` is valid
     bool isLazy;
 
-    /// Gives the pointer value representing the beginning of the allocation
-    /// (i.e., the minimum valid pointer value). Forces the bounds info to be
-    /// computed if it hasn't been already.
+    /// Gives the "base", i.e., pointer to the first byte of the allocation.
+    /// Forces the bounds info to be computed if it hasn't been already.
     const PointerWithOffset& getBase() const {
       // we "cheat" the const here by calling the non-const `force()`
       ((DynamicBoundsInfo*)this)->force();
       return info.base;
     }
 
-    /// Gives the pointer value representing the end of the allocation (i.e.,
-    /// the maximum valid pointer value). Forces the bounds info to be computed
-    /// if it hasn't been already.
+    /// Gives the "max", i.e., pointer to the last byte of the allocation.
+    /// Forces the bounds info to be computed if it hasn't been already.
     const PointerWithOffset& getMax() const {
       // we "cheat" the const here by calling the non-const `force()`
       ((DynamicBoundsInfo*)this)->force();
@@ -197,11 +197,9 @@ public:
   private:
     /// Actual dynamic bounds info
     struct Info {
-      /// Pointer value representing the beginning of the allocation
-      /// (i.e., the minimum valid pointer value)
+      /// Pointer to the first byte of the allocation
       PointerWithOffset base;
-      /// Pointer value representing the end of the allocation
-      /// (i.e., the maximum valid pointer value)
+      /// Pointer to the last byte of the allocation
       PointerWithOffset max;
 
       explicit Info(Value* base, Value* max)
@@ -431,7 +429,7 @@ public:
   ///
   /// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
   ///
-  /// Returns the "base" (minimum inbounds pointer value) of the allocation,
+  /// Returns the "base" (pointer to the first byte) of the allocation,
   /// as an LLVM `Value` of type `i8*`.
   /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
   /// The `kind` should not be NOTDEFINEDYET.
@@ -441,7 +439,7 @@ public:
   ///
   /// `Builder`: the DMSIRBuilder to use to insert dynamic instructions.
   ///
-  /// Returns the "max" (maximum inbounds pointer value) of the allocation,
+  /// Returns the "max" (pointer to the last byte) of the allocation,
   /// as an LLVM `Value` of type `i8*`.
   /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
   /// The `kind` should not be NOTDEFINEDYET.

@@ -1080,7 +1080,8 @@ private:
           if (add_spatial_sw_checks && !checked_insts.count(&store)) {
             DEBUG_WITH_TYPE("DMS-inst-processing", dbgs() << "DMS:   inserting a bounds check if necessary\n");
             DMSIRBuilder BeforeStore(&store, DMSIRBuilder::BEFORE, &added_insts);
-            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), BeforeStore, new_blocks);
+            const unsigned store_size_bytes = DL.getTypeStoreSize(store.getValueOperand()->getType()).getFixedSize();
+            block_done |= maybeAddSpatialSWCheck(addr, ptr_statuses.getStatus(addr), store_size_bytes, BeforeStore, new_blocks);
             checked_insts.insert(&store);
           }
           // now, the pointer used as an address becomes clean
@@ -1142,7 +1143,8 @@ private:
           if (add_spatial_sw_checks && !checked_insts.count(&load)) {
             DEBUG_WITH_TYPE("DMS-inst-processing", dbgs() << "DMS:   inserting a bounds check if necessary\n");
             DMSIRBuilder BeforeLoad(&load, DMSIRBuilder::BEFORE, &added_insts);
-            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), BeforeLoad, new_blocks);
+            const unsigned load_size_bytes = DL.getTypeStoreSize(load.getType()).getFixedSize();
+            block_done |= maybeAddSpatialSWCheck(ptr, ptr_statuses.getStatus(ptr), load_size_bytes, BeforeLoad, new_blocks);
             checked_insts.insert(&load);
           }
           // now, the pointer becomes clean
@@ -1467,6 +1469,10 @@ private:
   /// `addr`, assuming it has status `status` immediately before being
   /// dereferenced.
   ///
+  /// The spatial check is for an operation of size `access_bytes`; for example,
+  /// for a 64-bit (8-byte) operation, it ensures that all 8 bytes are in
+  /// bounds.
+  ///
   /// If dynamic instructions need to be inserted, use `Builder`.
   ///
   /// If we create/insert any new blocks, they will be added to `new_blocks`.
@@ -1479,6 +1485,7 @@ private:
   bool maybeAddSpatialSWCheck(
     Value* addr,
     const PointerStatus status,
+    const unsigned access_bytes,
     DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
@@ -1494,17 +1501,17 @@ private:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
         const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
-        return sw_bounds_check(addr, binfo, Builder, new_blocks);
+        return sw_bounds_check(addr, binfo, access_bytes, Builder, new_blocks);
       }
       case PointerKind::UNKNOWN: {
         errs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
         const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
-        return sw_bounds_check(addr, binfo, Builder, new_blocks);
+        return sw_bounds_check(addr, binfo, access_bytes, Builder, new_blocks);
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
         if (binfo.get_kind() == BoundsInfo::STATIC) {
-          if (binfo.static_info()->fails()) {
+          if (binfo.static_info()->fails(access_bytes)) {
             // we check the dynamic kind, if it is DYN_CLEAN or
             // DYN_BLEMISHED16 then we do nothing, else we SW-fail
             Value* needs_check = Builder.CreateLogicalAnd(
@@ -1533,7 +1540,7 @@ private:
           DMSIRBuilder BoundsCheckBuilder(boundscheck, DMSIRBuilder::BEGINNING, &added_insts);
           Instruction* br = BoundsCheckBuilder.CreateBr(cont);
           BoundsCheckBuilder.SetInsertPoint(br);
-          sw_bounds_check(addr, binfo, BoundsCheckBuilder, new_blocks);
+          sw_bounds_check(addr, binfo, access_bytes, BoundsCheckBuilder, new_blocks);
           assert(wellFormed(*boundscheck));
           return true;
         }
@@ -1549,6 +1556,10 @@ private:
   /// Insert a SW bounds check of `ptr` against the bounds information in the
   /// given `BoundsInfo`.
   ///
+  /// The spatial check is for an operation of size `access_bytes`; for example,
+  /// for a 64-bit (8-byte) operation, it ensures that all 8 bytes are in
+  /// bounds.
+  ///
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
   /// that is necessary.
   ///
@@ -1559,6 +1570,7 @@ private:
   bool sw_bounds_check(
     Value* ptr,
     const BoundsInfo& binfo,
+    const unsigned access_bytes,
     DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
@@ -1572,11 +1584,11 @@ private:
         // bounds check passes by default
         return false;
       case BoundsInfo::STATIC:
-        sw_bounds_check(ptr, *binfo.static_info(), Builder);
+        sw_bounds_check(ptr, *binfo.static_info(), access_bytes, Builder);
         return false;
       case BoundsInfo::DYNAMIC:
       case BoundsInfo::DYNAMIC_MERGED:
-        sw_bounds_check(ptr, *binfo.dynamic_info(), Builder, new_blocks);
+        sw_bounds_check(ptr, *binfo.dynamic_info(), access_bytes, Builder, new_blocks);
         return true;
       default:
         llvm_unreachable("Missing BoundsInfo.kind case");
@@ -1586,14 +1598,19 @@ private:
   /// Insert a SW bounds check of `ptr` against the bounds information in the
   /// given `StaticBoundsInfo`.
   ///
+  /// The spatial check is for an operation of size `access_bytes`; for example,
+  /// for a 64-bit (8-byte) operation, it ensures that all 8 bytes are in
+  /// bounds.
+  ///
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
   /// that is necessary.
   void sw_bounds_check(
     Value* ptr,
     const BoundsInfo::StaticBoundsInfo& binfo,
+    const unsigned access_bytes,
     DMSIRBuilder& Builder
   ) {
-    if (binfo.fails()) {
+    if (binfo.fails(access_bytes)) {
       call_dms_boundscheckfail(ptr, Builder);
     }
     assert(wellFormed(*Builder.GetInsertBlock()));
@@ -1601,6 +1618,10 @@ private:
 
   /// Insert a SW bounds check of `ptr` against the bounds information in the
   /// given `DynamicBoundsInfo`.
+  ///
+  /// The spatial check is for an operation of size `access_bytes`; for example,
+  /// for a 64-bit (8-byte) operation, it ensures that all 8 bytes are in
+  /// bounds.
   ///
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
   /// that is necessary. To be safe, you should assume `Builder` is invalidated
@@ -1610,13 +1631,15 @@ private:
   void sw_bounds_check(
     Value* ptr,
     const BoundsInfo::DynamicBoundsInfo& binfo,
+    const unsigned access_bytes,
     DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
-    ptr = Builder.castToCharStar(ptr);
+    Value* access_begin = Builder.castToCharStar(ptr);
+    Value* access_end = Builder.CreateGEP(Builder.getInt8Ty(), access_begin, {Builder.getInt64(access_bytes - 1)});
     Value* Fail = Builder.CreateLogicalOr(
-      Builder.CreateICmpULT(ptr, binfo.getBase().as_llvm_value(Builder)),
-      Builder.CreateICmpUGT(ptr, binfo.getMax().as_llvm_value(Builder))
+      Builder.CreateICmpULT(access_begin, binfo.getBase().as_llvm_value(Builder)),
+      Builder.CreateICmpUGT(access_end, binfo.getMax().as_llvm_value(Builder))
     );
     BasicBlock* failbb = boundsCheckFailBB(ptr);
     new_blocks.push_back(failbb);
