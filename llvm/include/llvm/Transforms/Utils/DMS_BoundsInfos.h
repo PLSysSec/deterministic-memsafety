@@ -34,7 +34,7 @@ public:
   }
 
   /// Get the bounds information for the given pointer.
-  BoundsInfo get_binfo(const Value* ptr) const;
+  const BoundsInfo& get_binfo(const Value* ptr);
 
   /// Is there any bounds information for the given pointer?
   bool is_binfo_present(const Value* ptr) {
@@ -69,6 +69,11 @@ private:
   /// `pointer_aliases` in `DMSAnalysis`
   DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
 
+  /// a BoundsInfo::infinite() which we can return a reference to
+  const BoundsInfo infinite_binfo;
+  /// a BoundsInfo::notdefinedyet() which we can return a reference to
+  const BoundsInfo notdefinedyet_binfo;
+
   /// For all pointer expressions used in the given `Constant` (which we assume
   /// is the initializer for the given `addr`), make entries in the dynamic
   /// bounds table for each pointer expression. (This includes, eg, pointers to
@@ -79,9 +84,9 @@ private:
 
   /// Like `get_binfo()`, but doesn't check aliases of the given ptr, if any
   /// exist. This is used internally by `get_binfo()`.
-  BoundsInfo get_binfo_noalias(const Value* ptr) const;
+  const BoundsInfo& get_binfo_noalias(const Value* ptr);
 
-  BoundsInfo bounds_info_for_gep(GetElementPtrInst& gep) const;
+  const BoundsInfo& bounds_info_for_gep(GetElementPtrInst& gep);
 
   /// Value type for the below map
   class BoundsStoringCall final {
