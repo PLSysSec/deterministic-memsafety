@@ -1957,6 +1957,7 @@ static GEPResultClassification classifyGEPResult(
 
   // if we get here, we don't have a zero constant offset. Either it's a nonzero constant,
   // or a nonconstant.
+	grc.trustworthy_struct_offset = false;
   if (grc.offset.is_constant) {
     switch (input_status.kind) {
       case PointerKind::CLEAN: {
