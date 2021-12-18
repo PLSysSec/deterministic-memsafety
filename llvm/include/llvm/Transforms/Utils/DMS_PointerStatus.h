@@ -62,6 +62,21 @@ public:
   /// Disable if(kind) where `kind` is a `PointerKind`
   explicit operator bool() = delete;
 
+  const char* pretty() const {
+    switch (kind) {
+      case UNKNOWN: return "UNKNOWN";
+      case CLEAN: return "CLEAN";
+      case BLEMISHED16: return "BLEMISHED16";
+      case BLEMISHED32: return "BLEMISHED32";
+      case BLEMISHED64: return "BLEMISHED64";
+      case BLEMISHEDCONST: return "BLEMISHEDCONST";
+      case DIRTY: return "DIRTY";
+      case DYNAMIC: return "DYNAMIC";
+      case NOTDEFINEDYET: return "NOTDEFINEDYET";
+      default: llvm_unreachable("Missing PointerKind case");
+    }
+  }
+
   llvm::ConstantInt* to_constant_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
 
   /// Merge two `PointerKind`s.
@@ -152,6 +167,8 @@ public:
   bool operator!=(const PointerStatus& other) const {
     return !(*this == other);
   }
+
+  std::string pretty() const { return kind.pretty(); }
 
   llvm::Value* to_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
 

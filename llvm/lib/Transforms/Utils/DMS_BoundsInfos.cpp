@@ -26,7 +26,7 @@ BoundsInfos::BoundsInfos(
         Builder.CreateSub(
           Builder.CreateMul(argc, ConstantInt::get(argc->getType(), 8)),
           ConstantInt::get(argc->getType(), 1, /* signed = */ true),
-					"argvMax"
+          "argvMax"
         )
       );
       map[argv] = BoundsInfo::dynamic_bounds(argv, argvMax);
@@ -96,17 +96,17 @@ void BoundsInfos::module_initialization(
   // This is done once per module, and initializing the table happens in an
   // LLVM module-level global constructor.
 
-	// if this function already exists in the module, assume we've already added
-	// this initialization code
-	if (mod.getFunction("__DMS_bounds_initialization")) {
-		return;
-	}
+  // if this function already exists in the module, assume we've already added
+  // this initialization code
+  if (mod.getFunction("__DMS_bounds_initialization")) {
+    return;
+  }
 
   // This `new_func` does the initialization
   FunctionType* FuncTy = FunctionType::get(Type::getVoidTy(mod.getContext()), {}, false);
-	Function* new_func = cast<Function>(mod.getOrInsertFunction("__DMS_bounds_initialization", FuncTy).getCallee());
-	new_func->setLinkage(GlobalValue::PrivateLinkage);
-	BasicBlock* EntryBlock = BasicBlock::Create(mod.getContext(), "entry", new_func);
+  Function* new_func = cast<Function>(mod.getOrInsertFunction("__DMS_bounds_initialization", FuncTy).getCallee());
+  new_func->setLinkage(GlobalValue::PrivateLinkage);
+  BasicBlock* EntryBlock = BasicBlock::Create(mod.getContext(), "entry", new_func);
   DMSIRBuilder Builder(EntryBlock, DMSIRBuilder::BEGINNING, &added_insts);
   BoundsInfos binfos(*new_func, mod.getDataLayout(), added_insts, pointer_aliases);
   for (GlobalObject& gobj : mod.global_objects()) {

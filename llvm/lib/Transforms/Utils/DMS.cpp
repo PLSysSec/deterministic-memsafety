@@ -65,6 +65,14 @@ struct GEPResultClassification {
   /// If `offset` is constant but nonzero, do we consider it as zero anyways
   /// because it is a "trustworthy" struct offset?
   bool trustworthy_struct_offset;
+
+  std::string pretty() const {
+    std::ostringstream out;
+    out << classification.pretty();
+    out << " with offset " << offset.pretty();
+    if (trustworthy_struct_offset) out << " (considered zero due to trustworthy_struct_offset)";
+    return out.str();
+  }
 };
 
 /// Classify the `PointerStatus` of the result of the given `gep`, assuming that its
@@ -1957,7 +1965,7 @@ static GEPResultClassification classifyGEPResult(
 
   // if we get here, we don't have a zero constant offset. Either it's a nonzero constant,
   // or a nonconstant.
-	grc.trustworthy_struct_offset = false;
+  grc.trustworthy_struct_offset = false;
   if (grc.offset.is_constant) {
     switch (input_status.kind) {
       case PointerKind::CLEAN: {

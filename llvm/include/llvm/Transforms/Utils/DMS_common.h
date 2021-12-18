@@ -4,7 +4,9 @@
 #define DMS_COMMON_H
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
@@ -68,6 +70,15 @@ struct GEPConstantOffset {
   /// If `is_constant` is true, this is the value of the constant offset, in
   /// bytes
   llvm::APInt offset;
+
+  std::string pretty() const {
+    if (is_constant) {
+      llvm::SmallVector<char> offset_str;
+      offset.toStringSigned(offset_str);
+      return llvm::Twine("constant " + offset_str).str();
+    }
+    else return "nonconstant";
+  }
 };
 
 /// Determine whether the GEP's total offset is a compile-time constant, and if
