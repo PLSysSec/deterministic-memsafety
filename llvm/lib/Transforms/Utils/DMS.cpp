@@ -1358,6 +1358,10 @@ private:
               // If this is an allocating call (eg, a call to `malloc`), then the
               // returned pointer is CLEAN
               mark_as(ptr_statuses, &call, PointerStatus::clean());
+            } else if (IAC.CNI.kind == CallNameInfo::NAMEDCALL && IAC.CNI.name == "__ctype_b_loc") {
+              // special-case calls of __ctype_b_loc(), we know it returns a valid pointer
+              // See https://stackoverflow.com/questions/37702434/ctype-b-loc-what-is-its-purpose
+              mark_as(ptr_statuses, &call, PointerStatus::clean());
             } else {
               // For now, mark pointers returned from other calls as UNKNOWN
               mark_as(ptr_statuses, &call, PointerStatus::unknown());
