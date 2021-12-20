@@ -2,8 +2,7 @@
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/Support/Debug.h"
-
-#include <sstream>  // ostringstream
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
@@ -20,9 +19,14 @@ std::string BoundsInfo::pretty() const {
   switch (kind) {
     case STATIC: {
       const StaticBoundsInfo* sinfo = static_info();
-      std::ostringstream out;
-      out << "STATIC [" << sinfo->low_offset.getLimitedValue() << "," << sinfo->high_offset.getLimitedValue() << "]";
-      return out.str();
+      std::string out;
+      raw_string_ostream ostream(out);
+      ostream << "STATIC [";
+      sinfo->low_offset.print(ostream, /* isSigned = */ true);
+      ostream << ",";
+      sinfo->high_offset.print(ostream, /* isSigned = */ true);
+      ostream << "]";
+      return ostream.str();
     }
     default:
       return pretty_kind();

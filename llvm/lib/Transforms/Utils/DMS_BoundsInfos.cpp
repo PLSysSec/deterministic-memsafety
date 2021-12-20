@@ -138,9 +138,12 @@ void BoundsInfos::store_info_for_all_ptr_exprs(Value* addr, Constant* c, DMSIRBu
     const BoundsInfo& binfo = get_binfo(c);
     binfo.store_dynamic(addr, c, Builder);
   } else if (ConstantAggregate* cagg = dyn_cast<ConstantAggregate>(c)) {
+    assert(addr->getType()->isPointerTy());
+    const unsigned gepIndexSizeBits = (cagg->getType()->isStructTy()) ?
+      32 // apparently required, see StructType::indexValid() in Type.cpp
+      : DL.getIndexSizeInBits(cast<PointerType>(addr->getType())->getAddressSpace());
     for (unsigned i = 0; i < cagg->getNumOperands(); i++) {
       Value* op = cagg->getOperand(i);
-      unsigned gepIndexSizeBits = DL.getIndexSizeInBits(cast<PointerType>(addr->getType())->getAddressSpace());
       store_info_for_all_ptr_exprs(
         Builder.CreateGEP(cagg->getType(), addr, {
           Builder.getIntN(gepIndexSizeBits, 0),
