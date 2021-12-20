@@ -600,12 +600,11 @@ void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
   } else {
     if (IAC.CNI.kind == CallNameInfo::NAMEDCALL) {
       if (IAC.CNI.name == "__ctype_b_loc") {
-        // special-case calls of __ctype_b_loc(), we know it returns a pointer
-        // to an array of 384 pointers (specifically i16*).
+        // special-case calls of __ctype_b_loc(), we know it returns a valid pointer
         // See https://stackoverflow.com/questions/37702434/ctype-b-loc-what-is-its-purpose
         LLVMContext& ctx = call.getContext();
         uint64_t pointer_size_bytes = DL.getTypeStoreSize(Type::getInt16PtrTy(ctx)).getFixedSize();
-        map[&call] = BoundsInfo::static_bounds(0, 384*pointer_size_bytes - 1);
+        map[&call] = BoundsInfo::static_bounds(0, pointer_size_bytes - 1);
         return;
       }
     }

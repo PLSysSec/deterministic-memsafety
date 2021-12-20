@@ -1,3 +1,7 @@
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Value.h"
 #include "llvm/Transforms/Utils/DMS_common.h"
 #include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 
@@ -17,7 +21,8 @@ void DMSIRBuilder::SetInsertPointToAfterInst(Instruction* inst) {
 /// this will return the pointer unchanged).
 Value* DMSIRBuilder::castToCharStar(Value* ptr) {
   assert(ptr->getType()->isPointerTy());
-  return CreatePointerCast(ptr, getInt8PtrTy());
+  std::string ptr_name = isa<ConstantExpr>(ptr) ? "constexpr" : ptr->getNameOrAsOperand();
+  return CreatePointerCast(ptr, getInt8PtrTy(), Twine(ptr_name, "_casted"));
 }
 
 /// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns

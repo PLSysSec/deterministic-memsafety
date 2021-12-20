@@ -274,13 +274,13 @@ BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyInfo::for
   assert(cast<PointerType>(addr->getType())->getElementType()->isPointerTy());
   //assert(cast<PointerType>(addr->getType())->getElementType() == loaded_ptr->getType());
   LLVM_DEBUG(dbgs() << "Inserting a call to load dynamic bounds info for the pointer " << loaded_ptr->getNameOrAsOperand() << " loaded from " << addr->getNameOrAsOperand() << "\n");
-  std::string addr_name = isa<ConstantExpr>(addr) ? "constexpr" : addr->getNameOrAsOperand();
+  std::string loaded_ptr_name = isa<ConstantExpr>(loaded_ptr) ? "constexpr" : loaded_ptr->getNameOrAsOperand();
   DMSIRBuilder Builder(loaded_ptr, DMSIRBuilder::AFTER, added_insts);
   static Type* CharStarTy = Builder.getInt8PtrTy();
-  Value* output_base = Builder.CreateAlloca(CharStarTy, nullptr, Twine(addr_name, "_output_base"));
-  Value* output_max = Builder.CreateAlloca(CharStarTy, nullptr, Twine(addr_name, "_output_max"));
+  Value* output_base = Builder.CreateAlloca(CharStarTy, nullptr, Twine(loaded_ptr_name, "_output_base"));
+  Value* output_max = Builder.CreateAlloca(CharStarTy, nullptr, Twine(loaded_ptr_name, "_output_max"));
   call_dms_get_bounds(addr, output_base, output_max, Builder);
-  Value* base = Builder.CreateLoad(CharStarTy, output_base, Twine(addr_name, "_base"));
-  Value* max = Builder.CreateLoad(CharStarTy, output_max, Twine(addr_name, "_max"));
+  Value* base = Builder.CreateLoad(CharStarTy, output_base, Twine(loaded_ptr_name, "_base"));
+  Value* max = Builder.CreateLoad(CharStarTy, output_max, Twine(loaded_ptr_name, "_max"));
   return DynamicBoundsInfo::Info(base, max);
 }

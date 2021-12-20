@@ -60,15 +60,28 @@ void __dms_store_infinite_bounds(void* addr) {
 /// will be 0xFFFFF...
 void __dms_get_bounds(void* addr, void** base, void** max) {
   assert(addr != NULL);
+  assert(base && max && "base and max must not be NULL here");
   BoundsMap::Handle h(&bounds_map, (__sanitizer::uptr)addr);
   if (h.created()) {
+    #ifndef NDEBUG
     fprintf(stderr, "Bounds lookup failed: no bounds for the pointer at address %p\n", addr);
-    __sanitizer::ReportErrorSummary("Bounds lookup failure");
-    __sanitizer::Abort();
+    #endif
+    // but this is not a hard error.
+    // now that we do the lookup based on `addr` and not P itself, the risk is a
+    // lot lower from just letting untracked pointers be considered infinite
+    // bounds.
+    //__sanitizer::ReportErrorSummary("Bounds lookup failure");
+    //__sanitizer::Abort();
+    DynamicBounds inf = infinite_bounds();
+    *base = inf.base;
+    *max = inf.max;
+    // also store these infinite bounds in case we look up the same pointer again
+    h->base = inf.base;
+    h->max = inf.max;
+  } else {
+    *base = h->base;
+    *max = h->max;
   }
-  assert(base && max && "base and max must not be NULL here");
-  *base = h->base;
-  *max = h->max;
 }
 
 /// Call this to indicate that a bounds check failed for `ptr`.
