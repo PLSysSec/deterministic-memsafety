@@ -251,25 +251,6 @@ CallInst* BoundsInfo::store_dynamic(Value* addr, Value* ptr, DMSIRBuilder& Build
   }
 }
 
-/// Get a `DynamicBoundsInfo` representing dynamic bounds for the pointer
-/// `loaded_ptr`, which should have been loaded from the given `addr`. (I.e.,
-/// `addr == &loaded_ptr`.)
-/// (Both `addr` and `loaded_ptr` should be _decoded_ pointer values.)
-///
-/// Computes the actual bounds lazily, i.e., does not insert any dynamic
-/// instructions unless/until this `DynamicBoundsInfo` is actually needed
-/// for a bounds check.
-///
-/// Bounds info for this `addr` should have been previously stored with
-/// `store_dynamic()`.
-BoundsInfo::DynamicBoundsInfo BoundsInfo::dynamic_bounds_for_ptr(
-  Value* addr,
-  Instruction* loaded_ptr,
-  DenseSet<const Instruction*>& added_insts
-) {
-  return DynamicBoundsInfo::LazyDynamicBoundsInfo(addr, loaded_ptr, added_insts);
-}
-
 BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyInfo::force() {
   assert(addr);
   assert(loaded_ptr);
@@ -287,4 +268,18 @@ BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyInfo::for
   Value* base = Builder.CreateLoad(CharStarTy, output_base, Twine(loaded_ptr_name, "_base"));
   Value* max = Builder.CreateLoad(CharStarTy, output_max, Twine(loaded_ptr_name, "_max"));
   return DynamicBoundsInfo::Info(base, max);
+}
+
+BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyGlobalArraySize::force() {
+	assert(arr);
+	assert(arr->getType()->isPointerTy());
+	assert(arr->hasName());
+	LLVM_DEBUG(dbgs() << "Inserting a call to load dynamic global array size for " << arr->getNameOrAsOperand() << "\n");
+	// inserting at the top of `insertion_func` is not necessarily the most efficient, but it's easiest for now
+	DMSIRBuilder Builder(&insertion_func->getEntryBlock(), DMSIRBuilder::BEGINNING, added_insts);
+	static Type* CharStarTy = Builder.getInt8PtrTy();
+	Value* output_max = Builder.CreateAlloca(CharStarTy, nullptr, Twine(arr->getName(), "_output_dynamic_max"));
+	call_dms_get_globalarraysize(arr, output_max, Builder);
+	Value* max = Builder.CreateLoad(CharStarTy, output_max, Twine(arr->getName(), "_dynamic_max"));
+	return DynamicBoundsInfo::Info(arr, max);
 }

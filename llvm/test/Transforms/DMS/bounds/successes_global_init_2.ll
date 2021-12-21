@@ -11,7 +11,6 @@
 @globtuple = dso_local local_unnamed_addr constant <{ [6 x i32], [22 x i32] }> <{ [6 x i32] [i32 0, i32 -5, i32 8, i32 0, i32 1, i32 3], [22 x i32] zeroinitializer }>, align 16
 @globdoublearr = dso_local local_unnamed_addr global [5 x [7 x i32]] [[7 x i32] [i32 -5, i32 5, i32 10, i32 15, i32 50, i32 80, i32 200], [7 x i32] zeroinitializer, [7 x i32] [i32 240, i32 350, i32 500, i32 600, i32 700, i32 800, i32 900], [7 x i32] zeroinitializer, [7 x i32] zeroinitializer], align 16
 @globdoublezeroarr = dso_local local_unnamed_addr global [144 x [144 x i8]] zeroinitializer, align 16
-@externaldoublearr = external dso_local local_unnamed_addr global [144 x [144 x i32]], align 16
 
 define i32 @main(i32 %argc, i8** nocapture readonly %argv) {
 	%globarr_idx = getelementptr inbounds [8 x i32], [8 x i32]* @globarr, i64 0, i64 5

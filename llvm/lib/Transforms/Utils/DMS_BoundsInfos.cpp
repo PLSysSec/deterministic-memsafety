@@ -70,9 +70,18 @@ BoundsInfos::BoundsInfos(
     Type* globalType = gv.getValueType();
     if (globalType->isSized()) {
       auto allocationSize = DL.getTypeStoreSize(globalType).getFixedSize();
-      map[&gv] = BoundsInfo::static_bounds(
-        zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-      );
+      if (allocationSize == 0) {
+        // this can result from declarations like `extern int some_arr[];`.
+        // we handle this by dynamically looking up the actual array size,
+        // see notes on dynamic_bounds_for_global_array().
+        map[&gv] = BoundsInfo(
+          BoundsInfo::dynamic_bounds_for_global_array(gv, F, added_insts)
+        );
+      } else {
+        map[&gv] = BoundsInfo::static_bounds(
+          zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
+        );
+      }
     } else {
       map[&gv] = BoundsInfo::unknown();
     }
@@ -111,6 +120,26 @@ void BoundsInfos::module_initialization(
   BoundsInfos binfos(*new_func, mod.getDataLayout(), added_insts, pointer_aliases);
   for (GlobalObject& gobj : mod.global_objects()) {
     if (GlobalVariable* gv = dyn_cast<GlobalVariable>(&gobj)) {
+      // store the global's size in the special table in case some other
+      // translation unit needs it via __dms_get_globalarraysize(); see notes
+      // there
+      PointerType* gv_ptr_type = cast<PointerType>(gv->getType());
+      Type* gv_type = gv_ptr_type->getElementType();
+      auto global_size = mod.getDataLayout().getTypeStoreSize(gv_type);
+      if (global_size > 0) {
+        call_dms_store_globalarraysize(
+          gv,
+          Builder.CreateGEP(
+            Builder.getInt8Ty(),
+            Builder.castToCharStar(gv),
+            {Builder.getInt64(global_size - 1)}
+          ),
+          Builder
+        );
+      }
+
+      // if the initializer involves any pointer expressions, store bounds for
+      // those in the normal bounds table. see comments above
       if (gv->hasInitializer()) {
         Constant* initializer = gv->getInitializer();
         binfos.store_info_for_all_ptr_exprs(gv, initializer, Builder);

@@ -112,6 +112,10 @@ static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPvPS0_S1_";
 static const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
 /// Mangled name of the store_infinite_bounds function
 static const char* store_bounds_inf_func = "_ZN5__dms27__dms_store_infinite_boundsEPv";
+/// Mangled name of the store_globalarraysize function
+static const char* store_global_array_size_func = "_ZN5__dms27__dms_store_globalarraysizeEPvS0_";
+/// Mangled name of the get_globalarraysize function
+static const char* get_global_array_size_func = "_ZN5__dms25__dms_get_globalarraysizeEPvPS0_";
 /// Mangled name of the boundscheckfail function
 static const char* boundscheckfail_func = "_ZN5__dms21__dms_boundscheckfailEPv";
 
@@ -159,6 +163,36 @@ CallInst* call_dms_get_bounds(Value* addr, Value* output_base, Value* output_max
   assert(output_base->getType() == CharStarStarTy);
   assert(output_max->getType() == CharStarStarTy);
   return Builder.CreateCall(GetBounds, {Builder.castToCharStar(addr), output_base, output_max});
+}
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_store_globalarraysize()`. See docs in dms_interface.h.
+///
+/// The arguments `arr` and `max` can be any pointer type (not necessarily
+/// `void*`). They should be UNENCODED values, ie with all upper bits clear.
+CallInst* call_dms_store_globalarraysize(GlobalValue* arr, Value* max, DMSIRBuilder& Builder) {
+  Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharStarTy = Builder.getInt8PtrTy();
+  static FunctionType* StoreGlobalArraySizeTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
+  FunctionCallee StoreGlobalArraySize = mod->getOrInsertFunction(store_global_array_size_func, StoreGlobalArraySizeTy);
+  return Builder.CreateCall(StoreGlobalArraySize, {Builder.castToCharStar(arr), Builder.castToCharStar(max)});
+}
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_get_globalarraysize()`. See docs in dms_interface.h.
+///
+/// The `arr` argument can be any pointer type (not necessarily `void*`),
+/// and should be an UNENCODED value, ie with all upper bits clear.
+///
+/// `output_max` is an output parameter and should have LLVM type i8**.
+CallInst* call_dms_get_globalarraysize(GlobalValue* arr, Value* output_max, DMSIRBuilder& Builder) {
+  Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharStarTy = Builder.getInt8PtrTy();
+  static Type* CharStarStarTy = CharStarTy->getPointerTo();
+  FunctionType* GetGlobalArraySizeTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarStarTy}, /* IsVarArgs = */ false);
+  FunctionCallee GetGlobalArraySize = mod->getOrInsertFunction(get_global_array_size_func, GetGlobalArraySizeTy);
+  assert(output_max->getType() == CharStarStarTy);
+  return Builder.CreateCall(GetGlobalArraySize, {Builder.castToCharStar(arr), output_max});
 }
 
 /// Convenience function to create calls to our runtime support function

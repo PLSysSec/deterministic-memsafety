@@ -123,6 +123,22 @@ llvm::CallInst* call_dms_store_infinite_bounds(llvm::Value* addr, llvm::DMSIRBui
 llvm::CallInst* call_dms_get_bounds(llvm::Value* addr, llvm::Value* output_base, llvm::Value* output_max, llvm::DMSIRBuilder& Builder);
 
 /// Convenience function to create calls to our runtime support function
+/// `__dms_store_globalarraysize()`. See docs in dms_interface.h.
+///
+/// The arguments `arr` and `max` can be any pointer type (not necessarily
+/// `void*`). They should be UNENCODED values, ie with all upper bits clear.
+llvm::CallInst* call_dms_store_globalarraysize(llvm::GlobalValue* arr, llvm::Value* max, llvm::DMSIRBuilder& Builder);
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_get_globalarraysize()`. See docs in dms_interface.h.
+///
+/// The `arr` argument can be any pointer type (not necessarily `void*`),
+/// and should be an UNENCODED value, ie with all upper bits clear.
+///
+/// `output_max` is an output parameter and should have LLVM type i8**.
+llvm::CallInst* call_dms_get_globalarraysize(llvm::GlobalValue* arr, llvm::Value* output_max, llvm::DMSIRBuilder& Builder);
+
+/// Convenience function to create calls to our runtime support function
 /// `__dms_boundscheckfail()`. See docs in dms_interface.h.
 ///
 /// The `ptr` argument can be any pointer type (not necessarily `void*`),

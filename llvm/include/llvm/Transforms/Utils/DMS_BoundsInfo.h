@@ -169,9 +169,16 @@ public:
   ///
   /// Again this should be a discriminated union, but we can't use C++17 here
   struct DynamicBoundsInfo {
-    /// If this is `true`, `.lazy` is valid
-    /// If this is `false`, `.info` is valid
-    bool isLazy;
+    enum LazyType {
+      /// `.info` is valid
+      NOTLAZY,
+      /// `.lazy` is valid
+      LAZY,
+      /// `.lazy_globalarrsize` is valid
+      LAZYGLOBALARRSIZE,
+    };
+
+    LazyType lazy_type;
 
     /// Gives the "base", i.e., pointer to the first byte of the allocation.
     /// Forces the bounds info to be computed if it hasn't been already.
@@ -190,9 +197,19 @@ public:
     }
 
     void force() {
-      if (isLazy) {
-        info = lazy.force();
-        isLazy = false;
+      switch (lazy_type) {
+        case LAZY: {
+          info = lazy.force();
+          lazy_type = NOTLAZY;
+          break;
+        }
+        case LAZYGLOBALARRSIZE: {
+          info = lazy_globalarrsize.force();
+          lazy_type = NOTLAZY;
+          break;
+        }
+        case NOTLAZY: break;
+        default: llvm_unreachable("Missing LazyType case");
       }
     }
 
@@ -230,7 +247,7 @@ public:
       /// for bounds purposes. See notes on `added_insts` in `DMSAnalysis`
       ///
       /// This is allowed to be `NULL` only if we never `force()` this
-      /// `LazyInfo` (for instance if `DynamicBoundsInfo.isLazy` is `false`)
+      /// `LazyInfo` (for instance if `lazy_type` is `NOTLAZY`)
       DenseSet<const Instruction*>* added_insts;
 
       explicit LazyInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts)
@@ -248,15 +265,56 @@ public:
       }
     };
 
+    /// Information needed to (lazily) compute the `Info` representing bounds
+    /// for a global array. This is only used if the global array size is 0 in
+    /// this compilation unit, eg because of a declaration like
+    /// `extern int some_arr[];`. In that case we (lazily) do the dynamic lookup
+    /// to get the actual global array size from our runtime; see notes there.
+    struct LazyGlobalArraySize {
+      /// Global array in question
+      ///
+      /// This is allowed to be `NULL` only if we never `force()` this
+      /// `LazyGlobalArraySize` (for instance if `lazy_type` is `NOTLAZY`)
+      GlobalValue* arr;
+      /// `Function` which we should insert dynamic instructions in, in the
+      /// event that we need to call `force()` to actually do the dynamic
+      /// lookup.
+      ///
+      /// This is allowed to be `NULL` only if we never `force()` this
+      /// `LazyGlobalArraySize` (for instance if `lazy_type` is `NOTLAZY`)
+      Function* insertion_func;
+      /// Reference to the `added_insts` where we note any instructions added
+      /// for bounds purposes. See notes on `added_insts` in `DMSAnalysis`
+      ///
+      /// This is allowed to be `NULL` only if we never `force()` this
+      /// `LazyGlobalArraySize` (for instance if `lazy_type` is `NOTLAZY`)
+      DenseSet<const Instruction*>* added_insts;
+
+      explicit LazyGlobalArraySize(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts)
+        : arr(&arr), insertion_func(&insertion_func), added_insts(&added_insts) {}
+      LazyGlobalArraySize() : arr(NULL), insertion_func(NULL), added_insts(NULL) {}
+
+      Info force();
+
+      bool operator==(const LazyGlobalArraySize& other) const {
+        // don't need to check that added_insts are equal
+        return (arr == other.arr);
+      }
+      bool operator!=(const LazyGlobalArraySize& other) const {
+        return !(*this == other);
+      }
+    };
+
     Info info;
     LazyInfo lazy;
+    LazyGlobalArraySize lazy_globalarrsize;
 
   public:
     explicit DynamicBoundsInfo(Value* base, Value* max)
-      : isLazy(false), info(Info(base, max)) {}
+      : lazy_type(NOTLAZY), info(Info(base, max)) {}
     explicit DynamicBoundsInfo(PointerWithOffset base, PointerWithOffset max)
-      : isLazy(false), info(Info(base, max)) {}
-    DynamicBoundsInfo() : isLazy(false), info(Info()) {}
+      : lazy_type(NOTLAZY), info(Info(base, max)) {}
+    DynamicBoundsInfo() : lazy_type(NOTLAZY), info(Info()) {}
 
     /// `addr`: Address of the pointer for which we need dynamic info (this
     /// should be a _decoded_ ptr)
@@ -271,18 +329,29 @@ public:
     /// `DMSAnalysis`
     static DynamicBoundsInfo LazyDynamicBoundsInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
       DynamicBoundsInfo dyninfo;
-      dyninfo.isLazy = true;
+      dyninfo.lazy_type = LAZY;
       dyninfo.lazy = LazyInfo(addr, loaded_ptr, added_insts);
       return dyninfo;
     }
 
+    /// This is used to dynamically lookup the size of a global array. We only
+    /// do this if the global array size is 0 in this compilation unit, eg
+    /// because of a declaration like `extern int some_arr[];`.
+    static DynamicBoundsInfo LazyDynamicGlobalArrayBounds(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts) {
+      DynamicBoundsInfo dyninfo;
+      dyninfo.lazy_type = LAZYGLOBALARRSIZE;
+      dyninfo.lazy_globalarrsize = LazyGlobalArraySize(arr, insertion_func, added_insts);
+      return dyninfo;
+    }
+
     bool operator==(const DynamicBoundsInfo& other) const {
-      return (isLazy == other.isLazy &&
-        (isLazy ?
-          (lazy == other.lazy) :
-          (info == other.info)
-        )
-      );
+      if (lazy_type != other.lazy_type) return false;
+      switch (lazy_type) {
+        case NOTLAZY: return info == other.info;
+        case LAZY: return lazy == other.lazy;
+        case LAZYGLOBALARRSIZE: return lazy_globalarrsize == other.lazy_globalarrsize;
+        default: llvm_unreachable("Missing LazyType case");
+      }
     }
     bool operator!=(const DynamicBoundsInfo& other) const {
       return !(*this == other);
@@ -483,7 +552,29 @@ public:
     Value* addr,
     Instruction* loaded_ptr,
     DenseSet<const Instruction*>& added_insts
-  );
+  ) {
+    return DynamicBoundsInfo::LazyDynamicBoundsInfo(addr, loaded_ptr, added_insts);
+  }
+
+  /// Get a `DynamicBoundsInfo` representing dynamic bounds for the global array
+  /// `arr`. If dynamic instructions need to be inserted, insert them at the top
+  /// of `insertion_func`.
+  ///
+  /// Computes the actual bounds lazily, i.e., does not insert any dynamic
+  /// instructions unless/until this `DynamicBoundsInfo` is actually needed for
+  /// a bounds check.
+  ///
+  /// This is only used for global arrays which have size 0 in this compilation
+  /// unit (eg because of a declaration like `extern int some_arr[];`), in which
+  /// case we need a dynamic lookup to find the actual bounds. For all other
+  /// global arrays we know the bounds statically.
+  static DynamicBoundsInfo dynamic_bounds_for_global_array(
+    GlobalValue& arr,
+    Function& insertion_func,
+    DenseSet<const Instruction*>& added_insts
+  ) {
+    return DynamicBoundsInfo::LazyDynamicGlobalArrayBounds(arr, insertion_func, added_insts);
+  }
 
 private:
   /// This should really be a union.  But C++ complains hard about implicitly

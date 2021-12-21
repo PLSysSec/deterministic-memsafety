@@ -28,6 +28,18 @@ void __dms_store_infinite_bounds(void* addr);
 /// will be 0xFFFFF...
 void __dms_get_bounds(void* addr, void** base, void** max);
 
+/// Mark that the given global array `arr` has dynamic base `arr` and max `max`.
+/// This is used in case the array is declared in another translation unit as
+/// e.g. `extern int some_arr[];`. That other translation unit can then dynamically
+/// look up the size recorded here by the translation unit that actually has the
+/// accurate size for `some_arr`.
+void __dms_store_globalarraysize(void* arr, void* max);
+
+/// Get the dynamic max for the global array `arr`. (The dynamic base is
+/// implicitly `arr` itself.) See ntoes on `__dms_store_globalarraysize()`.
+/// The dynamic max is written to the output parameter `max`.
+void __dms_get_globalarraysize(void* arr, void** max);
+
 /// Call this to indicate that a bounds check failed for `ptr`.
 /// This function will not return.
 __attribute__((noreturn))

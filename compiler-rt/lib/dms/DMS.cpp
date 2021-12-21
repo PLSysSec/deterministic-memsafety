@@ -25,6 +25,11 @@ DynamicBounds infinite_bounds() {
 typedef __sanitizer::AddrHashMap<DynamicBounds, 2311> BoundsMap;
 static BoundsMap bounds_map;
 
+/// Maps global array to the dynamic max for that global array. (The dynamic
+/// base is implicitly the map key.)
+typedef __sanitizer::AddrHashMap<void*, 2311> GlobalArraySizeMap;
+static GlobalArraySizeMap global_array_size_map;
+
 namespace __dms {
 
 /// Mark that the dynamic bounds for the pointer P stored at location `addr` are
@@ -81,6 +86,37 @@ void __dms_get_bounds(void* addr, void** base, void** max) {
   } else {
     *base = h->base;
     *max = h->max;
+  }
+}
+
+/// Mark that the given global array `arr` has dynamic base `arr` and max `max`.
+/// This is used in case the array is declared in another translation unit as
+/// e.g. `extern int some_arr[];`. That other translation unit can then dynamically
+/// look up the size recorded here by the translation unit that actually has the
+/// accurate size for `some_arr`.
+void __dms_store_globalarraysize(void* arr, void* max) {
+  assert(arr != NULL);
+  GlobalArraySizeMap::Handle h(&global_array_size_map, (__sanitizer::uptr)arr);
+  *h = max;
+}
+
+/// Get the dynamic max for the global array `arr`. (The dynamic base is
+/// implicitly `arr` itself.) See ntoes on `__dms_store_globalarraysize()`.
+/// The dynamic max is written to the output parameter `max`.
+void __dms_get_globalarraysize(void* arr, void** max) {
+  assert(arr != NULL);
+  assert(max != NULL);
+  GlobalArraySizeMap::Handle h(&global_array_size_map, (__sanitizer::uptr)arr);
+  if (h.created()) {
+    fprintf(stderr, "Global array size lookup failed: no size for the array at address %p\n", arr);
+    __sanitizer::ReportErrorSummary("Global array size lookup failure");
+    __sanitizer::Abort();
+    // Or, we could make this just a warning, like in the BoundsMap case, if necessary.
+    //*max = infinite_bounds().max;
+    // also store the infinite size in case we look up the same array again
+    //*h = infinite_bounds().max;
+  } else {
+    *max = *h;
   }
 }
 
