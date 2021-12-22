@@ -1362,6 +1362,10 @@ private:
               // special-case calls of __ctype_b_loc(), we know it returns a valid pointer
               // See https://stackoverflow.com/questions/37702434/ctype-b-loc-what-is-its-purpose
               mark_as(ptr_statuses, &call, PointerStatus::clean());
+            } else if (IAC.CNI.kind == CallNameInfo::NAMEDCALL && IAC.CNI.name == "fopen") {
+              // special-case calls of fopen(), we know it returns a valid
+              // pointer or NULL, either way it's safe to mark CLEAN
+              mark_as(ptr_statuses, &call, PointerStatus::clean());
             } else {
               // For now, mark pointers returned from other calls as UNKNOWN
               mark_as(ptr_statuses, &call, PointerStatus::unknown());
