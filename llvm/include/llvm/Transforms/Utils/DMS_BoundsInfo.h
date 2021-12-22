@@ -6,6 +6,8 @@
 #include "llvm/Transforms/Utils/DMS_common.h"
 #include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 
+#include <variant>
+
 extern const llvm::APInt zero;
 extern const llvm::APInt minusone;
 
@@ -169,23 +171,12 @@ public:
   ///
   /// Again this should be a discriminated union, but we can't use C++17 here
   struct DynamicBoundsInfo {
-    enum LazyType {
-      /// `.info` is valid
-      NOTLAZY,
-      /// `.lazy` is valid
-      LAZY,
-      /// `.lazy_globalarrsize` is valid
-      LAZYGLOBALARRSIZE,
-    };
-
-    LazyType lazy_type;
-
     /// Gives the "base", i.e., pointer to the first byte of the allocation.
     /// Forces the bounds info to be computed if it hasn't been already.
     const PointerWithOffset& getBase() const {
       // we "cheat" the const here by calling the non-const `force()`
       ((DynamicBoundsInfo*)this)->force();
-      return info.base;
+      return std::get<Info>(data).base;
     }
 
     /// Gives the "max", i.e., pointer to the last byte of the allocation.
@@ -193,23 +184,14 @@ public:
     const PointerWithOffset& getMax() const {
       // we "cheat" the const here by calling the non-const `force()`
       ((DynamicBoundsInfo*)this)->force();
-      return info.max;
+      return std::get<Info>(data).max;
     }
 
     void force() {
-      switch (lazy_type) {
-        case LAZY: {
-          info = lazy.force();
-          lazy_type = NOTLAZY;
-          break;
-        }
-        case LAZYGLOBALARRSIZE: {
-          info = lazy_globalarrsize.force();
-          lazy_type = NOTLAZY;
-          break;
-        }
-        case NOTLAZY: break;
-        default: llvm_unreachable("Missing LazyType case");
+      if (LazyInfo* lazy = std::get_if<LazyInfo>(&data)) {
+        data = lazy->force();
+      } else if (LazyGlobalArraySize* lazy = std::get_if<LazyGlobalArraySize>(&data)) {
+        data = lazy->force();
       }
     }
 
@@ -305,16 +287,16 @@ public:
       }
     };
 
-    Info info;
-    LazyInfo lazy;
-    LazyGlobalArraySize lazy_globalarrsize;
+    /// Holds the actual data: either a real `Info`, or one of two ways to
+    /// lazily compute it when it is needed
+    std::variant<Info, LazyInfo, LazyGlobalArraySize> data;
 
   public:
     explicit DynamicBoundsInfo(Value* base, Value* max)
-      : lazy_type(NOTLAZY), info(Info(base, max)) {}
+      : data(Info(base, max)) {}
     explicit DynamicBoundsInfo(PointerWithOffset base, PointerWithOffset max)
-      : lazy_type(NOTLAZY), info(Info(base, max)) {}
-    DynamicBoundsInfo() : lazy_type(NOTLAZY), info(Info()) {}
+      : data(Info(base, max)) {}
+    DynamicBoundsInfo() : data(Info()) {}
 
     /// `addr`: Address of the pointer for which we need dynamic info (this
     /// should be a _decoded_ ptr)
@@ -329,8 +311,7 @@ public:
     /// `DMSAnalysis`
     static DynamicBoundsInfo LazyDynamicBoundsInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
       DynamicBoundsInfo dyninfo;
-      dyninfo.lazy_type = LAZY;
-      dyninfo.lazy = LazyInfo(addr, loaded_ptr, added_insts);
+      dyninfo.data = LazyInfo(addr, loaded_ptr, added_insts);
       return dyninfo;
     }
 
@@ -339,19 +320,12 @@ public:
     /// because of a declaration like `extern int some_arr[];`.
     static DynamicBoundsInfo LazyDynamicGlobalArrayBounds(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts) {
       DynamicBoundsInfo dyninfo;
-      dyninfo.lazy_type = LAZYGLOBALARRSIZE;
-      dyninfo.lazy_globalarrsize = LazyGlobalArraySize(arr, insertion_func, added_insts);
+      dyninfo.data = LazyGlobalArraySize(arr, insertion_func, added_insts);
       return dyninfo;
     }
 
     bool operator==(const DynamicBoundsInfo& other) const {
-      if (lazy_type != other.lazy_type) return false;
-      switch (lazy_type) {
-        case NOTLAZY: return info == other.info;
-        case LAZY: return lazy == other.lazy;
-        case LAZYGLOBALARRSIZE: return lazy_globalarrsize == other.lazy_globalarrsize;
-        default: llvm_unreachable("Missing LazyType case");
-      }
+      return (data == other.data);
     }
     bool operator!=(const DynamicBoundsInfo& other) const {
       return !(*this == other);
