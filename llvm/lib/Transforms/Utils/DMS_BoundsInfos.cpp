@@ -14,17 +14,19 @@ BoundsInfos::BoundsInfos(
   LLVM_DEBUG(dbgs() << "Initializing bounds infos for function " << F.getNameOrAsOperand() << " with " << F.arg_size() << " operands\n");
   bool isMain = F.getName() == "main" && F.arg_size() == 2;
   if (isMain) {
-    LLVM_DEBUG(dbgs() << "This is a 'main' function, setting bounds for argv and globals\n");
+    LLVM_DEBUG(dbgs() << "This is a 'main' function, setting bounds for argv\n");
     Value* argc = F.getArg(0);
     Value* argv = F.getArg(1);
     assert(argv->getType()->isPointerTy());
+    assert(cast<PointerType>(argv->getType())->getElementType()->isPointerTy());
     {
       // bounds for argv: it's an array of size argc
       DMSIRBuilder Builder(&F.getEntryBlock(), DMSIRBuilder::BEGINNING, &added_insts);
+      auto pointer_size_bytes = DL.getTypeStoreSize(Builder.getInt8PtrTy()).getFixedSize();
       Value* argvMax = Builder.add_offset_to_ptr(argv,
         /* argc * pointer_size_in_bytes - 1 */
         Builder.CreateSub(
-          Builder.CreateMul(argc, ConstantInt::get(argc->getType(), 8)),
+          Builder.CreateMul(argc, ConstantInt::get(argc->getType(), pointer_size_bytes)),
           ConstantInt::get(argc->getType(), 1, /* signed = */ true),
           "argvMax"
         )
@@ -45,10 +47,10 @@ BoundsInfos::BoundsInfos(
       BasicBlock* forloopbody = Entry.splitBasicBlock(Entry.getFirstInsertionPt());
       DMSIRBuilder Builder(forloopbody, forloopbody->getFirstInsertionPt(), &added_insts);
       PHINode* loopindex = Builder.CreatePHI(Builder.getInt32Ty(), 2, "__dms_argc_loopindex");
-      loopindex->addIncoming(Builder.getIntN(/* bits = */ 32, /* val = */ 0), &Entry);
+      loopindex->addIncoming(Builder.getInt32(0), &Entry);
       Value* stringptr = Builder.CreateGEP(Builder.getInt8PtrTy(), argv, loopindex);
       call_dms_store_infinite_bounds(stringptr, Builder);
-      Value* incd_loopindex = Builder.CreateAdd(loopindex, Builder.getIntN(/* bits = */ 32, /* val = */ 1));
+      Value* incd_loopindex = Builder.CreateAdd(loopindex, Builder.getInt32(1));
       loopindex->addIncoming(incd_loopindex, forloopbody);
       Value* cond = Builder.CreateICmpULT(incd_loopindex, argc);
       Builder.insertCondJumpTo(cond, forloopbody);
