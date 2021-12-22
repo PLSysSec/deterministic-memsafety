@@ -61,26 +61,9 @@ struct IsAllocatingCall {
 /// use `Builder`
 IsAllocatingCall isAllocatingCall(const llvm::CallBase&, llvm::DMSIRBuilder& Builder);
 
-/// this struct would be a std::optional if we could use C++17
-struct GEPConstantOffset {
-  /// If the GEP's total offset is a compile-time constant, this holds the
-  /// value of the constant offset, in bytes.
-  /// Otherwise, this is empty.
-  std::optional<llvm::APInt> constant_offset;
-
-  std::string pretty() const {
-    if (constant_offset.has_value()) {
-      llvm::SmallVector<char> offset_str;
-      constant_offset->toStringSigned(offset_str);
-      return llvm::Twine("constant " + offset_str).str();
-    }
-    else return "nonconstant";
-  }
-};
-
 /// Determine whether the GEP's total offset is a compile-time constant, and if
 /// so, what constant
-GEPConstantOffset computeGEPOffset(const llvm::GetElementPtrInst&, const llvm::DataLayout&);
+std::optional<llvm::APInt> computeGEPOffset(const llvm::GetElementPtrInst&, const llvm::DataLayout&);
 
 /// Returns `true` if the block is well-formed. For this function's purposes,
 /// "well-formed" means:

@@ -23,6 +23,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/Local.h"
 
+#include <optional>
 #include <sstream>  // ostringstream
 
 using namespace llvm;
@@ -41,11 +42,14 @@ static bool shouldCountCallForStatsPurposes(const CallBase &call);
 struct GEPResultClassification {
   /// Classification of the result of the given `gep`.
   PointerStatus classification;
-  /// Is the total offset of the GEP a constant, and if so, what is that
-  /// constant?
+
+  /// If the GEP's total offset is a compile-time constant, this holds the
+  /// value of the constant offset, in bytes.
+  /// Otherwise, this is empty.
   /// (If `override_constant_offset` is non-NULL, this will simply reflect the
   /// values specified in the override.)
-  GEPConstantOffset offset;
+  std::optional<APInt> constant_offset;
+
   /// If `offset` is constant but nonzero, do we consider it as zero anyways
   /// because it is a "trustworthy" struct offset?
   bool trustworthy_struct_offset;
@@ -53,7 +57,14 @@ struct GEPResultClassification {
   std::string pretty() const {
     std::ostringstream out;
     out << classification.pretty();
-    out << " with offset " << offset.pretty();
+
+    if (constant_offset.has_value()) {
+      llvm::SmallVector<char> offset_str;
+      constant_offset->toStringSigned(offset_str);
+      out << " with constant offset " << Twine(offset_str).str();
+    }
+    else out << " with nonconstant offset";
+
     if (trustworthy_struct_offset) out << " (considered zero due to trustworthy_struct_offset)";
     return out.str();
   }
@@ -1204,11 +1215,11 @@ private:
           );
           mark_as(ptr_statuses, &gep, grc.classification);
           // if we added a nonzero constant to a pointer, count that for stats purposes
-          if (grc.offset.constant_offset.has_value() && !grc.trustworthy_struct_offset && *grc.offset.constant_offset != 0) {
+          if (grc.constant_offset.has_value() && !grc.trustworthy_struct_offset && *grc.constant_offset != 0) {
             COUNT_OP_AS_STATUS(pointer_arith_const, input_status, &gep, "GEP on a pointer");
           }
           // update aliasing information
-          if (grc.offset.constant_offset.has_value() && !grc.trustworthy_struct_offset && *grc.offset.constant_offset == 0) {
+          if (grc.constant_offset.has_value() && !grc.trustworthy_struct_offset && *grc.constant_offset == 0) {
             pointer_aliases[&gep].insert(input_ptr);
             pointer_aliases[input_ptr].insert(&gep);
           }
@@ -1868,21 +1879,21 @@ static GEPResultClassification classifyGEPResult(
   assert(input_status.kind != PointerKind::NOTDEFINEDYET && "Shouldn't call classifyGEPResult() with NOTDEFINEDYET input_ptr");
   GEPResultClassification grc;
   if (override_constant_offset == NULL) {
-    grc.offset = computeGEPOffset(gep, DL);
+    grc.constant_offset = computeGEPOffset(gep, DL);
   } else {
-    grc.offset.constant_offset = *override_constant_offset;
+    grc.constant_offset = *override_constant_offset;
   }
 
   if (gep.hasAllZeroIndices()) {
     // result of a GEP with all zeroes as indices, is the same as the input pointer.
-    assert(grc.offset.constant_offset.has_value() && *grc.offset.constant_offset == zero && "If all indices are constant 0, then the total offset should be constant 0");
+    assert(grc.constant_offset.value() == zero && "If all indices are constant 0, then the total offset should be constant 0");
     grc.classification = input_status;
     grc.trustworthy_struct_offset = false;
     return grc;
   }
   if (trust_llvm_struct_types && areAllIndicesTrustworthy(gep)) {
     // nonzero offset, but "trustworthy" offset.
-    assert(grc.offset.constant_offset.has_value());
+    assert(grc.constant_offset.has_value());
     grc.trustworthy_struct_offset = true;
     switch (input_status.kind) {
       case PointerKind::CLEAN: {
@@ -1934,19 +1945,19 @@ static GEPResultClassification classifyGEPResult(
   // if we get here, we don't have a zero constant offset. Either it's a nonzero constant,
   // or a nonconstant.
   grc.trustworthy_struct_offset = false;
-  if (grc.offset.constant_offset.has_value()) {
+  if (grc.constant_offset.has_value()) {
     switch (input_status.kind) {
       case PointerKind::CLEAN: {
         // This GEP adds a constant but nonzero amount to a CLEAN
         // pointer. The result is some flavor of BLEMISHED depending
         // on how far the pointer arithmetic goes.
-        if (grc.offset.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) {
+        if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) {
           grc.classification = PointerStatus::blemished16();
           return grc;
-        } else if (grc.offset.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 32))) {
+        } else if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 32))) {
           grc.classification = PointerStatus::blemished32();
           return grc;
-        } else if (grc.offset.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 64))) {
+        } else if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 64))) {
           grc.classification = PointerStatus::blemished64();
           return grc;
         } else {
@@ -1960,11 +1971,11 @@ static GEPResultClassification classifyGEPResult(
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED16 pointer. The result is some flavor of BLEMISHED
         // depending on how far the pointer arithmetic goes.
-        if (grc.offset.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) {
+        if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) {
           // Conservatively, the total offset can't exceed 32
           grc.classification = PointerStatus::blemished32();
           return grc;
-        } else if (grc.offset.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 48))) {
+        } else if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 48))) {
           // Conservatively, the total offset can't exceed 64
           grc.classification = PointerStatus::blemished64();
           return grc;
@@ -1979,7 +1990,7 @@ static GEPResultClassification classifyGEPResult(
         // This GEP adds a constant but nonzero amount to a
         // BLEMISHED32 pointer. The result is some flavor of BLEMISHED
         // depending on how far the pointer arithmetic goes.
-        if (grc.offset.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 32))) {
+        if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 32))) {
           // Conservatively, the total offset can't exceed 64
           grc.classification = PointerStatus::blemished64();
           return grc;
@@ -2035,7 +2046,7 @@ static GEPResultClassification classifyGEPResult(
           Value* dynamic_kind = Builder.getInt64(DynamicKindMasks::dirty);
           dynamic_kind = Builder.CreateSelect(
             is_clean,
-            (grc.offset.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) ?
+            (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) ?
               Builder.getInt64(DynamicKindMasks::blemished16) : // offset <= 16 from a dynamically clean pointer
               Builder.getInt64(DynamicKindMasks::blemished_other), // offset >16 from a dynamically clean pointer
             dynamic_kind

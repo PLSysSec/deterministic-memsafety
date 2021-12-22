@@ -340,11 +340,11 @@ const BoundsInfo& BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep) {
       return binfo;
     case BoundsInfo::STATIC: {
       const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
-      const GEPConstantOffset gco = computeGEPOffset(gep, DL);
-      if (gco.constant_offset.has_value()) {
+      const std::optional<APInt> constant_offset = computeGEPOffset(gep, DL);
+      if (constant_offset.has_value()) {
         map[&gep] = BoundsInfo::static_bounds(
-          static_info->low_offset - *gco.constant_offset,
-          static_info->high_offset - *gco.constant_offset
+          static_info->low_offset - *constant_offset,
+          static_info->high_offset - *constant_offset
         );
         return map[&gep];
       } else {

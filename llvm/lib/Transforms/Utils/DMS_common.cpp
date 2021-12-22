@@ -51,13 +51,13 @@ IsAllocatingCall isAllocatingCall(const CallBase &call, DMSIRBuilder& Builder) {
 
 /// Determine whether the GEP's total offset is a compile-time constant, and if
 /// so, what constant
-GEPConstantOffset computeGEPOffset(const GetElementPtrInst& gep, const DataLayout& DL) {
-  GEPConstantOffset gco;
-  gco.constant_offset = zero;
-  if (!gep.accumulateConstantOffset(DL, *gco.constant_offset)) {
-    gco.constant_offset = std::nullopt;
+std::optional<APInt> computeGEPOffset(const GetElementPtrInst& gep, const DataLayout& DL) {
+  APInt offset = zero;
+  if (gep.accumulateConstantOffset(DL, offset)) {
+    return offset;
+  } else {
+    return std::nullopt;
   }
-  return gco;
 }
 
 /// Returns `true` if the block is well-formed. For this function's purposes,
