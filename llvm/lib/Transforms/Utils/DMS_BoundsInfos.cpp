@@ -341,10 +341,10 @@ const BoundsInfo& BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep) {
     case BoundsInfo::STATIC: {
       const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
       const GEPConstantOffset gco = computeGEPOffset(gep, DL);
-      if (gco.is_constant) {
+      if (gco.constant_offset.has_value()) {
         map[&gep] = BoundsInfo::static_bounds(
-          static_info->low_offset - gco.offset,
-          static_info->high_offset - gco.offset
+          static_info->low_offset - *gco.constant_offset,
+          static_info->high_offset - *gco.constant_offset
         );
         return map[&gep];
       } else {
@@ -612,8 +612,8 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
 }
 
 void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
-  if (IAC.is_allocating) {
-    if (ConstantInt* allocationSize = dyn_cast<ConstantInt>(IAC.allocation_bytes)) {
+  if (IAC.allocation_bytes.has_value()) {
+    if (ConstantInt* allocationSize = dyn_cast<ConstantInt>(*IAC.allocation_bytes)) {
       // allocating a constant number of bytes.
       // we know the bounds of the allocation statically.
       map[&call] = BoundsInfo::static_bounds(
@@ -626,7 +626,7 @@ void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
       // here should not change from iteration to iteration
       if (!is_binfo_present(&call)) {
         DMSIRBuilder Builder(&call, DMSIRBuilder::AFTER, &added_insts);
-        Value* callPlusBytes = Builder.add_offset_to_ptr(&call, IAC.allocation_bytes);
+        Value* callPlusBytes = Builder.add_offset_to_ptr(&call, *IAC.allocation_bytes);
         Value* max = Builder.add_offset_to_ptr(callPlusBytes, minusone);
         map[&call] = BoundsInfo::dynamic_bounds(&call, max);
       }

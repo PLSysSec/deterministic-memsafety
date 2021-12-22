@@ -10,6 +10,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
+#include <optional>
 
 struct CallNameInfo {
   enum CallKind {
@@ -42,21 +43,18 @@ struct CallNameInfo {
 
 CallNameInfo getCallNameInfo(const llvm::CallBase&);
 
-/// Struct exists because we can't use C++17's std::optional.
 /// Describes whether a call allocates memory, and if so, the size of
 /// the memory allocated.
 struct IsAllocatingCall {
-  /// Is it an allocating call
-  bool is_allocating;
-  /// If it's an allocating call, this is the allocation size in bytes.
-  /// If it's not an allocating call, this field is invalid (and may be NULL).
-  llvm::Value* allocation_bytes;
+  /// If this is an allocating call, this holds the allocation size in bytes.
+  /// If this isn't an allocating call, this `optional` will be empty.
+  std::optional<llvm::Value*> allocation_bytes;
 
   /// also in case you need it, here's the CallNameInfo
   CallNameInfo CNI;
 
-  static IsAllocatingCall not_allocating(CallNameInfo CNI) { return IsAllocatingCall { false, NULL, CNI }; }
-  static IsAllocatingCall allocating(llvm::Value* size, CallNameInfo CNI) { return IsAllocatingCall { true, size, CNI }; }
+  static IsAllocatingCall not_allocating(CallNameInfo CNI) { return IsAllocatingCall { std::nullopt, CNI }; }
+  static IsAllocatingCall allocating(llvm::Value* size, CallNameInfo CNI) { return IsAllocatingCall { size, CNI }; }
 };
 
 /// If computing the allocation size requires inserting dynamic instructions,
@@ -65,16 +63,15 @@ IsAllocatingCall isAllocatingCall(const llvm::CallBase&, llvm::DMSIRBuilder& Bui
 
 /// this struct would be a std::optional if we could use C++17
 struct GEPConstantOffset {
-  /// Is the GEP's total offset a compile-time constant
-  bool is_constant;
-  /// If `is_constant` is true, this is the value of the constant offset, in
-  /// bytes
-  llvm::APInt offset;
+  /// If the GEP's total offset is a compile-time constant, this holds the
+  /// value of the constant offset, in bytes.
+  /// Otherwise, this is empty.
+  std::optional<llvm::APInt> constant_offset;
 
   std::string pretty() const {
-    if (is_constant) {
+    if (constant_offset.has_value()) {
       llvm::SmallVector<char> offset_str;
-      offset.toStringSigned(offset_str);
+      constant_offset->toStringSigned(offset_str);
       return llvm::Twine("constant " + offset_str).str();
     }
     else return "nonconstant";

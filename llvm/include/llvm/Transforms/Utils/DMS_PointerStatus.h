@@ -121,9 +121,11 @@ public:
 
 struct StatusWithBlock;
 
-/// If C++ had ADTs, PointerKind::DYNAMIC would carry an LLVM Value*.  (And maybe
-/// BLEMISHED would carry an int indicating exactly how blemished.)  Instead,
-/// we have this.
+/// In principle, and perhaps literally in the future with std::variant,
+/// PointerKind::DYNAMIC carries an LLVM Value*.
+/// (If we do switch to std::variant, maybe BLEMISHED would carry an int
+/// indicating exactly how blemished.)
+/// For now, we have this, representing the ADT.
 class PointerStatus final {
 public:
   /// the PointerKind

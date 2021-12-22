@@ -53,8 +53,10 @@ IsAllocatingCall isAllocatingCall(const CallBase &call, DMSIRBuilder& Builder) {
 /// so, what constant
 GEPConstantOffset computeGEPOffset(const GetElementPtrInst& gep, const DataLayout& DL) {
   GEPConstantOffset gco;
-  gco.offset = zero;
-  gco.is_constant = gep.accumulateConstantOffset(DL, gco.offset);
+  gco.constant_offset = zero;
+  if (!gep.accumulateConstantOffset(DL, *gco.constant_offset)) {
+    gco.constant_offset = std::nullopt;
+  }
   return gco;
 }
 
