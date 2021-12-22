@@ -51,10 +51,10 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
     case INFINITE:
       return get_min_ptr_value(Builder);
     case STATIC:
-      return info.static_info.base_as_llvm_value(cur_ptr, Builder);
+      return static_info()->base_as_llvm_value(cur_ptr, Builder);
     case DYNAMIC:
     case DYNAMIC_MERGED:
-      return info.dynamic_info.getBase().as_llvm_value(Builder);
+      return dynamic_info()->getBase().as_llvm_value(Builder);
     default:
       llvm_unreachable("Missing BoundsInfo.kind case");
   }
@@ -78,10 +78,10 @@ Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) cons
     case INFINITE:
       return get_max_ptr_value(Builder);
     case STATIC:
-      return info.static_info.max_as_llvm_value(cur_ptr, Builder);
+      return static_info()->max_as_llvm_value(cur_ptr, Builder);
     case DYNAMIC:
     case DYNAMIC_MERGED:
-      return info.dynamic_info.getMax().as_llvm_value(Builder);
+      return dynamic_info()->getMax().as_llvm_value(Builder);
     default:
       llvm_unreachable("Missing BoundsInfo.kind case");
   }
@@ -106,8 +106,8 @@ BoundsInfo BoundsInfo::merge(
   if (B.kind == INFINITE) return A;
 
   if (A.kind == STATIC && B.kind == STATIC) {
-    const StaticBoundsInfo &a_info = A.info.static_info;
-    const StaticBoundsInfo &b_info = B.info.static_info;
+    const StaticBoundsInfo &a_info = *A.static_info();
+    const StaticBoundsInfo &b_info = *B.static_info();
     return BoundsInfo::static_bounds(
       a_info.low_offset.sgt(b_info.low_offset) ? a_info.low_offset : b_info.low_offset,
       a_info.high_offset.slt(b_info.high_offset) ? a_info.high_offset : b_info.high_offset
@@ -116,18 +116,18 @@ BoundsInfo BoundsInfo::merge(
 
   if (A.is_dynamic() && B.is_dynamic()) {
     return merge_dynamic_dynamic(
-      A.info.dynamic_info, B.info.dynamic_info, Builder
+      *A.dynamic_info(), *B.dynamic_info(), Builder
     );
   }
 
   if (A.kind == STATIC && B.is_dynamic()) {
     return merge_static_dynamic(
-      A.info.static_info, B.info.dynamic_info, cur_ptr, Builder
+      *A.static_info(), *B.dynamic_info(), cur_ptr, Builder
     );
   }
   if (A.is_dynamic() && B.kind == STATIC) {
     return merge_static_dynamic(
-      B.info.static_info, A.info.dynamic_info, cur_ptr, Builder
+      *B.static_info(), *A.dynamic_info(), cur_ptr, Builder
     );
   }
 

@@ -334,20 +334,18 @@ public:
 
   /// Get the StaticBoundsInfo, or NULL if not `is_static()`
   const StaticBoundsInfo* static_info() const {
-    if (is_static()) {
-      return &info.static_info;
-    } else {
-      return NULL;
-    }
+    if (!is_static()) return NULL;
+    auto ret = std::get_if<StaticBoundsInfo>(&info);
+    assert(ret && "when is_static(), the variant should be StaticBoundsInfo");
+    return ret;
   }
 
   /// Get the DynamicBoundsInfo, or NULL if not `is_dynamic()`
   const DynamicBoundsInfo* dynamic_info() const {
-    if (is_dynamic()) {
-      return &info.dynamic_info;
-    } else {
-      return NULL;
-    }
+    if (!is_dynamic()) return NULL;
+    auto ret = std::get_if<DynamicBoundsInfo>(&info);
+    assert(ret && "when is_dynamic(), the variant should be DynamicBoundsInfo");
+    return ret;
   }
 
   /// Helper, returns `true` if the kind is `STATIC`.
@@ -458,10 +456,10 @@ public:
       case INFINITE:
         return true;
       case STATIC:
-        return (info.static_info == other.info.static_info);
+        return (std::get<StaticBoundsInfo>(info) == std::get<StaticBoundsInfo>(other.info));
       case DYNAMIC:
       case DYNAMIC_MERGED:
-        return (info.dynamic_info == other.info.dynamic_info);
+        return (std::get<DynamicBoundsInfo>(info) == std::get<DynamicBoundsInfo>(other.info));
       default:
         llvm_unreachable("Missing BoundsInfo.kind case");
     }
@@ -551,19 +549,8 @@ public:
   }
 
 private:
-  /// This should really be a union.  But C++ complains hard about implicitly
-  /// deleted copy constructors, implicitly deleted assignment operators, etc
-  /// and I'm not C++ enough to be able to fix it
-  struct StaticOrDynamic {
-    StaticBoundsInfo static_info;
-    DynamicBoundsInfo dynamic_info;
-
-    StaticOrDynamic(StaticBoundsInfo static_info) : static_info(static_info) {}
-    StaticOrDynamic(DynamicBoundsInfo dynamic_info) : dynamic_info(dynamic_info) {}
-  };
-
   Kind kind;
-  StaticOrDynamic info;
+  std::variant<StaticBoundsInfo, DynamicBoundsInfo> info;
 
   /// `cur_ptr` is the pointer which these bounds are for.
   ///
