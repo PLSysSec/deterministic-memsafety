@@ -1571,7 +1571,6 @@ private:
         sw_bounds_check(ptr, *binfo.static_info(), access_bytes, Builder);
         return false;
       case BoundsInfo::DYNAMIC:
-      case BoundsInfo::DYNAMIC_MERGED:
         sw_bounds_check(ptr, *binfo.dynamic_info(), access_bytes, Builder, new_blocks);
         return true;
       default:

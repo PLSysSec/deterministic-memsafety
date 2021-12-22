@@ -53,7 +53,6 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
     case STATIC:
       return static_info()->base_as_llvm_value(cur_ptr, Builder);
     case DYNAMIC:
-    case DYNAMIC_MERGED:
       return dynamic_info()->getBase().as_llvm_value(Builder);
     default:
       llvm_unreachable("Missing BoundsInfo.kind case");
@@ -80,7 +79,6 @@ Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) cons
     case STATIC:
       return static_info()->max_as_llvm_value(cur_ptr, Builder);
     case DYNAMIC:
-    case DYNAMIC_MERGED:
       return dynamic_info()->getMax().as_llvm_value(Builder);
     default:
       llvm_unreachable("Missing BoundsInfo.kind case");
@@ -114,18 +112,18 @@ BoundsInfo BoundsInfo::merge(
     );
   }
 
-  if (A.is_dynamic() && B.is_dynamic()) {
+  if (A.kind == DYNAMIC && B.kind == DYNAMIC) {
     return merge_dynamic_dynamic(
       *A.dynamic_info(), *B.dynamic_info(), Builder
     );
   }
 
-  if (A.kind == STATIC && B.is_dynamic()) {
+  if (A.kind == STATIC && B.kind == DYNAMIC) {
     return merge_static_dynamic(
       *A.static_info(), *B.dynamic_info(), cur_ptr, Builder
     );
   }
-  if (A.is_dynamic() && B.kind == STATIC) {
+  if (A.kind == DYNAMIC && B.kind == STATIC) {
     return merge_static_dynamic(
       *B.static_info(), *A.dynamic_info(), cur_ptr, Builder
     );
@@ -204,7 +202,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
     max = PointerWithOffset(merged_max);
   }
   BoundsInfo merged = BoundsInfo::dynamic_bounds(base, max);
-  merged.kind = DYNAMIC_MERGED;
+  merged.kind = DYNAMIC;
   merged.merge_inputs.clear();
   merged.merge_inputs.push_back(new BoundsInfo(a_info));
   merged.merge_inputs.push_back(new BoundsInfo(b_info));

@@ -361,7 +361,6 @@ const BoundsInfo& BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep) {
       }
     }
     case BoundsInfo::DYNAMIC:
-    case BoundsInfo::DYNAMIC_MERGED:
     {
       // regardless of the GEP offset, the `base` and `max` don't change
       return binfo;
@@ -383,7 +382,7 @@ void BoundsInfos::propagate_bounds(SelectInst& select) {
   const BoundsInfo& binfo2 = get_binfo(select.getFalseValue());
   const BoundsInfo& prev_iteration_binfo = get_binfo(&select);
   if (
-    prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC_MERGED
+    prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC
     && prev_iteration_binfo.merge_inputs.size() == 2
     && *prev_iteration_binfo.merge_inputs[0] == binfo1
     && *prev_iteration_binfo.merge_inputs[1] == binfo2
@@ -453,7 +452,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
   bool any_incoming_bounds_are_dynamic = false;
   bool any_incoming_bounds_are_unknown = false;
   for (auto& incoming : incoming_binfos) {
-    if (incoming.binfo.is_dynamic()) {
+    if (incoming.binfo.get_kind() == BoundsInfo::DYNAMIC) {
       any_incoming_bounds_are_dynamic = true;
     }
     if (incoming.binfo.get_kind() == BoundsInfo::UNKNOWN) {
@@ -585,7 +584,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
   } else {
     // no incoming bounds are dynamic. let's just merge them statically
     bool any_merge_inputs_changed = false;
-    if (prev_iteration_binfo.get_kind() != BoundsInfo::DYNAMIC_MERGED)
+    if (prev_iteration_binfo.get_kind() != BoundsInfo::DYNAMIC)
       any_merge_inputs_changed = true;
     if (prev_iteration_binfo.merge_inputs.size() != incoming_binfos.size())
       any_merge_inputs_changed = true;

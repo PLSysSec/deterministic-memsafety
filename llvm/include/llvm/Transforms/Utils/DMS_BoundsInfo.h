@@ -36,9 +36,6 @@ public:
     STATIC,
     /// Bounds info is known dynamically. Get it with `dynamic_info()`
     DYNAMIC,
-    /// Bounds info is known dynamically, and is derived as the merger of the
-    /// bounds infos in `.merge_inputs`. Get it with `dynamic_info()`
-    DYNAMIC_MERGED,
     /// This pointer should be considered to have infinite bounds in both
     /// directions
     INFINITE,
@@ -54,7 +51,6 @@ public:
       case UNKNOWN: return "UNKNOWN";
       case STATIC: return "STATIC";
       case DYNAMIC: return "DYNAMIC";
-      case DYNAMIC_MERGED: return "DYNAMIC_MERGED";
       case INFINITE: return "INFINITE";
       default: llvm_unreachable("Missing BoundsInfo.kind case");
     }
@@ -332,38 +328,28 @@ public:
     }
   };
 
-  /// Get the StaticBoundsInfo, or NULL if not `is_static()`
+  /// Get the StaticBoundsInfo, or NULL if `kind` is not STATIC
   const StaticBoundsInfo* static_info() const {
-    if (!is_static()) return NULL;
+    if (kind != STATIC) return NULL;
     auto ret = std::get_if<StaticBoundsInfo>(&info);
-    assert(ret && "when is_static(), the variant should be StaticBoundsInfo");
+    assert(ret && "when kind == STATIC, the variant should be StaticBoundsInfo");
     return ret;
   }
 
-  /// Get the DynamicBoundsInfo, or NULL if not `is_dynamic()`
+  /// Get the DynamicBoundsInfo, or NULL if `kind` is not DYNAMIC
   const DynamicBoundsInfo* dynamic_info() const {
-    if (!is_dynamic()) return NULL;
+    if (kind != DYNAMIC) return NULL;
     auto ret = std::get_if<DynamicBoundsInfo>(&info);
-    assert(ret && "when is_dynamic(), the variant should be DynamicBoundsInfo");
+    assert(ret && "when kind == DYNAMIC, the variant should be DynamicBoundsInfo");
     return ret;
   }
 
-  /// Helper, returns `true` if the kind is `STATIC`.
-  /// If this returns `true`, `static_info()` will return non-NULL
-  bool is_static() const {
-    return (kind == STATIC);
-  }
-
-  /// Helper, returns `true` if the kind is `DYNAMIC` or `DYNAMIC_MERGED`.
-  /// In either case, if this returns `true`, `dynamic_info()` will return
-  /// non-NULL
-  bool is_dynamic() const {
-    return (kind == DYNAMIC || kind == DYNAMIC_MERGED);
-  }
-
-  /// Only valid if kind is `DYNAMIC_MERGED`.
+  /// If this is nonempty, then this BoundsInfo (which must be DYNAMIC) is
+  /// derived as the merger of these other `BoundsInfo`s.
+  ///
   /// Elements in this are new()'d - they must be delete()'d.
-  /// Elements in this will never be of kind `DYNAMIC_MERGED` themselves.
+  /// Elements in this may be DYNAMIC but will never have nonempty
+  /// `merge_inputs` themselves.
   SmallVector<BoundsInfo*, 4> merge_inputs;
 
   /// Construct a BoundsInfo with the given `StaticBoundsInfo`
@@ -458,7 +444,6 @@ public:
       case STATIC:
         return (std::get<StaticBoundsInfo>(info) == std::get<StaticBoundsInfo>(other.info));
       case DYNAMIC:
-      case DYNAMIC_MERGED:
         return (std::get<DynamicBoundsInfo>(info) == std::get<DynamicBoundsInfo>(other.info));
       default:
         llvm_unreachable("Missing BoundsInfo.kind case");
