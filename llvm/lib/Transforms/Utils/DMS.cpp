@@ -5,6 +5,7 @@
 #include "llvm/Transforms/Utils/DMS_DynamicResults.h"
 #include "llvm/Transforms/Utils/DMS_Induction.h"
 #include "llvm/Transforms/Utils/DMS_IRBuilder.h"
+#include "llvm/Transforms/Utils/DMS_mapEquality.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
 
 #include "llvm/ADT/APInt.h"
@@ -31,23 +32,6 @@ using namespace llvm;
 const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
 const APInt minusone = APInt(/* bits = */ 64, /* val = */ -1);
 
-/// Return type of `mapsAreEqual`. Another struct that would ideally be
-/// std::optional or std::variant, but we can't use C++17
-template<typename K>
-struct MapEqualityResult {
-  /// Are the maps equal
-  bool equal;
-  /// If the maps aren't equal, but are the same size, here is one key they
-  /// disagree on.  (If the maps are equal, this will be NULL. If the maps
-  /// aren't equal because they're different sizes, this will also be NULL.)
-  const K* disagreement_key;
-
-  static MapEqualityResult is_equal() { return MapEqualityResult { true, NULL }; }
-  static MapEqualityResult not_equal(const K& key) { return MapEqualityResult { false, &key }; }
-  static MapEqualityResult not_same_size() { return MapEqualityResult { false, NULL }; }
-};
-
-template <typename K, typename V, unsigned N> static MapEqualityResult<K> mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B);
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
 static bool shouldCountCallForStatsPurposes(const CallBase &call);
@@ -288,7 +272,7 @@ public:
     // since we assert in `mark_as()` that we never explicitly mark anything
     // NOTDEFINEDYET, we can just check that the `map`s contain exactly the same
     // elements mapped to the same things
-    return mapsAreEqual(map, other.map);
+    return MapEqualityResult<const Value*>::mapsAreEqual(map, other.map);
   }
 
   std::string describe() const {
@@ -404,29 +388,6 @@ public:
     return merged;
   }
 };
-
-template<typename K, typename V, unsigned N>
-static MapEqualityResult<K> mapsAreEqual(const SmallDenseMap<K, V, N> &A, const SmallDenseMap<K, V, N> &B) {
-  // first: maps of different sizes can never be equal
-  if (A.size() != B.size()) return MapEqualityResult<K>::not_same_size();
-  // now check that all keys in A are also in B, and map to the same things
-  for (const auto &pair : A) {
-    const K& key = pair.getFirst();
-    const auto& it = B.find(key);
-    if (it == B.end()) {
-      // key wasn't in B
-      return MapEqualityResult<K>::not_equal(key);
-    }
-    if (it->getSecond() != pair.getSecond()) {
-      // maps disagree on what this key maps to
-      return MapEqualityResult<K>::not_equal(key);
-    }
-  }
-  // we don't need the reverse check (all keys in B are also in A) because we
-  // already checked that A and B have the same number of keys, and all keys in
-  // A are also in B
-  return MapEqualityResult<K>::is_equal();
-}
 
 class DMSAnalysis final {
 public:
@@ -996,8 +957,8 @@ private:
 
     if (!isEntryBlock) {
       // Let's check if that's any different from what we had last time
-      MapEqualityResult<const Value*> MER = ptr_statuses.isEqualTo(pbs.ptrs_beg);
-      if (MER.equal) {
+      const MapEqualityResult<const Value*> MER = ptr_statuses.isEqualTo(pbs.ptrs_beg);
+      if (MER.areEqual()) {
         // no change. Unless we're adding dynamic instrumentation, there's no
         // need to actually analyze this block. Just return the `StaticResults`
         // we got last time.
@@ -1434,7 +1395,7 @@ private:
     // Now that we've processed all the instructions, we have the final
     // statuses of pointers as of the end of the block
     DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-    bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end).equal;
+    bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end).areEqual();
     if (changed) {
       LLVM_DEBUG(dbgs() << "DMS:   end-of-block pointer statuses have changed\n");
     }
