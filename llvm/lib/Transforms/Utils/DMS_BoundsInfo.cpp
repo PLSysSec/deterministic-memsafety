@@ -201,12 +201,11 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
     );
     max = PointerWithOffset(merged_max);
   }
-  BoundsInfo merged = BoundsInfo::dynamic_bounds(base, max);
-  merged.kind = DYNAMIC;
+  DynamicBoundsInfo merged(base, max);
   merged.merge_inputs.clear();
   merged.merge_inputs.push_back(new BoundsInfo(a_info));
   merged.merge_inputs.push_back(new BoundsInfo(b_info));
-  return merged;
+  return BoundsInfo(merged);
 }
 
 /// Insert dynamic instructions to store this bounds info.

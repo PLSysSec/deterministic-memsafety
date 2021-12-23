@@ -191,6 +191,14 @@ public:
       }
     }
 
+    /// If this is nonempty, then this DynamicBoundsInfo is derived as the merger
+    /// of these other `BoundsInfo`s.
+    ///
+    /// Elements in this are new()'d - they must be delete()'d.
+    /// Elements in this may be DYNAMIC but will never have nonempty
+    /// `merge_inputs` themselves.
+    SmallVector<BoundsInfo*, 4> merge_inputs;
+
   private:
     /// Actual dynamic bounds info
     struct Info {
@@ -294,6 +302,34 @@ public:
       : data(Info(base, max)) {}
     DynamicBoundsInfo() : data(Info()) {}
 
+    DynamicBoundsInfo(const DynamicBoundsInfo& other) : data(other.data) {
+      // separately new() for each BoundsInfo in merge_inputs.
+      // That way, if `other` is destructed before this new copy,
+      // it doesn't delete() the merge_inputs we're using
+      for (BoundsInfo* binfo : other.merge_inputs) {
+        merge_inputs.push_back(new BoundsInfo(*binfo));
+      }
+    }
+    ~DynamicBoundsInfo() {
+      for (BoundsInfo* binfo : merge_inputs) {
+        delete binfo;
+      }
+    }
+
+    // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
+    // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
+    /*friend*/ static void swap(DynamicBoundsInfo& A, DynamicBoundsInfo& B) noexcept {
+      std::swap(A.data, B.data);
+      std::swap(A.merge_inputs, B.merge_inputs);
+    }
+    DynamicBoundsInfo(DynamicBoundsInfo&& other) noexcept : DynamicBoundsInfo() {
+      swap(*this, other);
+    }
+    DynamicBoundsInfo& operator=(DynamicBoundsInfo rhs) noexcept {
+      swap(*this, rhs);
+      return *this;
+    }
+
     /// `addr`: Address of the pointer for which we need dynamic info (this
     /// should be a _decoded_ ptr)
     ///
@@ -320,6 +356,8 @@ public:
       return dyninfo;
     }
 
+    // operator== and operator!= intentionally ignore the .merge_inputs field
+    // here
     bool operator==(const DynamicBoundsInfo& other) const {
       return (data == other.data);
     }
@@ -343,14 +381,6 @@ public:
     assert(ret && "when kind == DYNAMIC, the variant should be DynamicBoundsInfo");
     return ret;
   }
-
-  /// If this is nonempty, then this BoundsInfo (which must be DYNAMIC) is
-  /// derived as the merger of these other `BoundsInfo`s.
-  ///
-  /// Elements in this are new()'d - they must be delete()'d.
-  /// Elements in this may be DYNAMIC but will never have nonempty
-  /// `merge_inputs` themselves.
-  SmallVector<BoundsInfo*, 4> merge_inputs;
 
   /// Construct a BoundsInfo with the given `StaticBoundsInfo`
   explicit BoundsInfo(StaticBoundsInfo static_info) :
@@ -403,21 +433,12 @@ public:
     return BoundsInfo();
   }
 
-  BoundsInfo(const BoundsInfo& other) :
-    kind(other.kind), info(other.info) {
-    // separately new() for each BoundsInfo in merge_inputs.
-    // That way, if `other` is destructed before this new copy,
-    // it doesn't delete() the merge_inputs we're using
-    for (BoundsInfo* binfo : other.merge_inputs) {
-      merge_inputs.push_back(new BoundsInfo(*binfo));
-    }
-  }
+  BoundsInfo(const BoundsInfo& other) = default;
   // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
   // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
   /*friend*/ static void swap(BoundsInfo& A, BoundsInfo& B) noexcept {
     std::swap(A.kind, B.kind);
     std::swap(A.info, B.info);
-    std::swap(A.merge_inputs, B.merge_inputs);
   }
   BoundsInfo(BoundsInfo&& other) noexcept : BoundsInfo() {
     swap(*this, other);
@@ -426,14 +447,7 @@ public:
     swap(*this, rhs);
     return *this;
   }
-  ~BoundsInfo() {
-    for (BoundsInfo* binfo : merge_inputs) {
-      delete binfo;
-    }
-  }
 
-  // operator== and operator!= intentionally ignore the .merge_inputs field
-  // here
   bool operator==(const BoundsInfo& other) const {
     if (kind != other.kind) return false;
     switch (kind) {

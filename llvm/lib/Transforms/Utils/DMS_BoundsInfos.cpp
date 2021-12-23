@@ -381,14 +381,21 @@ void BoundsInfos::propagate_bounds(SelectInst& select) {
   const BoundsInfo& binfo1 = get_binfo(select.getTrueValue());
   const BoundsInfo& binfo2 = get_binfo(select.getFalseValue());
   const BoundsInfo& prev_iteration_binfo = get_binfo(&select);
-  if (
-    prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC
-    && prev_iteration_binfo.merge_inputs.size() == 2
-    && *prev_iteration_binfo.merge_inputs[0] == binfo1
-    && *prev_iteration_binfo.merge_inputs[1] == binfo2
-  ) {
-    // no need to update
+  bool needs_update = false;
+  if (prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC) {
+    const BoundsInfo::DynamicBoundsInfo& prev_iteration_dyninfo = *prev_iteration_binfo.dynamic_info();
+    if (prev_iteration_dyninfo.merge_inputs.size() == 2
+        && *prev_iteration_dyninfo.merge_inputs[0] == binfo1
+        && *prev_iteration_dyninfo.merge_inputs[1] == binfo2
+    ) {
+      needs_update = false;
+    } else {
+      needs_update = true;
+    }
   } else {
+    needs_update = true;
+  }
+  if (needs_update) {
     // the merge may need to insert instructions that use the final
     // value of the select, so we need a builder pointing after the
     // select
@@ -584,17 +591,20 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
   } else {
     // no incoming bounds are dynamic. let's just merge them statically
     bool any_merge_inputs_changed = false;
-    if (prev_iteration_binfo.get_kind() != BoundsInfo::DYNAMIC)
-      any_merge_inputs_changed = true;
-    if (prev_iteration_binfo.merge_inputs.size() != incoming_binfos.size())
-      any_merge_inputs_changed = true;
-    if (!any_merge_inputs_changed) {
-      for (unsigned i = 0; i < incoming_binfos.size(); i++) {
-        if (*prev_iteration_binfo.merge_inputs[i] != incoming_binfos[i].binfo) {
-          any_merge_inputs_changed = true;
-          break;
+    if (prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC) {
+      const BoundsInfo::DynamicBoundsInfo& prev_iteration_dyninfo = *prev_iteration_binfo.dynamic_info();
+      if (prev_iteration_dyninfo.merge_inputs.size() == incoming_binfos.size()) {
+        for (unsigned i = 0; i < incoming_binfos.size(); i++) {
+          if (*prev_iteration_dyninfo.merge_inputs[i] != incoming_binfos[i].binfo) {
+            any_merge_inputs_changed = true;
+            break;
+          }
         }
+      } else {
+        any_merge_inputs_changed = true;
       }
+    } else {
+      any_merge_inputs_changed = true;
     }
     if (any_merge_inputs_changed) {
       // have to update the boundsinfo
