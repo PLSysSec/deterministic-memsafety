@@ -19,44 +19,41 @@ namespace llvm {
 /// points for a given pointer.
 class BoundsInfo final {
 public:
-  enum Kind {
-    // NOTDEFINEDYET means that the pointer has not been defined yet at this
-    // program point (at least, to our current knowledge). All pointers are
-    // (effectively) initialized to NOTDEFINEDYET at the beginning of the
-    // analysis.
-    // Whenever it encounters a pointer definition, the DMS pass should also
-    // note bounds for the pointer -- at a bare minimum, marking the bounds
-    // UNKNOWN instead of NOTDEFINEDYET.
-    NOTDEFINEDYET = 0,
-    /// Bounds info is not known for this pointer. In the future, dereferencing
-    /// these pointers should be a compile-time error - we should know bounds
-    /// info for all pointers which are ever dereferenced.
-    UNKNOWN,
-    /// Bounds info is known statically. Get it with `static_info()`
-    STATIC,
-    /// Bounds info is known dynamically. Get it with `dynamic_info()`
-    DYNAMIC,
-    /// This pointer should be considered to have infinite bounds in both
-    /// directions
-    INFINITE,
+  // A `BoundsInfo` can take one of these forms:
+
+  /// The pointer has not been defined yet at this program point (at least, to
+  /// our current knowledge). All pointers are (effectively) initialized to
+  /// NotDefinedYet at the beginning of the analysis. Whenever it encounters a
+  /// pointer definition, the DMS pass should also note bounds for the pointer
+  /// -- at a bare minimum, marking the bounds Unknown instead of NotDefinedYet.
+  class NotDefinedYet {
+    // no additional information needed
+    public:
+    NotDefinedYet() = default;
+    bool operator==(const NotDefinedYet& other) const { return true; }
+    bool operator!=(const NotDefinedYet& other) const { return !(*this == other); }
   };
 
-  Kind get_kind() const {
-    return kind;
-  }
+  /// Bounds info is not known for this pointer. In the future, dereferencing
+  /// these pointers should be a compile-time error - we should know bounds
+  /// info for all pointers which are ever dereferenced.
+  class Unknown {
+    // no additional information needed
+    public:
+    Unknown() = default;
+    bool operator==(const Unknown& other) const { return true; }
+    bool operator!=(const Unknown& other) const { return !(*this == other); }
+  };
 
-  const char* pretty_kind() const {
-    switch (kind) {
-      case NOTDEFINEDYET: return "NOTDEFINEDYET";
-      case UNKNOWN: return "UNKNOWN";
-      case STATIC: return "STATIC";
-      case DYNAMIC: return "DYNAMIC";
-      case INFINITE: return "INFINITE";
-      default: llvm_unreachable("Missing BoundsInfo.kind case");
-    }
-  }
-
-  std::string pretty() const;
+  /// This pointer should be considered to have infinite bounds in both
+  /// directions
+  class Infinite {
+    // no additional information needed
+    public:
+    Infinite() = default;
+    bool operator==(const Infinite& other) const { return true; }
+    bool operator!=(const Infinite& other) const { return !(*this == other); }
+  };
 
   /// Statically known bounds info.
   ///
@@ -69,22 +66,22 @@ public:
   ///     be <= 0 and `high_offset` will be >= 0.
   ///   - Values of 0 in both fields indicates a pointer valid for exactly the
   ///     single byte it points to.
-  class StaticBoundsInfo final {
+  class Static final {
   public:
     APInt low_offset;
     APInt high_offset;
 
-    explicit StaticBoundsInfo(APInt low_offset, APInt high_offset)
+    explicit Static(APInt low_offset, APInt high_offset)
       : low_offset(low_offset), high_offset(high_offset) {}
-    explicit StaticBoundsInfo(uint64_t low_offset, uint64_t high_offset)
+    explicit Static(uint64_t low_offset, uint64_t high_offset)
       : low_offset(APInt(/* numBits = */ 64, /* val = */ low_offset)),
         high_offset(APInt(/* numBits = */ 64, /* val = */ high_offset)) {}
-    StaticBoundsInfo() : low_offset(zero), high_offset(minusone) {}
+    Static() : low_offset(zero), high_offset(minusone) {}
 
-    bool operator==(const StaticBoundsInfo& other) const {
+    bool operator==(const Static& other) const {
       return (low_offset == other.low_offset && high_offset == other.high_offset);
     }
-    bool operator!=(const StaticBoundsInfo& other) const {
+    bool operator!=(const Static& other) const {
       return !(*this == other);
     }
 
@@ -126,7 +123,7 @@ public:
         return false;
       }
     }
-  };
+  }; // end class Static
 
   /// Represents a pointer value as an LLVM pointer, with an optional
   /// constant offset.
@@ -166,12 +163,12 @@ public:
   /// the information needed to (lazily) compute it if/when needed.
   ///
   /// Again this should be a discriminated union, but we can't use C++17 here
-  struct DynamicBoundsInfo {
+  struct Dynamic {
     /// Gives the "base", i.e., pointer to the first byte of the allocation.
     /// Forces the bounds info to be computed if it hasn't been already.
     const PointerWithOffset& getBase() const {
       // we "cheat" the const here by calling the non-const `force()`
-      ((DynamicBoundsInfo*)this)->force();
+      ((Dynamic*)this)->force();
       return std::get<Info>(data).base;
     }
 
@@ -179,7 +176,7 @@ public:
     /// Forces the bounds info to be computed if it hasn't been already.
     const PointerWithOffset& getMax() const {
       // we "cheat" the const here by calling the non-const `force()`
-      ((DynamicBoundsInfo*)this)->force();
+      ((Dynamic*)this)->force();
       return std::get<Info>(data).max;
     }
 
@@ -191,8 +188,8 @@ public:
       }
     }
 
-    /// If this is nonempty, then this DynamicBoundsInfo is derived as the merger
-    /// of these other `BoundsInfo`s.
+    /// If this is nonempty, then this Dynamic is derived as the merger of these
+    /// other `BoundsInfo`s.
     ///
     /// Elements in this are new()'d - they must be delete()'d.
     /// Elements in this may be DYNAMIC but will never have nonempty
@@ -296,13 +293,13 @@ public:
     std::variant<Info, LazyInfo, LazyGlobalArraySize> data;
 
   public:
-    explicit DynamicBoundsInfo(Value* base, Value* max)
+    explicit Dynamic(Value* base, Value* max)
       : data(Info(base, max)) {}
-    explicit DynamicBoundsInfo(PointerWithOffset base, PointerWithOffset max)
+    explicit Dynamic(PointerWithOffset base, PointerWithOffset max)
       : data(Info(base, max)) {}
-    DynamicBoundsInfo() : data(Info()) {}
+    Dynamic() : data(Info()) {}
 
-    DynamicBoundsInfo(const DynamicBoundsInfo& other) : data(other.data) {
+    Dynamic(const Dynamic& other) : data(other.data) {
       // separately new() for each BoundsInfo in merge_inputs.
       // That way, if `other` is destructed before this new copy,
       // it doesn't delete() the merge_inputs we're using
@@ -310,7 +307,7 @@ public:
         merge_inputs.push_back(new BoundsInfo(*binfo));
       }
     }
-    ~DynamicBoundsInfo() {
+    ~Dynamic() {
       for (BoundsInfo* binfo : merge_inputs) {
         delete binfo;
       }
@@ -318,14 +315,14 @@ public:
 
     // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
     // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
-    /*friend*/ static void swap(DynamicBoundsInfo& A, DynamicBoundsInfo& B) noexcept {
+    /*friend*/ static void swap(Dynamic& A, Dynamic& B) noexcept {
       std::swap(A.data, B.data);
       std::swap(A.merge_inputs, B.merge_inputs);
     }
-    DynamicBoundsInfo(DynamicBoundsInfo&& other) noexcept : DynamicBoundsInfo() {
+    Dynamic(Dynamic&& other) noexcept : Dynamic() {
       swap(*this, other);
     }
-    DynamicBoundsInfo& operator=(DynamicBoundsInfo rhs) noexcept {
+    Dynamic& operator=(Dynamic rhs) noexcept {
       swap(*this, rhs);
       return *this;
     }
@@ -341,8 +338,8 @@ public:
     /// `added_insts`: Reference to the `added_insts` where we note any
     /// instructions added for bounds purposes. See notes on `added_insts` in
     /// `DMSAnalysis`
-    static DynamicBoundsInfo LazyDynamicBoundsInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
-      DynamicBoundsInfo dyninfo;
+    static Dynamic LazyDynamic(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
+      Dynamic dyninfo;
       dyninfo.data = LazyInfo(addr, loaded_ptr, added_insts);
       return dyninfo;
     }
@@ -350,95 +347,119 @@ public:
     /// This is used to dynamically lookup the size of a global array. We only
     /// do this if the global array size is 0 in this compilation unit, eg
     /// because of a declaration like `extern int some_arr[];`.
-    static DynamicBoundsInfo LazyDynamicGlobalArrayBounds(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts) {
-      DynamicBoundsInfo dyninfo;
+    static Dynamic LazyDynamicGlobalArrayBounds(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts) {
+      Dynamic dyninfo;
       dyninfo.data = LazyGlobalArraySize(arr, insertion_func, added_insts);
       return dyninfo;
     }
 
     // operator== and operator!= intentionally ignore the .merge_inputs field
     // here
-    bool operator==(const DynamicBoundsInfo& other) const {
+    bool operator==(const Dynamic& other) const {
       return (data == other.data);
     }
-    bool operator!=(const DynamicBoundsInfo& other) const {
+    bool operator!=(const Dynamic& other) const {
       return !(*this == other);
     }
-  };
+  }; // end class Dynamic
 
-  /// Get the StaticBoundsInfo, or NULL if `kind` is not STATIC
-  const StaticBoundsInfo* static_info() const {
-    if (kind != STATIC) return NULL;
-    auto ret = std::get_if<StaticBoundsInfo>(&info);
-    assert(ret && "when kind == STATIC, the variant should be StaticBoundsInfo");
-    return ret;
+  /// Actual data held in the `BoundsInfo`: one of the above forms
+  std::variant<NotDefinedYet, Unknown, Infinite, Static, Dynamic> data;
+
+  bool is_notdefinedyet() const {
+    return std::holds_alternative<NotDefinedYet>(data);
   }
 
-  /// Get the DynamicBoundsInfo, or NULL if `kind` is not DYNAMIC
-  const DynamicBoundsInfo* dynamic_info() const {
-    if (kind != DYNAMIC) return NULL;
-    auto ret = std::get_if<DynamicBoundsInfo>(&info);
-    assert(ret && "when kind == DYNAMIC, the variant should be DynamicBoundsInfo");
-    return ret;
+  bool is_unknown() const {
+    return std::holds_alternative<Unknown>(data);
   }
 
-  /// Construct a BoundsInfo with the given `StaticBoundsInfo`
-  explicit BoundsInfo(StaticBoundsInfo static_info) :
-    kind(STATIC), info(static_info) {}
+  bool is_infinite() const {
+    return std::holds_alternative<Infinite>(data);
+  }
+
+  bool is_static() const {
+    return std::holds_alternative<Static>(data);
+  }
+
+  bool is_dynamic() const {
+    return std::holds_alternative<Dynamic>(data);
+  }
+
+  const char* pretty_kind() const {
+    switch (data.index()) {
+      case 0: return "NotDefinedYet";
+      case 1: return "Unknown";
+      case 2: return "Infinite";
+      case 3: return "Static";
+      case 4: return "Dynamic";
+      default: llvm_unreachable("Missing case in pretty_kind()");
+    }
+  }
+
+  std::string pretty() const;
+
+  /// Construct a BoundsInfo from a NotDefinedYet
+  BoundsInfo(NotDefinedYet data) : data(data) {}
+
+  /// Construct a BoundsInfo for a not-defined-yet pointer
+  static BoundsInfo notdefinedyet() {
+    return NotDefinedYet();
+  }
+
+  /// Construct a BoundsInfo from an Unknown
+  BoundsInfo(Unknown data) : data(data) {}
+
+  /// Construct a BoundsInfo with unknown bounds
+  static BoundsInfo unknown() {
+    return Unknown();
+  }
+
+  /// Construct a BoundsInfo from an Infinite
+  BoundsInfo(Infinite data) : data(data) {}
+
+  /// Construct a BoundsInfo with infinite bounds in both directions
+  static BoundsInfo infinite() {
+    return Infinite();
+  }
+
+  /// Construct a BoundsInfo with the given `Static`
+  BoundsInfo(Static static_info) : data(static_info) {}
 
   /// Construct a BoundsInfo with the given static `low_offset` and
   /// `high_offset`
   static BoundsInfo static_bounds(APInt low_offset, APInt high_offset) {
-    return BoundsInfo(StaticBoundsInfo(low_offset, high_offset));
+    return BoundsInfo(Static(low_offset, high_offset));
   }
   /// Construct a BoundsInfo with the given static `low_offset` and
   /// `high_offset`
   static BoundsInfo static_bounds(uint64_t low_offset, uint64_t high_offset) {
-    return BoundsInfo(StaticBoundsInfo(low_offset, high_offset));
+    return BoundsInfo(Static(low_offset, high_offset));
   }
 
-  /// Construct a BoundsInfo with the given `DynamicBoundsInfo`
-  explicit BoundsInfo(DynamicBoundsInfo dynamic_info) :
-    kind(DYNAMIC), info(dynamic_info) {}
+  /// Construct a BoundsInfo with the given `Dynamic`
+  BoundsInfo(Dynamic dynamic_info) : data(dynamic_info) {}
 
   /// Construct a BoundsInfo with the given dynamic `base` and `max`
   static BoundsInfo dynamic_bounds(Value* base, Value* max) {
-    return BoundsInfo(DynamicBoundsInfo(base, max));
+    return BoundsInfo(Dynamic(base, max));
   }
 
   /// Construct a BoundsInfo with the given dynamic `base` and `max`
   static BoundsInfo dynamic_bounds(PointerWithOffset base, PointerWithOffset max) {
-    return BoundsInfo(DynamicBoundsInfo(base, max));
-  }
-
-  /// Construct a BoundsInfo with infinite bounds in both directions
-  static BoundsInfo infinite() {
-    BoundsInfo ret;
-    ret.kind = INFINITE;
-    return ret;
-  }
-
-  /// Construct a BoundsInfo with unknown bounds
-  static BoundsInfo unknown() {
-    BoundsInfo ret;
-    ret.kind = UNKNOWN;
-    return ret;
+    return BoundsInfo(Dynamic(base, max));
   }
 
   /// Construct a BoundsInfo with NOTDEFINEDYET bounds. This is the default when
   /// constructing a BoundsInfo; for instance, DenseMap.lookup() will use this
   /// constructor to construct a BoundsInfo if the key is not found in the map.
-  explicit BoundsInfo() : kind(NOTDEFINEDYET), info(StaticBoundsInfo()) {}
-  static BoundsInfo notdefinedyet() {
-    return BoundsInfo();
-  }
+  explicit BoundsInfo() : data(NotDefinedYet()) {}
 
   BoundsInfo(const BoundsInfo& other) = default;
   // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
   // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
   /*friend*/ static void swap(BoundsInfo& A, BoundsInfo& B) noexcept {
-    std::swap(A.kind, B.kind);
-    std::swap(A.info, B.info);
+    std::swap(A.data, B.data);
   }
   BoundsInfo(BoundsInfo&& other) noexcept : BoundsInfo() {
     swap(*this, other);
@@ -449,19 +470,7 @@ public:
   }
 
   bool operator==(const BoundsInfo& other) const {
-    if (kind != other.kind) return false;
-    switch (kind) {
-      case NOTDEFINEDYET:
-      case UNKNOWN:
-      case INFINITE:
-        return true;
-      case STATIC:
-        return (std::get<StaticBoundsInfo>(info) == std::get<StaticBoundsInfo>(other.info));
-      case DYNAMIC:
-        return (std::get<DynamicBoundsInfo>(info) == std::get<DynamicBoundsInfo>(other.info));
-      default:
-        llvm_unreachable("Missing BoundsInfo.kind case");
-    }
+    return (data == other.data);
   }
   bool operator!=(const BoundsInfo& other) const {
     return !(*this == other);
@@ -473,8 +482,8 @@ public:
   ///
   /// Returns the "base" (pointer to the first byte) of the allocation,
   /// as an LLVM `Value` of type `i8*`.
-  /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
-  /// The `kind` should not be NOTDEFINEDYET.
+  /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
+  /// The BoundsInfo should not be NotDefinedYet.
   Value* base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const;
 
   /// `cur_ptr`: the pointer value for which these bounds apply.
@@ -483,8 +492,8 @@ public:
   ///
   /// Returns the "max" (pointer to the last byte) of the allocation,
   /// as an LLVM `Value` of type `i8*`.
-  /// Or, if the `kind` is UNKNOWN or INFINITE, returns NULL.
-  /// The `kind` should not be NOTDEFINEDYET.
+  /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
+  /// The BoundsInfo should not be NotDefinedYet.
   Value* max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const;
 
   /// `cur_ptr` is the pointer which these bounds are for.
@@ -508,63 +517,60 @@ public:
   /// Returns the Call instruction if one was inserted, or else NULL
   CallInst* store_dynamic(Value* addr, Value* ptr, DMSIRBuilder& Builder) const;
 
-  /// Get a `DynamicBoundsInfo` representing dynamic bounds for the pointer
+  /// Get a `Dynamic` representing dynamic bounds for the pointer
   /// `loaded_ptr`, which should have been loaded from the given `addr`. (I.e.,
   /// `addr == &loaded_ptr`.)
   /// (Both `addr` and `loaded_ptr` should be _decoded_ pointer values.)
   ///
   /// Computes the actual bounds lazily, i.e., does not insert any dynamic
-  /// instructions unless/until this `DynamicBoundsInfo` is actually needed
-  /// for a bounds check.
+  /// instructions unless/until this `Dynamic` is actually needed for a bounds
+  /// check.
   ///
   /// Bounds info for this `addr` should have been previously stored with
   /// `store_dynamic()`.
-  static DynamicBoundsInfo dynamic_bounds_for_ptr(
+  static Dynamic dynamic_bounds_for_ptr(
     Value* addr,
     Instruction* loaded_ptr,
     DenseSet<const Instruction*>& added_insts
   ) {
-    return DynamicBoundsInfo::LazyDynamicBoundsInfo(addr, loaded_ptr, added_insts);
+    return Dynamic::LazyDynamic(addr, loaded_ptr, added_insts);
   }
 
-  /// Get a `DynamicBoundsInfo` representing dynamic bounds for the global array
+  /// Get a `Dynamic` representing dynamic bounds for the global array
   /// `arr`. If dynamic instructions need to be inserted, insert them at the top
   /// of `insertion_func`.
   ///
   /// Computes the actual bounds lazily, i.e., does not insert any dynamic
-  /// instructions unless/until this `DynamicBoundsInfo` is actually needed for
+  /// instructions unless/until this `Dynamic` is actually needed for
   /// a bounds check.
   ///
   /// This is only used for global arrays which have size 0 in this compilation
   /// unit (eg because of a declaration like `extern int some_arr[];`), in which
   /// case we need a dynamic lookup to find the actual bounds. For all other
   /// global arrays we know the bounds statically.
-  static DynamicBoundsInfo dynamic_bounds_for_global_array(
+  static Dynamic dynamic_bounds_for_global_array(
     GlobalValue& arr,
     Function& insertion_func,
     DenseSet<const Instruction*>& added_insts
   ) {
-    return DynamicBoundsInfo::LazyDynamicGlobalArrayBounds(arr, insertion_func, added_insts);
+    return Dynamic::LazyDynamicGlobalArrayBounds(arr, insertion_func, added_insts);
   }
 
 private:
-  Kind kind;
-  std::variant<StaticBoundsInfo, DynamicBoundsInfo> info;
-
   /// `cur_ptr` is the pointer which these bounds are for.
   ///
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
   static BoundsInfo merge_static_dynamic(
-    const StaticBoundsInfo& static_info,
-    const DynamicBoundsInfo& dynamic_info,
+    const Static& static_info,
+    const Dynamic& dynamic_info,
     Value* cur_ptr,
     DMSIRBuilder& Builder
   );
 
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
   static BoundsInfo merge_dynamic_dynamic(
-    const DynamicBoundsInfo& a_info,
-    const DynamicBoundsInfo& b_info,
+    const Dynamic& a_info,
+    const Dynamic& b_info,
     DMSIRBuilder& Builder
   );
 };

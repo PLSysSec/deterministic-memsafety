@@ -57,7 +57,7 @@ BoundsInfos::BoundsInfos(
     }
   } else {
     // For now, if any function parameters are pointers, mark their bounds info
-    // as UNKNOWN
+    // as unknown()
     for (const Argument& arg : F.args()) {
       if (arg.getType()->isPointerTy()) {
         map[&arg] = BoundsInfo::unknown();
@@ -207,11 +207,11 @@ void BoundsInfos::store_info_for_all_ptr_exprs(Value* addr, Constant* c, DMSIRBu
 /// Get the bounds information for the given pointer.
 const BoundsInfo& BoundsInfos::get_binfo(const Value* ptr) {
   const BoundsInfo& binfo = get_binfo_noalias(ptr);
-  if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+  if (!binfo.is_notdefinedyet()) return binfo;
   // if bounds info isn't defined, see if it's defined for any alias of this pointer
   for (const Value* alias : pointer_aliases[ptr]) {
     const BoundsInfo& binfo = get_binfo_noalias(alias);
-    if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+    if (!binfo.is_notdefinedyet()) return binfo;
   }
   return binfo;
 }
@@ -226,7 +226,7 @@ const BoundsInfo& BoundsInfos::get_binfo_noalias(const Value* ptr) {
   // Definitely wishing for the Rust HashMap::entry() interface about now
   map.lookup(ptr);
   const BoundsInfo& binfo = map[ptr];
-  if (binfo.get_kind() != BoundsInfo::NOTDEFINEDYET) return binfo;
+  if (!binfo.is_notdefinedyet()) return binfo;
   if (const Constant* constant = dyn_cast<const Constant>(ptr)) {
     if (constant->isNullValue()) {
       return infinite_binfo;
@@ -330,43 +330,39 @@ const BoundsInfo& BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep) {
   // ie the same access that the GEP's input pointer had
   Value* input_ptr = gep.getPointerOperand();
   const BoundsInfo& binfo = get_binfo(input_ptr);
-  switch (binfo.get_kind()) {
-    case BoundsInfo::NOTDEFINEDYET:
-      llvm_unreachable("GEP input ptr's BoundsInfo should be defined (at least UNKNOWN)");
-    case BoundsInfo::UNKNOWN:
-      LLVM_DEBUG(dbgs() << "GEP input ptr has unknown bounds\n");
-      return binfo;
-    case BoundsInfo::INFINITE:
-      return binfo;
-    case BoundsInfo::STATIC: {
-      const BoundsInfo::StaticBoundsInfo* static_info = binfo.static_info();
-      const std::optional<APInt> constant_offset = computeGEPOffset(gep, DL);
-      if (constant_offset.has_value()) {
-        map[&gep] = BoundsInfo::static_bounds(
-          static_info->low_offset - *constant_offset,
-          static_info->high_offset - *constant_offset
-        );
-        return map[&gep];
-      } else {
-        // bounds of the new pointer aren't known statically
-        // and actually, we don't care what the dynamic GEP offset is:
-        // it doesn't change the `base` and `max` of the allocation
-        const BoundsInfo::StaticBoundsInfo* input_static_info = binfo.static_info();
-        // `base` is `input_ptr` plus the input pointer's low_offset
-        const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, input_static_info->low_offset);
-        // `max` is `input_ptr` plus the input pointer's high_offset
-        const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, input_static_info->high_offset);
-        map[&gep] = BoundsInfo::dynamic_bounds(base, max);
-        return map[&gep];
-      }
+  if (binfo.is_notdefinedyet()) {
+    llvm_unreachable("GEP input ptr's BoundsInfo should be defined (at least Unknown)");
+  } else if (binfo.is_unknown()) {
+    LLVM_DEBUG(dbgs() << "GEP input ptr has unknown bounds\n");
+    return binfo;
+  } else if (binfo.is_infinite()) {
+    return binfo;
+  } else if (binfo.is_static()) {
+    const BoundsInfo::Static& static_info = std::get<BoundsInfo::Static>(binfo.data);
+    const std::optional<APInt> constant_offset = computeGEPOffset(gep, DL);
+    if (constant_offset.has_value()) {
+      map[&gep] = BoundsInfo::static_bounds(
+        static_info.low_offset - *constant_offset,
+        static_info.high_offset - *constant_offset
+      );
+      return map[&gep];
+    } else {
+      // bounds of the new pointer aren't known statically
+      // and actually, we don't care what the dynamic GEP offset is:
+      // it doesn't change the `base` and `max` of the allocation
+
+      // `base` is `input_ptr` plus the input pointer's low_offset
+      const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, static_info.low_offset);
+      // `max` is `input_ptr` plus the input pointer's high_offset
+      const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, static_info.high_offset);
+      map[&gep] = BoundsInfo::dynamic_bounds(base, max);
+      return map[&gep];
     }
-    case BoundsInfo::DYNAMIC:
-    {
-      // regardless of the GEP offset, the `base` and `max` don't change
-      return binfo;
-    }
-    default:
-      llvm_unreachable("Missing BoundsInfo.kind case");
+  } else if (binfo.is_dynamic()) {
+    // regardless of the GEP offset, the `base` and `max` don't change
+    return binfo;
+  } else {
+    llvm_unreachable("Missing BoundsInfo case");
   }
 }
 
@@ -382,8 +378,8 @@ void BoundsInfos::propagate_bounds(SelectInst& select) {
   const BoundsInfo& binfo2 = get_binfo(select.getFalseValue());
   const BoundsInfo& prev_iteration_binfo = get_binfo(&select);
   bool needs_update = false;
-  if (prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC) {
-    const BoundsInfo::DynamicBoundsInfo& prev_iteration_dyninfo = *prev_iteration_binfo.dynamic_info();
+  if (prev_iteration_binfo.is_dynamic()) {
+    const BoundsInfo::Dynamic& prev_iteration_dyninfo = std::get<BoundsInfo::Dynamic>(prev_iteration_binfo.data);
     if (prev_iteration_dyninfo.merge_inputs.size() == 2
         && *prev_iteration_dyninfo.merge_inputs[0] == binfo1
         && *prev_iteration_dyninfo.merge_inputs[1] == binfo2
@@ -426,7 +422,7 @@ void BoundsInfos::propagate_bounds(LoadInst& load, Instruction* loaded_ptr) {
   // compute the bounds of the loaded pointer. if we need to (eventually,
   // lazily) do a dynamic lookup in the global bounds table, this requires the
   // decoded pointer value.
-  BoundsInfo::DynamicBoundsInfo dyninfo = BoundsInfo::dynamic_bounds_for_ptr(
+  BoundsInfo::Dynamic dyninfo = BoundsInfo::dynamic_bounds_for_ptr(
     load.getPointerOperand(),
     loaded_ptr,
     added_insts
@@ -459,10 +455,10 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
   bool any_incoming_bounds_are_dynamic = false;
   bool any_incoming_bounds_are_unknown = false;
   for (auto& incoming : incoming_binfos) {
-    if (incoming.binfo.get_kind() == BoundsInfo::DYNAMIC) {
+    if (incoming.binfo.is_dynamic()) {
       any_incoming_bounds_are_dynamic = true;
     }
-    if (incoming.binfo.get_kind() == BoundsInfo::UNKNOWN) {
+    if (incoming.binfo.is_unknown()) {
       any_incoming_bounds_are_unknown = true;
     }
   }
@@ -476,7 +472,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
     // let's not insert them again.
     PHINode* base_phi = NULL;
     PHINode* max_phi = NULL;
-    if (const BoundsInfo::DynamicBoundsInfo* prev_iteration_dyninfo = prev_iteration_binfo.dynamic_info()) {
+    if (const BoundsInfo::Dynamic* prev_iteration_dyninfo = std::get_if<BoundsInfo::Dynamic>(&prev_iteration_binfo.data)) {
       if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->getBase().ptr))) {
         assert(prev_iteration_dyninfo->getBase().offset == 0);
         assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
@@ -486,15 +482,15 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
           // corresponding block, not here
           DMSIRBuilder IncomingBlockBuilder(incoming.bb, DMSIRBuilder::END, &added_insts);
           Value* incoming_base;
-          if (incoming.binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
-            // for now, treat this input to the phi as INFINITE bounds.
+          if (incoming.binfo.is_notdefinedyet()) {
+            // for now, treat this input to the phi as infinite bounds.
             // this will be updated on a future iteration if necessary, once the
             // incoming pointer has defined bounds.
-            // We use INFINITE instead of UNKNOWN because with UNKNOWN, we force
-            // all dependent pointers to be UNKNOWN, and this could force this
-            // phi input to be UNKNOWN in the next iteration and result in a
-            // false fixpoint where everything is UNKNOWN.
-            // Instead, INFINITE allows us to compute the
+            // We use infinite() instead of unknown() because with unknown(), we
+            // force all dependent pointers to be unknown(), and this could
+            // force this phi input to be unknown() in the next iteration and
+            // result in a false fixpoint where everything is unknown().
+            // Instead, infinite() allows us to compute the
             // most-permissive-possible bounds for this phi input for the next
             // iteration.
             incoming_base = BoundsInfo::infinite().base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
@@ -519,7 +515,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
           // corresponding block, not here
           DMSIRBuilder IncomingBlockBuilder(incoming.bb, DMSIRBuilder::END, &added_insts);
           Value* incoming_max;
-          if (incoming.binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
+          if (incoming.binfo.is_notdefinedyet()) {
             // see notes above for the base_phi case
             incoming_max = BoundsInfo::infinite().max_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
           } else {
@@ -547,16 +543,17 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
         // corresponding block, not here
         DMSIRBuilder IncomingBlockBuilder(incoming.bb, DMSIRBuilder::END, &added_insts);
         Value* base;
-        if (incoming.binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
-          // for now, treat this input to the phi as INFINITE bounds.
+        if (incoming.binfo.is_notdefinedyet()) {
+          // for now, treat this input to the phi as infinite bounds.
           // this will be updated on a future iteration if necessary, once the
           // incoming pointer has defined bounds.
-          // We use INFINITE instead of UNKNOWN because with UNKNOWN, we force
-          // all dependent pointers to be UNKNOWN, and this could force this phi
-          // input to be UNKNOWN in the next iteration and result in a false
-          // fixpoint where everything is UNKNOWN.
-          // Instead, INFINITE allows us to compute the most-permissive-possible
-          // bounds for this phi input for the next iteration.
+          // We use infinite() instead of unknown() because with unknown(), we
+          // force all dependent pointers to be unknown(), and this could force
+          // this phi input to be unknown() in the next iteration and result in
+          // a false fixpoint where everything is unknown().
+          // Instead, infinite() allows us to compute the
+          // most-permissive-possible bounds for this phi input for the next
+          // iteration.
           base = BoundsInfo::infinite().base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
         } else {
           base = incoming.binfo.base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
@@ -576,7 +573,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
         // corresponding block, not here
         DMSIRBuilder IncomingBlockBuilder(incoming.bb, DMSIRBuilder::END, &added_insts);
         Value* max;
-        if (incoming.binfo.get_kind() == BoundsInfo::NOTDEFINEDYET) {
+        if (incoming.binfo.is_notdefinedyet()) {
           // see notes above for the base_phi case
           max = BoundsInfo::infinite().max_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
         } else {
@@ -591,11 +588,10 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
   } else {
     // no incoming bounds are dynamic. let's just merge them statically
     bool any_merge_inputs_changed = false;
-    if (prev_iteration_binfo.get_kind() == BoundsInfo::DYNAMIC) {
-      const BoundsInfo::DynamicBoundsInfo& prev_iteration_dyninfo = *prev_iteration_binfo.dynamic_info();
-      if (prev_iteration_dyninfo.merge_inputs.size() == incoming_binfos.size()) {
+    if (const BoundsInfo::Dynamic* prev_iteration_dyninfo = std::get_if<BoundsInfo::Dynamic>(&prev_iteration_binfo.data)) {
+      if (prev_iteration_dyninfo->merge_inputs.size() == incoming_binfos.size()) {
         for (unsigned i = 0; i < incoming_binfos.size(); i++) {
-          if (*prev_iteration_dyninfo.merge_inputs[i] != incoming_binfos[i].binfo) {
+          if (*prev_iteration_dyninfo->merge_inputs[i] != incoming_binfos[i].binfo) {
             any_merge_inputs_changed = true;
             break;
           }
@@ -652,7 +648,7 @@ void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
       }
     }
     // If we get here, we don't have any special information about the bounds of
-    // the returned pointer. For now, we'll just mark UNKNOWN.
+    // the returned pointer. For now, we'll just mark unknown().
     // TODO: better interprocedural way to get bounds info
     map[&call] = BoundsInfo::unknown();
   }

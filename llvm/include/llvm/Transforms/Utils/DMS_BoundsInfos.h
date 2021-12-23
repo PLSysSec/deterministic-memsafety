@@ -38,7 +38,7 @@ public:
 
   /// Is there any bounds information for the given pointer?
   bool is_binfo_present(const Value* ptr) {
-    return get_binfo(ptr).get_kind() != BoundsInfo::NOTDEFINEDYET;
+    return !get_binfo(ptr).is_notdefinedyet();
   }
 
   void propagate_bounds(StoreInst&, Value* override_stored_ptr);

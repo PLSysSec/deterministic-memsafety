@@ -1490,8 +1490,8 @@ private:
       }
       case PointerKind::DYNAMIC: {
         const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
-        if (binfo.get_kind() == BoundsInfo::STATIC) {
-          if (binfo.static_info()->fails(access_bytes)) {
+        if (const BoundsInfo::Static* sinfo = std::get_if<BoundsInfo::Static>(&binfo.data)) {
+          if (sinfo->fails(access_bytes)) {
             // we check the dynamic kind, if it is DYN_CLEAN or
             // DYN_BLEMISHED16 then we do nothing, else we SW-fail
             std::string addr_name = isa<ConstantExpr>(addr) ? "constexpr" : addr->getNameOrAsOperand();
@@ -1558,23 +1558,22 @@ private:
     DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
-    switch (binfo.get_kind()) {
-      case BoundsInfo::NOTDEFINEDYET:
-        llvm_unreachable("Can't sw_bounds_check with NOTDEFINEDYET bounds");
-      case BoundsInfo::UNKNOWN:
-        errs() << "warning: bounds info unknown for " << ptr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
-        return false;
-      case BoundsInfo::INFINITE:
-        // bounds check passes by default
-        return false;
-      case BoundsInfo::STATIC:
-        sw_bounds_check(ptr, *binfo.static_info(), access_bytes, Builder);
-        return false;
-      case BoundsInfo::DYNAMIC:
-        sw_bounds_check(ptr, *binfo.dynamic_info(), access_bytes, Builder, new_blocks);
-        return true;
-      default:
-        llvm_unreachable("Missing BoundsInfo.kind case");
+    if (const BoundsInfo::NotDefinedYet* ndy = std::get_if<BoundsInfo::NotDefinedYet>(&binfo.data)) {
+      llvm_unreachable("Can't sw_bounds_check with NotDefinedYet bounds");
+    } else if (const BoundsInfo::Unknown* unk = std::get_if<BoundsInfo::Unknown>(&binfo.data)) {
+      errs() << "warning: bounds info unknown for " << ptr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
+      return false;
+    } else if (const BoundsInfo::Infinite* inf = std::get_if<BoundsInfo::Infinite>(&binfo.data)) {
+      // bounds check passes by default
+      return false;
+    } else if (const BoundsInfo::Static* sinfo = std::get_if<BoundsInfo::Static>(&binfo.data)) {
+      sw_bounds_check(ptr, *sinfo, access_bytes, Builder);
+      return false;
+    } else if (const BoundsInfo::Dynamic* dinfo = std::get_if<BoundsInfo::Dynamic>(&binfo.data)) {
+      sw_bounds_check(ptr, *dinfo, access_bytes, Builder, new_blocks);
+      return true;
+    } else {
+      llvm_unreachable("Missing BoundsInfo.kind case");
     }
   }
 
@@ -1589,7 +1588,7 @@ private:
   /// that is necessary.
   void sw_bounds_check(
     Value* ptr,
-    const BoundsInfo::StaticBoundsInfo& binfo,
+    const BoundsInfo::Static& binfo,
     const unsigned access_bytes,
     DMSIRBuilder& Builder
   ) {
@@ -1613,7 +1612,7 @@ private:
   /// If we create/insert any new blocks, they will be added to `new_blocks`.
   void sw_bounds_check(
     Value* ptr,
-    const BoundsInfo::DynamicBoundsInfo& binfo,
+    const BoundsInfo::Dynamic& binfo,
     const unsigned access_bytes,
     DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks

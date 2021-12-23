@@ -4,6 +4,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <variant>
+
 using namespace llvm;
 
 #define DEBUG_TYPE "DMS-bounds-info"
@@ -16,20 +18,17 @@ static Value* get_max_ptr_value(DMSIRBuilder& Builder) {
 }
 
 std::string BoundsInfo::pretty() const {
-  switch (kind) {
-    case STATIC: {
-      const StaticBoundsInfo* sinfo = static_info();
-      std::string out;
-      raw_string_ostream ostream(out);
-      ostream << "STATIC [";
-      sinfo->low_offset.print(ostream, /* isSigned = */ true);
-      ostream << ",";
-      sinfo->high_offset.print(ostream, /* isSigned = */ true);
-      ostream << "]";
-      return ostream.str();
-    }
-    default:
-      return pretty_kind();
+  if (const Static* sinfo = std::get_if<Static>(&data)) {
+    std::string out;
+    raw_string_ostream ostream(out);
+    ostream << pretty_kind() << " [";
+    sinfo->low_offset.print(ostream, /* isSigned = */ true);
+    ostream << ",";
+    sinfo->high_offset.print(ostream, /* isSigned = */ true);
+    ostream << "]";
+    return ostream.str();
+  } else {
+    return pretty_kind();
   }
 }
 
@@ -40,22 +39,21 @@ std::string BoundsInfo::pretty() const {
 ///
 /// Returns the "base" (minimum inbounds pointer value) of the allocation,
 /// as an LLVM `Value` of type `i8*`.
-/// Or, if the `kind` is UNKNOWN, returns NULL.
-/// The `kind` should not be NOTDEFINEDYET.
+/// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
+/// The BoundsInfo should not be NotDefinedYet.
 Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
-  switch (kind) {
-    case NOTDEFINEDYET:
-      llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
-    case UNKNOWN:
-      return NULL;
-    case INFINITE:
-      return get_min_ptr_value(Builder);
-    case STATIC:
-      return static_info()->base_as_llvm_value(cur_ptr, Builder);
-    case DYNAMIC:
-      return dynamic_info()->getBase().as_llvm_value(Builder);
-    default:
-      llvm_unreachable("Missing BoundsInfo.kind case");
+  if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
+    llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least Unknown)");
+  } else if (const Unknown* unk = std::get_if<Unknown>(&data)) {
+    return NULL;
+  } else if (const Infinite* inf = std::get_if<Infinite>(&data)) {
+    return get_min_ptr_value(Builder);
+  } else if (const Static* sinfo = std::get_if<Static>(&data)) {
+    return sinfo->base_as_llvm_value(cur_ptr, Builder);
+  } else if (const Dynamic* dinfo = std::get_if<Dynamic>(&data)) {
+    return dinfo->getBase().as_llvm_value(Builder);
+  } else {
+    llvm_unreachable("Missing BoundsInfo case");
   }
 }
 
@@ -66,22 +64,21 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
 ///
 /// Returns the "max" (maximum inbounds pointer value) of the allocation,
 /// as an LLVM `Value` of type `i8*`.
-/// Or, if the `kind` is UNKNOWN, returns NULL.
-/// The `kind` should not be NOTDEFINEDYET.
+/// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
+/// The BoundsInfo should not be NotDefinedYet.
 Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
-  switch (kind) {
-    case NOTDEFINEDYET:
-      llvm_unreachable("max_as_llvm_value: BoundsInfo should be defined (at least UNKNOWN)");
-    case UNKNOWN:
-      return NULL;
-    case INFINITE:
-      return get_max_ptr_value(Builder);
-    case STATIC:
-      return static_info()->max_as_llvm_value(cur_ptr, Builder);
-    case DYNAMIC:
-      return dynamic_info()->getMax().as_llvm_value(Builder);
-    default:
-      llvm_unreachable("Missing BoundsInfo.kind case");
+  if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
+    llvm_unreachable("max_as_llvm_value: BoundsInfo should be defined (at least Unknown)");
+  } else if (const Unknown* unk = std::get_if<Unknown>(&data)) {
+    return NULL;
+  } else if (const Infinite* inf = std::get_if<Infinite>(&data)) {
+    return get_max_ptr_value(Builder);
+  } else if (const Static* sinfo = std::get_if<Static>(&data)) {
+    return sinfo->max_as_llvm_value(cur_ptr, Builder);
+  } else if (const Dynamic* dinfo = std::get_if<Dynamic>(&data)) {
+    return dinfo->getMax().as_llvm_value(Builder);
+  } else {
+    llvm_unreachable("Missing BoundsInfo case");
   }
 }
 
@@ -96,36 +93,36 @@ BoundsInfo BoundsInfo::merge(
   Value* cur_ptr,
   DMSIRBuilder& Builder
 ) {
-  if (A.kind == NOTDEFINEDYET) return B;
-  if (B.kind == NOTDEFINEDYET) return A;
-  if (A.kind == UNKNOWN) return A;
-  if (B.kind == UNKNOWN) return B;
-  if (A.kind == INFINITE) return B;
-  if (B.kind == INFINITE) return A;
+  if (A.is_notdefinedyet()) return B;
+  if (B.is_notdefinedyet()) return A;
+  if (A.is_unknown()) return A;
+  if (B.is_unknown()) return B;
+  if (A.is_infinite()) return B;
+  if (B.is_infinite()) return A;
 
-  if (A.kind == STATIC && B.kind == STATIC) {
-    const StaticBoundsInfo &a_info = *A.static_info();
-    const StaticBoundsInfo &b_info = *B.static_info();
+  if (A.is_static() && B.is_static()) {
+    const Static& a_info = std::get<Static>(A.data);
+    const Static& b_info = std::get<Static>(B.data);
     return BoundsInfo::static_bounds(
       a_info.low_offset.sgt(b_info.low_offset) ? a_info.low_offset : b_info.low_offset,
       a_info.high_offset.slt(b_info.high_offset) ? a_info.high_offset : b_info.high_offset
     );
   }
 
-  if (A.kind == DYNAMIC && B.kind == DYNAMIC) {
+  if (A.is_dynamic() && B.is_dynamic()) {
     return merge_dynamic_dynamic(
-      *A.dynamic_info(), *B.dynamic_info(), Builder
+      std::get<Dynamic>(A.data), std::get<Dynamic>(B.data), Builder
     );
   }
 
-  if (A.kind == STATIC && B.kind == DYNAMIC) {
+  if (A.is_static() && B.is_dynamic()) {
     return merge_static_dynamic(
-      *A.static_info(), *B.dynamic_info(), cur_ptr, Builder
+      std::get<Static>(A.data), std::get<Dynamic>(B.data), cur_ptr, Builder
     );
   }
-  if (A.kind == DYNAMIC && B.kind == STATIC) {
+  if (A.is_dynamic() && B.is_static()) {
     return merge_static_dynamic(
-      *B.static_info(), *A.dynamic_info(), cur_ptr, Builder
+      std::get<Static>(B.data), std::get<Dynamic>(A.data), cur_ptr, Builder
     );
   }
 
@@ -137,8 +134,8 @@ BoundsInfo BoundsInfo::merge(
 ///
 /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
 BoundsInfo BoundsInfo::merge_static_dynamic(
-  const StaticBoundsInfo& static_info,
-  const DynamicBoundsInfo& dynamic_info,
+  const Static& static_info,
+  const Dynamic& dynamic_info,
   Value* cur_ptr,
   DMSIRBuilder& Builder
 ) {
@@ -150,16 +147,16 @@ BoundsInfo BoundsInfo::merge_static_dynamic(
   Value* static_max = static_info.max_as_llvm_value(cur_ptr, Builder);
 
   return merge_dynamic_dynamic(
-    DynamicBoundsInfo(incoming_base, incoming_max),
-    DynamicBoundsInfo(static_base, static_max),
+    Dynamic(incoming_base, incoming_max),
+    Dynamic(static_base, static_max),
     Builder
   );
 }
 
 /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
 BoundsInfo BoundsInfo::merge_dynamic_dynamic(
-  const DynamicBoundsInfo& a_info,
-  const DynamicBoundsInfo& b_info,
+  const Dynamic& a_info,
+  const Dynamic& b_info,
   DMSIRBuilder& Builder
 ) {
   if (a_info == b_info) return BoundsInfo(a_info); // this also avoids forcing, if both a_info and b_info are still lazy but equivalent
@@ -201,7 +198,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
     );
     max = PointerWithOffset(merged_max);
   }
-  DynamicBoundsInfo merged(base, max);
+  Dynamic merged(base, max);
   merged.merge_inputs.clear();
   merged.merge_inputs.push_back(new BoundsInfo(a_info));
   merged.merge_inputs.push_back(new BoundsInfo(b_info));
@@ -224,31 +221,26 @@ CallInst* BoundsInfo::store_dynamic(Value* addr, Value* ptr, DMSIRBuilder& Build
   assert(cast<PointerType>(addr->getType())->getElementType()->isPointerTy());
   //assert(cast<PointerType>(addr->getType())->getElementType() == ptr->getType());
   LLVM_DEBUG(dbgs() << "Inserting a call to store dynamic bounds info for the pointer " << ptr->getNameOrAsOperand() << " stored at " << addr->getNameOrAsOperand() << "\n");
-  switch (kind) {
-    case BoundsInfo::INFINITE: {
-      return call_dms_store_infinite_bounds(addr, Builder);
-    }
-    case BoundsInfo::UNKNOWN: {
-      errs() << "warning: bounds info unknown for the pointer " << ptr->getNameOrAsOperand() << " stored at " << addr->getNameOrAsOperand() << "; considering it as infinite bounds\n";
-      return call_dms_store_infinite_bounds(addr, Builder);
-    }
-    case BoundsInfo::NOTDEFINEDYET: {
-      errs() << "error during store_dynamic with ptr=" << ptr->getNameOrAsOperand() << ", addr=" << addr->getNameOrAsOperand() << "\n";
-      llvm_unreachable("store_dynamic: bounds info should be defined (at least UNKNOWN)");
-    }
-    default: {
-      Value* base = base_as_llvm_value(ptr, Builder);
-      Value* max = max_as_llvm_value(ptr, Builder);
-      if (base && max) {
-        return call_dms_store_bounds(addr, base, max, Builder);
-      } else {
-        llvm_unreachable("base and/or max are NULL, but boundsinfo is not INFINITE or UNKNOWN or NOTDEFINEDYET");
-      }
+  if (is_notdefinedyet()) {
+    errs() << "error during store_dynamic with ptr=" << ptr->getNameOrAsOperand() << ", addr=" << addr->getNameOrAsOperand() << "\n";
+    llvm_unreachable("store_dynamic: bounds info should be defined (at least Unknown)");
+  } else if (is_unknown()) {
+    errs() << "warning: bounds info unknown for the pointer " << ptr->getNameOrAsOperand() << " stored at " << addr->getNameOrAsOperand() << "; considering it as infinite bounds\n";
+    return call_dms_store_infinite_bounds(addr, Builder);
+  } else if (is_infinite()) {
+    return call_dms_store_infinite_bounds(addr, Builder);
+  } else {
+    Value* base = base_as_llvm_value(ptr, Builder);
+    Value* max = max_as_llvm_value(ptr, Builder);
+    if (base && max) {
+      return call_dms_store_bounds(addr, base, max, Builder);
+    } else {
+      llvm_unreachable("base and/or max are NULL, but boundsinfo is not Infinite or Unknown or NotDefinedYet");
     }
   }
 }
 
-BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyInfo::force() {
+BoundsInfo::Dynamic::Info BoundsInfo::Dynamic::LazyInfo::force() {
   assert(addr);
   assert(loaded_ptr);
   assert(addr->getType()->isPointerTy());
@@ -264,19 +256,19 @@ BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyInfo::for
   call_dms_get_bounds(addr, output_base, output_max, Builder);
   Value* base = Builder.CreateLoad(CharStarTy, output_base, Twine(loaded_ptr_name, "_base"));
   Value* max = Builder.CreateLoad(CharStarTy, output_max, Twine(loaded_ptr_name, "_max"));
-  return DynamicBoundsInfo::Info(base, max);
+  return Dynamic::Info(base, max);
 }
 
-BoundsInfo::DynamicBoundsInfo::Info BoundsInfo::DynamicBoundsInfo::LazyGlobalArraySize::force() {
-	assert(arr);
-	assert(arr->getType()->isPointerTy());
-	assert(arr->hasName());
-	LLVM_DEBUG(dbgs() << "Inserting a call to load dynamic global array size for " << arr->getNameOrAsOperand() << "\n");
-	// inserting at the top of `insertion_func` is not necessarily the most efficient, but it's easiest for now
-	DMSIRBuilder Builder(&insertion_func->getEntryBlock(), DMSIRBuilder::BEGINNING, added_insts);
-	static Type* CharStarTy = Builder.getInt8PtrTy();
-	Value* output_max = Builder.CreateAlloca(CharStarTy, nullptr, Twine(arr->getName(), "_output_dynamic_max"));
-	call_dms_get_globalarraysize(arr, output_max, Builder);
-	Value* max = Builder.CreateLoad(CharStarTy, output_max, Twine(arr->getName(), "_dynamic_max"));
-	return DynamicBoundsInfo::Info(arr, max);
+BoundsInfo::Dynamic::Info BoundsInfo::Dynamic::LazyGlobalArraySize::force() {
+  assert(arr);
+  assert(arr->getType()->isPointerTy());
+  assert(arr->hasName());
+  LLVM_DEBUG(dbgs() << "Inserting a call to load dynamic global array size for " << arr->getNameOrAsOperand() << "\n");
+  // inserting at the top of `insertion_func` is not necessarily the most efficient, but it's easiest for now
+  DMSIRBuilder Builder(&insertion_func->getEntryBlock(), DMSIRBuilder::BEGINNING, added_insts);
+  static Type* CharStarTy = Builder.getInt8PtrTy();
+  Value* output_max = Builder.CreateAlloca(CharStarTy, nullptr, Twine(arr->getName(), "_output_dynamic_max"));
+  call_dms_get_globalarraysize(arr, output_max, Builder);
+  Value* max = Builder.CreateLoad(CharStarTy, output_max, Twine(arr->getName(), "_dynamic_max"));
+  return Dynamic::Info(arr, max);
 }
