@@ -182,9 +182,9 @@ public:
 
     void force() {
       if (LazyInfo* lazy = std::get_if<LazyInfo>(&data)) {
-        data = lazy->force();
+        data.emplace<Info>(std::move(lazy->force()));
       } else if (LazyGlobalArraySize* lazy = std::get_if<LazyGlobalArraySize>(&data)) {
-        data = lazy->force();
+        data.emplace<Info>(std::move(lazy->force()));
       }
     }
 
@@ -209,6 +209,20 @@ public:
       explicit Info(PointerWithOffset base, PointerWithOffset max)
         : base(base), max(max) {}
       Info() : base(PointerWithOffset()), max(PointerWithOffset()) {}
+      Info(const Info&) = default;
+      Info(Info&& other) noexcept : Info() {
+        swap(*this, other);
+      }
+      // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
+      // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
+      /*friend*/ static void swap(Info& A, Info& B) noexcept {
+        std::swap(A.base, B.base);
+        std::swap(A.max, B.max);
+      }
+      Info& operator=(Info rhs) noexcept {
+        swap(*this, rhs);
+        return *this;
+      }
 
       bool operator==(const Info& other) const {
         return (base == other.base && max == other.max);
@@ -228,14 +242,26 @@ public:
       Instruction* loaded_ptr;
       /// Reference to the `added_insts` where we note any instructions added
       /// for bounds purposes. See notes on `added_insts` in `DMSAnalysis`
-      ///
-      /// This is allowed to be `NULL` only if we never `force()` this
-      /// `LazyInfo` (for instance if `lazy_type` is `NOTLAZY`)
       DenseSet<const Instruction*>* added_insts;
 
       explicit LazyInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts)
         : addr(addr), loaded_ptr(loaded_ptr), added_insts(&added_insts) {}
       LazyInfo() : addr(NULL), loaded_ptr(NULL), added_insts(NULL) {}
+      LazyInfo(const LazyInfo&) = default;
+      LazyInfo(LazyInfo&& other) noexcept : LazyInfo() {
+        swap(*this, other);
+      }
+      // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
+      // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
+      /*friend*/ static void swap(LazyInfo& A, LazyInfo& B) noexcept {
+        std::swap(A.addr, B.addr);
+        std::swap(A.loaded_ptr, B.loaded_ptr);
+        std::swap(A.added_insts, B.added_insts);
+      }
+      LazyInfo& operator=(LazyInfo rhs) noexcept {
+        swap(*this, rhs);
+        return *this;
+      }
 
       Info force();
 
@@ -254,34 +280,40 @@ public:
     /// `extern int some_arr[];`. In that case we (lazily) do the dynamic lookup
     /// to get the actual global array size from our runtime; see notes there.
     struct LazyGlobalArraySize {
-      /// Global array in question
-      ///
-      /// This is allowed to be `NULL` only if we never `force()` this
-      /// `LazyGlobalArraySize` (for instance if `lazy_type` is `NOTLAZY`)
+      /// Global array in question. Cannot be NULL
       GlobalValue* arr;
       /// `Function` which we should insert dynamic instructions in, in the
       /// event that we need to call `force()` to actually do the dynamic
-      /// lookup.
-      ///
-      /// This is allowed to be `NULL` only if we never `force()` this
-      /// `LazyGlobalArraySize` (for instance if `lazy_type` is `NOTLAZY`)
+      /// lookup. Cannot be NULL.
       Function* insertion_func;
       /// Reference to the `added_insts` where we note any instructions added
       /// for bounds purposes. See notes on `added_insts` in `DMSAnalysis`
-      ///
-      /// This is allowed to be `NULL` only if we never `force()` this
-      /// `LazyGlobalArraySize` (for instance if `lazy_type` is `NOTLAZY`)
       DenseSet<const Instruction*>* added_insts;
 
       explicit LazyGlobalArraySize(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts)
         : arr(&arr), insertion_func(&insertion_func), added_insts(&added_insts) {}
       LazyGlobalArraySize() : arr(NULL), insertion_func(NULL), added_insts(NULL) {}
+      LazyGlobalArraySize(const LazyGlobalArraySize&) = default;
+      LazyGlobalArraySize(LazyGlobalArraySize&& other) noexcept : LazyGlobalArraySize() {
+        swap(*this, other);
+      }
+      // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
+      // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
+      /*friend*/ static void swap(LazyGlobalArraySize& A, LazyGlobalArraySize& B) noexcept {
+        std::swap(A.arr, B.arr);
+        std::swap(A.insertion_func, B.insertion_func);
+        std::swap(A.added_insts, B.added_insts);
+      }
+      LazyGlobalArraySize& operator=(LazyGlobalArraySize rhs) noexcept {
+        swap(*this, rhs);
+        return *this;
+      }
 
       Info force();
 
       bool operator==(const LazyGlobalArraySize& other) const {
-        // don't need to check that added_insts are equal
-        return (arr == other.arr);
+        // don't need to check that insertion_func or added_insts are equal
+        return (&arr == &other.arr);
       }
       bool operator!=(const LazyGlobalArraySize& other) const {
         return !(*this == other);
@@ -297,6 +329,8 @@ public:
       : data(Info(base, max)) {}
     explicit Dynamic(PointerWithOffset base, PointerWithOffset max)
       : data(Info(base, max)) {}
+    Dynamic(LazyInfo&& lazy) : data(std::move(lazy)) {}
+    Dynamic(LazyGlobalArraySize&& lazy) : data(std::move(lazy)) {}
     Dynamic() : data(Info()) {}
 
     Dynamic(const Dynamic& other) : data(other.data) {
@@ -339,18 +373,14 @@ public:
     /// instructions added for bounds purposes. See notes on `added_insts` in
     /// `DMSAnalysis`
     static Dynamic LazyDynamic(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
-      Dynamic dyninfo;
-      dyninfo.data = LazyInfo(addr, loaded_ptr, added_insts);
-      return dyninfo;
+      return Dynamic(LazyInfo(addr, loaded_ptr, added_insts));
     }
 
     /// This is used to dynamically lookup the size of a global array. We only
     /// do this if the global array size is 0 in this compilation unit, eg
     /// because of a declaration like `extern int some_arr[];`.
     static Dynamic LazyDynamicGlobalArrayBounds(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts) {
-      Dynamic dyninfo;
-      dyninfo.data = LazyGlobalArraySize(arr, insertion_func, added_insts);
-      return dyninfo;
+      return Dynamic(LazyGlobalArraySize(arr, insertion_func, added_insts));
     }
 
     // operator== and operator!= intentionally ignore the .merge_inputs field
