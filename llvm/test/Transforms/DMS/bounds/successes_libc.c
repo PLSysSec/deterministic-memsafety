@@ -28,7 +28,7 @@ int use_isdigit(int argc, char* argv[]) {
 }
 
 __attribute__((noinline))
-int write_file(const char* filename) {
+void write_file(const char* filename) {
   FILE* file = fopen(filename, "w");
   if (!file) {
     perror("error opening file for writing");

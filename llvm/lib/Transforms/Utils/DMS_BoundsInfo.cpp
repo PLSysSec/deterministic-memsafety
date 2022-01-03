@@ -43,10 +43,13 @@ std::string BoundsInfo::pretty() const {
 /// The BoundsInfo should not be NotDefinedYet.
 Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
   if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
+    (void)ndy; // silence warning about unused variable
     llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least Unknown)");
   } else if (const Unknown* unk = std::get_if<Unknown>(&data)) {
+    (void)unk; // silence warning about unused variable
     return NULL;
   } else if (const Infinite* inf = std::get_if<Infinite>(&data)) {
+    (void)inf; // silence warning about unused variable
     return get_min_ptr_value(Builder);
   } else if (const Static* sinfo = std::get_if<Static>(&data)) {
     return sinfo->base_as_llvm_value(cur_ptr, Builder);
@@ -68,10 +71,13 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
 /// The BoundsInfo should not be NotDefinedYet.
 Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
   if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
+    (void)ndy; // silence warning about unused variable
     llvm_unreachable("max_as_llvm_value: BoundsInfo should be defined (at least Unknown)");
   } else if (const Unknown* unk = std::get_if<Unknown>(&data)) {
+    (void)unk; // silence warning about unused variable
     return NULL;
   } else if (const Infinite* inf = std::get_if<Infinite>(&data)) {
+    (void)inf; // silence warning about unused variable
     return get_max_ptr_value(Builder);
   } else if (const Static* sinfo = std::get_if<Static>(&data)) {
     return sinfo->max_as_llvm_value(cur_ptr, Builder);

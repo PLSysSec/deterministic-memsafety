@@ -1559,11 +1559,14 @@ private:
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
     if (const BoundsInfo::NotDefinedYet* ndy = std::get_if<BoundsInfo::NotDefinedYet>(&binfo.data)) {
+      (void)ndy; // silence warning about unused variable
       llvm_unreachable("Can't sw_bounds_check with NotDefinedYet bounds");
     } else if (const BoundsInfo::Unknown* unk = std::get_if<BoundsInfo::Unknown>(&binfo.data)) {
+      (void)unk; // silence warning about unused variable
       errs() << "warning: bounds info unknown for " << ptr->getNameOrAsOperand() << " even though it needs a bounds check. Unsafely omitting the bounds check.\n";
       return false;
     } else if (const BoundsInfo::Infinite* inf = std::get_if<BoundsInfo::Infinite>(&binfo.data)) {
+      (void)inf; // silence warning about unused variable
       // bounds check passes by default
       return false;
     } else if (const BoundsInfo::Static* sinfo = std::get_if<BoundsInfo::Static>(&binfo.data)) {
