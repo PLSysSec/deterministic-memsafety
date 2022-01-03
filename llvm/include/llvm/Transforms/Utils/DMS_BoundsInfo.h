@@ -145,6 +145,7 @@ public:
     }
 
     PointerWithOffset() : ptr(NULL), offset(zero) {}
+    PointerWithOffset(const PointerWithOffset&) = default;
     PointerWithOffset(Value* ptr) : ptr(ptr), offset(zero) {}
     PointerWithOffset(Value* ptr, APInt offset) : ptr(ptr), offset(offset) {}
     PointerWithOffset(Value* ptr, uint64_t offset) : ptr(ptr), offset(APInt(/* bits = */ 64, /* val = */ offset)) {}
@@ -168,7 +169,7 @@ public:
     /// Forces the bounds info to be computed if it hasn't been already.
     const PointerWithOffset& getBase() const {
       // we "cheat" the const here by calling the non-const `force()`
-      ((Dynamic*)this)->force();
+      (const_cast<Dynamic*>(this))->force();
       return std::get<Info>(data).base;
     }
 
@@ -176,25 +177,21 @@ public:
     /// Forces the bounds info to be computed if it hasn't been already.
     const PointerWithOffset& getMax() const {
       // we "cheat" the const here by calling the non-const `force()`
-      ((Dynamic*)this)->force();
+      (const_cast<Dynamic*>(this))->force();
       return std::get<Info>(data).max;
     }
 
     void force() {
+      assert(!data.valueless_by_exception());
       if (LazyInfo* lazy = std::get_if<LazyInfo>(&data)) {
-        data.emplace<Info>(std::move(lazy->force()));
+        data.emplace<Info>(lazy->force());
+        assert(std::holds_alternative<Info>(data));
       } else if (LazyGlobalArraySize* lazy = std::get_if<LazyGlobalArraySize>(&data)) {
-        data.emplace<Info>(std::move(lazy->force()));
+        data.emplace<Info>(lazy->force());
+        assert(std::holds_alternative<Info>(data));
       }
+      assert(std::holds_alternative<Info>(data));
     }
-
-    /// If this is nonempty, then this Dynamic is derived as the merger of these
-    /// other `BoundsInfo`s.
-    ///
-    /// Elements in this are new()'d - they must be delete()'d.
-    /// Elements in this may be DYNAMIC but will never have nonempty
-    /// `merge_inputs` themselves.
-    SmallVector<BoundsInfo*, 4> merge_inputs;
 
   private:
     /// Actual dynamic bounds info
@@ -209,6 +206,7 @@ public:
       explicit Info(PointerWithOffset base, PointerWithOffset max)
         : base(base), max(max) {}
       Info() : base(PointerWithOffset()), max(PointerWithOffset()) {}
+      // copy and move are OK for Info
       Info(const Info&) = default;
       Info(Info&& other) noexcept : Info() {
         swap(*this, other);
@@ -247,10 +245,7 @@ public:
       explicit LazyInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts)
         : addr(addr), loaded_ptr(loaded_ptr), added_insts(&added_insts) {}
       LazyInfo() : addr(NULL), loaded_ptr(NULL), added_insts(NULL) {}
-      LazyInfo(const LazyInfo&) = default;
-      LazyInfo(LazyInfo&& other) noexcept : LazyInfo() {
-        swap(*this, other);
-      }
+
       // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
       // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
       /*friend*/ static void swap(LazyInfo& A, LazyInfo& B) noexcept {
@@ -261,6 +256,13 @@ public:
       LazyInfo& operator=(LazyInfo rhs) noexcept {
         swap(*this, rhs);
         return *this;
+      }
+
+      /// disallow copies: we only want to force() once
+      LazyInfo(const LazyInfo&) = delete;
+      /// move is OK though
+      LazyInfo(LazyInfo&& other) noexcept : LazyInfo() {
+        swap(*this, other);
       }
 
       Info force();
@@ -293,10 +295,7 @@ public:
       explicit LazyGlobalArraySize(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts)
         : arr(&arr), insertion_func(&insertion_func), added_insts(&added_insts) {}
       LazyGlobalArraySize() : arr(NULL), insertion_func(NULL), added_insts(NULL) {}
-      LazyGlobalArraySize(const LazyGlobalArraySize&) = default;
-      LazyGlobalArraySize(LazyGlobalArraySize&& other) noexcept : LazyGlobalArraySize() {
-        swap(*this, other);
-      }
+
       // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
       // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
       /*friend*/ static void swap(LazyGlobalArraySize& A, LazyGlobalArraySize& B) noexcept {
@@ -307,6 +306,13 @@ public:
       LazyGlobalArraySize& operator=(LazyGlobalArraySize rhs) noexcept {
         swap(*this, rhs);
         return *this;
+      }
+
+      /// disallow copies: we only want to force() once
+      LazyGlobalArraySize(const LazyGlobalArraySize&) = delete;
+      /// move is OK though
+      LazyGlobalArraySize(LazyGlobalArraySize&& other) : LazyGlobalArraySize() {
+        swap(*this, other);
       }
 
       Info force();
@@ -333,25 +339,10 @@ public:
     Dynamic(LazyGlobalArraySize&& lazy) : data(std::move(lazy)) {}
     Dynamic() : data(Info()) {}
 
-    Dynamic(const Dynamic& other) : data(other.data) {
-      // separately new() for each BoundsInfo in merge_inputs.
-      // That way, if `other` is destructed before this new copy,
-      // it doesn't delete() the merge_inputs we're using
-      for (BoundsInfo* binfo : other.merge_inputs) {
-        merge_inputs.push_back(new BoundsInfo(*binfo));
-      }
-    }
-    ~Dynamic() {
-      for (BoundsInfo* binfo : merge_inputs) {
-        delete binfo;
-      }
-    }
-
     // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
     // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
     /*friend*/ static void swap(Dynamic& A, Dynamic& B) noexcept {
       std::swap(A.data, B.data);
-      std::swap(A.merge_inputs, B.merge_inputs);
     }
     Dynamic(Dynamic&& other) noexcept : Dynamic() {
       swap(*this, other);
@@ -360,6 +351,12 @@ public:
       swap(*this, rhs);
       return *this;
     }
+
+    /// Disallow copies of Dynamic. Try to just use another pointer to the same
+    /// Dynamic instead. This way, if the Dynamic is force()d by any user, all
+    /// the pointers referencing it see the new Info without having to force()
+    /// multiple times
+    Dynamic(const Dynamic&) = delete;
 
     /// `addr`: Address of the pointer for which we need dynamic info (this
     /// should be a _decoded_ ptr)
@@ -391,28 +388,39 @@ public:
     bool operator!=(const Dynamic& other) const {
       return !(*this == other);
     }
+
+    static Dynamic merge(Dynamic& A, Dynamic& B, DMSIRBuilder& Builder);
   }; // end class Dynamic
 
   /// Actual data held in the `BoundsInfo`: one of the above forms
   std::variant<NotDefinedYet, Unknown, Infinite, Static, Dynamic> data;
 
+  bool valid() const {
+    return !data.valueless_by_exception();
+  }
+
   bool is_notdefinedyet() const {
+    assert(valid());
     return std::holds_alternative<NotDefinedYet>(data);
   }
 
   bool is_unknown() const {
+    assert(valid());
     return std::holds_alternative<Unknown>(data);
   }
 
   bool is_infinite() const {
+    assert(valid());
     return std::holds_alternative<Infinite>(data);
   }
 
   bool is_static() const {
+    assert(valid());
     return std::holds_alternative<Static>(data);
   }
 
   bool is_dynamic() const {
+    assert(valid());
     return std::holds_alternative<Dynamic>(data);
   }
 
@@ -423,6 +431,7 @@ public:
       case 2: return "Infinite";
       case 3: return "Static";
       case 4: return "Dynamic";
+      case std::variant_npos: llvm_unreachable("Invalid BoundsInfo"); // see docs on valueless_by_exception
       default: llvm_unreachable("Missing case in pretty_kind()");
     }
   }
@@ -468,7 +477,7 @@ public:
   }
 
   /// Construct a BoundsInfo with the given `Dynamic`
-  BoundsInfo(Dynamic dynamic_info) : data(dynamic_info) {}
+  BoundsInfo(Dynamic&& dynamic_info) : data(std::move(dynamic_info)) {}
 
   /// Construct a BoundsInfo with the given dynamic `base` and `max`
   static BoundsInfo dynamic_bounds(Value* base, Value* max) {
@@ -480,12 +489,9 @@ public:
     return BoundsInfo(Dynamic(base, max));
   }
 
-  /// Construct a BoundsInfo with NOTDEFINEDYET bounds. This is the default when
-  /// constructing a BoundsInfo; for instance, DenseMap.lookup() will use this
-  /// constructor to construct a BoundsInfo if the key is not found in the map.
+  /// The default constructor produces a NotDefinedYet
   explicit BoundsInfo() : data(NotDefinedYet()) {}
 
-  BoundsInfo(const BoundsInfo& other) = default;
   // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
   // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
   /*friend*/ static void swap(BoundsInfo& A, BoundsInfo& B) noexcept {
@@ -498,6 +504,10 @@ public:
     swap(*this, rhs);
     return *this;
   }
+
+  /// Disallow copies of BoundsInfo; try to use another pointer to the same
+  /// BoundsInfo instead. See notes on BoundsInfo::Dynamic
+  BoundsInfo(const BoundsInfo&) = delete;
 
   bool operator==(const BoundsInfo& other) const {
     return (data == other.data);
@@ -525,17 +535,6 @@ public:
   /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
   /// The BoundsInfo should not be NotDefinedYet.
   Value* max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const;
-
-  /// `cur_ptr` is the pointer which these bounds are for.
-  ///
-  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
-  /// that is necessary.
-  static BoundsInfo merge(
-    const BoundsInfo& A,
-    const BoundsInfo& B,
-    Value* cur_ptr,
-    DMSIRBuilder& Builder
-  );
 
   /// Insert dynamic instructions to store this bounds info.
   ///
@@ -585,24 +584,6 @@ public:
   ) {
     return Dynamic::LazyDynamicGlobalArrayBounds(arr, insertion_func, added_insts);
   }
-
-private:
-  /// `cur_ptr` is the pointer which these bounds are for.
-  ///
-  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
-  static BoundsInfo merge_static_dynamic(
-    const Static& static_info,
-    const Dynamic& dynamic_info,
-    Value* cur_ptr,
-    DMSIRBuilder& Builder
-  );
-
-  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
-  static BoundsInfo merge_dynamic_dynamic(
-    const Dynamic& a_info,
-    const Dynamic& b_info,
-    DMSIRBuilder& Builder
-  );
-};
+}; // end BoundsInfo
 
 } // end namespace

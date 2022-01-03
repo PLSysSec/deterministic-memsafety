@@ -10,7 +10,12 @@ BoundsInfos::BoundsInfos(
   const DataLayout& DL,
   DenseSet<const Instruction*>& added_insts,
   DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
-) : DL(DL), added_insts(added_insts), pointer_aliases(pointer_aliases), infinite_binfo(BoundsInfo::infinite()), notdefinedyet_binfo(BoundsInfo::notdefinedyet()) {
+) :
+  notdefinedyet_binfo(BoundsInfo::notdefinedyet()),
+  unknown_binfo(BoundsInfo::unknown()),
+  infinite_binfo(BoundsInfo::infinite()),
+  DL(DL), added_insts(added_insts), pointer_aliases(pointer_aliases)
+{
   LLVM_DEBUG(dbgs() << "Initializing bounds infos for function " << F.getNameOrAsOperand() << " with " << F.arg_size() << " operands\n");
   bool isMain = F.getName() == "main" && F.arg_size() == 2;
   if (isMain) {
@@ -31,7 +36,7 @@ BoundsInfos::BoundsInfos(
           "argvMax"
         )
       );
-      map[argv] = BoundsInfo::dynamic_bounds(argv, argvMax);
+      mark_as(argv, BoundsInfo::dynamic_bounds(argv, argvMax));
       LLVM_DEBUG(dbgs() << "Setting bounds for " << argv->getNameOrAsOperand() << " to dynamic\n");
     }
     {
@@ -60,7 +65,7 @@ BoundsInfos::BoundsInfos(
     // as unknown()
     for (const Argument& arg : F.args()) {
       if (arg.getType()->isPointerTy()) {
-        map[&arg] = BoundsInfo::unknown();
+        mark_as(&arg, &unknown_binfo);
       }
     }
   }
@@ -76,16 +81,16 @@ BoundsInfos::BoundsInfos(
         // this can result from declarations like `extern int some_arr[];`.
         // we handle this by dynamically looking up the actual array size,
         // see notes on dynamic_bounds_for_global_array().
-        map[&gv] = BoundsInfo(
+        mark_as(&gv, BoundsInfo(
           BoundsInfo::dynamic_bounds_for_global_array(gv, F, added_insts)
-        );
+        ));
       } else {
-        map[&gv] = BoundsInfo::static_bounds(
+        mark_as(&gv, BoundsInfo::static_bounds(
           zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-        );
+        ));
       }
     } else {
-      map[&gv] = BoundsInfo::unknown();
+      mark_as(&gv, &unknown_binfo);
     }
   }
 }
@@ -163,11 +168,11 @@ void BoundsInfos::module_initialization(
 void BoundsInfos::store_info_for_all_ptr_exprs(Value* addr, Constant* c, DMSIRBuilder& Builder) {
   if (GlobalValue* gv = dyn_cast<GlobalValue>(c)) {
     assert(gv->getType()->isPointerTy());
-    const BoundsInfo& binfo = get_binfo(gv);
-    binfo.store_dynamic(addr, gv, Builder);
+    BoundsInfo* binfo = get_binfo(gv);
+    binfo->store_dynamic(addr, gv, Builder);
   } else if (c->getType()->isPointerTy() && c->isNullValue()) {
-    const BoundsInfo& binfo = get_binfo(c);
-    binfo.store_dynamic(addr, c, Builder);
+    BoundsInfo* binfo = get_binfo(c);
+    binfo->store_dynamic(addr, c, Builder);
   } else if (ConstantAggregate* cagg = dyn_cast<ConstantAggregate>(c)) {
     assert(addr->getType()->isPointerTy());
     const unsigned gepIndexSizeBits = (cagg->getType()->isStructTy()) ?
@@ -193,8 +198,8 @@ void BoundsInfos::store_info_for_all_ptr_exprs(Value* addr, Constant* c, DMSIRBu
         break;
       }
       case Instruction::GetElementPtr: {
-        const BoundsInfo& binfo = get_binfo(cexpr);
-        binfo.store_dynamic(addr, cexpr, Builder);
+        BoundsInfo* binfo = get_binfo(cexpr);
+        binfo->store_dynamic(addr, cexpr, Builder);
         break;
       }
       default: {
@@ -205,34 +210,50 @@ void BoundsInfos::store_info_for_all_ptr_exprs(Value* addr, Constant* c, DMSIRBu
 }
 
 /// Get the bounds information for the given pointer.
-const BoundsInfo& BoundsInfos::get_binfo(const Value* ptr) {
-  const BoundsInfo& binfo = get_binfo_noalias(ptr);
-  if (!binfo.is_notdefinedyet()) return binfo;
+///
+/// The returned pointer is never NULL, and should have lifetime equal
+/// to the lifetime of this BoundsInfos.
+BoundsInfo* BoundsInfos::get_binfo(const Value* ptr) {
+  BoundsInfo* binfo = get_binfo_noalias(ptr);
+  assert(binfo->valid());
+  if (!binfo->is_notdefinedyet()) {
+    LLVM_DEBUG(dbgs() << "DMS:     bounds info for " << ptr->getNameOrAsOperand() << " is " << binfo->pretty() << "\n");
+    return binfo;
+  }
   // if bounds info isn't defined, see if it's defined for any alias of this pointer
   for (const Value* alias : pointer_aliases[ptr]) {
-    const BoundsInfo& binfo = get_binfo_noalias(alias);
-    if (!binfo.is_notdefinedyet()) return binfo;
+    BoundsInfo* binfo = get_binfo_noalias(alias);
+    assert(binfo->valid());
+    if (!binfo->is_notdefinedyet()) {
+      LLVM_DEBUG(dbgs() << "DMS:     bounds info for " << ptr->getNameOrAsOperand() << " is " << binfo->pretty() << ", via alias " << alias->getNameOrAsOperand() << "\n");
+      return binfo;
+    }
   }
+  LLVM_DEBUG(dbgs() << "DMS:     bounds info for " << ptr->getNameOrAsOperand() << " is " << binfo->pretty() << "\n");
   return binfo;
 }
 
 /// Like `get_binfo()`, but doesn't check aliases of the given ptr, if any
 /// exist. This is used internally by `get_binfo()`.
-const BoundsInfo& BoundsInfos::get_binfo_noalias(const Value* ptr) {
+///
+/// The returned pointer is never NULL, and should have lifetime equal
+/// to the lifetime of this BoundsInfos.
+BoundsInfo* BoundsInfos::get_binfo_noalias(const Value* ptr) {
   assert(ptr->getType()->isPointerTy());
-  // we want the construct-default behavior of `map.lookup()`, but that returns
-  // the Value by value; we want the return-by-reference behavior of `map[]`.
-  // This compromise is inefficient but does the job.
-  // Definitely wishing for the Rust HashMap::entry() interface about now
-  map.lookup(ptr);
-  const BoundsInfo& binfo = map[ptr];
-  if (!binfo.is_notdefinedyet()) return binfo;
+  BoundsInfo* binfo = map.lookup(ptr);
+  if (!binfo) {
+    LLVM_DEBUG(dbgs() << "DMS:     map.lookup() returned NULL, so setting " << ptr->getNameOrAsOperand() << " to NotDefinedYet\n");
+    map[ptr] = &notdefinedyet_binfo;
+    binfo = &notdefinedyet_binfo;
+  }
+  assert(binfo->valid());
+  if (!binfo->is_notdefinedyet()) return binfo;
   if (const Constant* constant = dyn_cast<const Constant>(ptr)) {
     if (constant->isNullValue()) {
-      return infinite_binfo;
+      return &infinite_binfo;
     } else if (isa<UndefValue>(constant)) {
       // this includes both undef and poison
-      return infinite_binfo;
+      return &infinite_binfo;
     } else if (const ConstantExpr* expr = dyn_cast<ConstantExpr>(constant)) {
       // it's a pointer created by a compile-time constant expression
       switch (expr->getOpcode()) {
@@ -244,14 +265,15 @@ const BoundsInfo& BoundsInfos::get_binfo_noalias(const Value* ptr) {
           // constant-GEP expression
           Instruction* inst = expr->getAsInstruction();
           GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-          const BoundsInfo& ret = bounds_info_for_gep(*gepinst);
+          BoundsInfo* ret = bounds_info_for_gep(*gepinst);
+          assert(ret->valid());
           inst->deleteValue();
           return ret;
         }
         case Instruction::IntToPtr: {
           // ideally, we have alias information, and some alias will have bounds
           // info
-          return notdefinedyet_binfo;
+          return &notdefinedyet_binfo;
         }
         default: {
           dbgs() << "unhandled constant expression:\n";
@@ -265,7 +287,90 @@ const BoundsInfo& BoundsInfos::get_binfo_noalias(const Value* ptr) {
       llvm_unreachable("unhandled constant type (not an expression)");
     }
   }
+  assert(binfo->valid());
   return binfo;
+}
+
+/// Mark the given pointer as having the merger of the two given bounds
+/// information.
+///
+/// `A` and `B` should have lifetime equal to the lifetime of this BoundsInfos.
+///
+/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
+/// that is necessary.
+void BoundsInfos::mark_as_merged(
+  Value* ptr,
+  BoundsInfo& A,
+  BoundsInfo& B,
+  DMSIRBuilder& Builder
+) {
+  if (A.is_notdefinedyet()) return mark_as(ptr, &B);
+  if (B.is_notdefinedyet()) return mark_as(ptr, &A);
+  if (A.is_unknown()) return mark_as(ptr, &A);
+  if (B.is_unknown()) return mark_as(ptr, &B);
+  if (A.is_infinite()) return mark_as(ptr, &B);
+  if (B.is_infinite()) return mark_as(ptr, &A);
+
+  if (A == B) return mark_as(ptr, &A); // this also avoids forcing, if both A and B are still dynamic-lazy but equivalent
+
+  if (A.is_static() && B.is_static()) {
+    const BoundsInfo::Static& a_info = std::get<BoundsInfo::Static>(A.data);
+    const BoundsInfo::Static& b_info = std::get<BoundsInfo::Static>(B.data);
+    return mark_as(ptr, BoundsInfo::static_bounds(
+      a_info.low_offset.sgt(b_info.low_offset) ? a_info.low_offset : b_info.low_offset,
+      a_info.high_offset.slt(b_info.high_offset) ? a_info.high_offset : b_info.high_offset
+    ));
+  }
+
+  if (A.is_dynamic() && B.is_dynamic()) {
+    return mark_as(ptr, BoundsInfo(std::move(BoundsInfo::Dynamic::merge(
+      std::get<BoundsInfo::Dynamic>(A.data),
+      std::get<BoundsInfo::Dynamic>(B.data),
+      Builder
+    ))));
+  }
+
+  if (A.is_static() && B.is_dynamic()) {
+    return mark_as_merged(
+      ptr,
+      std::get<BoundsInfo::Static>(A.data),
+      std::get<BoundsInfo::Dynamic>(B.data),
+      Builder
+    );
+  }
+  if (A.is_dynamic() && B.is_static()) {
+    return mark_as_merged(
+      ptr,
+      std::get<BoundsInfo::Static>(B.data),
+      std::get<BoundsInfo::Dynamic>(A.data),
+      Builder
+    );
+  }
+
+  llvm_unreachable("Missing case in BoundsInfos::mark_as_merged");
+}
+
+/// Mark the given pointer as having the merger of the two given bounds
+/// information.
+///
+/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
+/// that is necessary.
+void BoundsInfos::mark_as_merged(
+  Value* ptr,
+  BoundsInfo::Static& static_info,
+  BoundsInfo::Dynamic& dyn_info,
+  DMSIRBuilder& Builder
+) {
+  // convert the Static into a Dynamic in order to do a dynamic merge
+  Value* static_base = static_info.base_as_llvm_value(ptr, Builder);
+  Value* static_max = static_info.max_as_llvm_value(ptr, Builder);
+  BoundsInfo::Dynamic converted(static_base, static_max);
+
+  return mark_as(ptr, BoundsInfo(std::move(BoundsInfo::Dynamic::merge(
+    converted,
+    dyn_info,
+    Builder
+  ))));
 }
 
 /// Propagate bounds information for a Store instruction.
@@ -281,7 +386,7 @@ void BoundsInfos::propagate_bounds(StoreInst& store, Value* override_stored_ptr)
   // if we aren't storing a pointer, we have nothing to do
   Value* storedVal = override_stored_ptr == NULL ? store.getValueOperand() : override_stored_ptr;
   if (!storedVal->getType()->isPointerTy()) return;
-  const BoundsInfo& binfo = get_binfo(storedVal);
+  BoundsInfo* binfo = get_binfo(storedVal);
   bool need_regenerate_bounds_store;
   if (store_bounds_calls.count(&store) > 0) {
     // there is already a Call instruction storing bounds info for
@@ -302,7 +407,7 @@ void BoundsInfos::propagate_bounds(StoreInst& store, Value* override_stored_ptr)
   }
   if (need_regenerate_bounds_store) {
     DMSIRBuilder Builder(&store, DMSIRBuilder::AFTER, &added_insts);
-    Instruction* new_bounds_call = binfo.store_dynamic(store.getPointerOperand(), storedVal, Builder);
+    Instruction* new_bounds_call = binfo->store_dynamic(store.getPointerOperand(), storedVal, Builder);
     store_bounds_calls[&store] = BoundsStoringCall(new_bounds_call, binfo);
   }
 }
@@ -312,9 +417,9 @@ void BoundsInfos::propagate_bounds(AllocaInst& alloca) {
   // we know the bounds of the allocation statically
   PointerType* resultType = cast<PointerType>(alloca.getType());
   auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
-  map[&alloca] = BoundsInfo::static_bounds(
+  mark_as(&alloca, BoundsInfo::static_bounds(
     zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-  );
+  ));
 }
 
 /// Copy the bounds for the input pointer (must be operand 0) to the output
@@ -322,29 +427,33 @@ void BoundsInfos::propagate_bounds(AllocaInst& alloca) {
 void BoundsInfos::propagate_bounds_id(Instruction& inst) {
   Value* input_ptr = inst.getOperand(0);
   assert(input_ptr->getType()->isPointerTy());
-  map[&inst] = get_binfo(input_ptr);
+  mark_as(&inst, get_binfo(input_ptr));
 }
 
-const BoundsInfo& BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep) {
+/// Get bounds info for the given GEP.
+///
+/// The returned pointer is never NULL, and should have lifetime equal
+/// to the lifetime of this BoundsInfos.
+BoundsInfo* BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep) {
   // the pointer resulting from the GEP still gets access to the whole allocation,
   // ie the same access that the GEP's input pointer had
   Value* input_ptr = gep.getPointerOperand();
-  const BoundsInfo& binfo = get_binfo(input_ptr);
-  if (binfo.is_notdefinedyet()) {
+  BoundsInfo* binfo = get_binfo(input_ptr);
+  if (binfo->is_notdefinedyet()) {
     llvm_unreachable("GEP input ptr's BoundsInfo should be defined (at least Unknown)");
-  } else if (binfo.is_unknown()) {
+  } else if (binfo->is_unknown()) {
     LLVM_DEBUG(dbgs() << "GEP input ptr has unknown bounds\n");
     return binfo;
-  } else if (binfo.is_infinite()) {
+  } else if (binfo->is_infinite()) {
     return binfo;
-  } else if (binfo.is_static()) {
-    const BoundsInfo::Static& static_info = std::get<BoundsInfo::Static>(binfo.data);
+  } else if (binfo->is_static()) {
+    const BoundsInfo::Static& static_info = std::get<BoundsInfo::Static>(binfo->data);
     const std::optional<APInt> constant_offset = computeGEPOffset(gep, DL);
     if (constant_offset.has_value()) {
-      map[&gep] = BoundsInfo::static_bounds(
+      mark_as(&gep, BoundsInfo::static_bounds(
         static_info.low_offset - *constant_offset,
         static_info.high_offset - *constant_offset
-      );
+      ));
       return map[&gep];
     } else {
       // bounds of the new pointer aren't known statically
@@ -355,48 +464,88 @@ const BoundsInfo& BoundsInfos::bounds_info_for_gep(GetElementPtrInst& gep) {
       const BoundsInfo::PointerWithOffset base = BoundsInfo::PointerWithOffset(input_ptr, static_info.low_offset);
       // `max` is `input_ptr` plus the input pointer's high_offset
       const BoundsInfo::PointerWithOffset max = BoundsInfo::PointerWithOffset(input_ptr, static_info.high_offset);
-      map[&gep] = BoundsInfo::dynamic_bounds(base, max);
+      mark_as(&gep, BoundsInfo::dynamic_bounds(base, max));
       return map[&gep];
     }
-  } else if (binfo.is_dynamic()) {
+  } else if (binfo->is_dynamic()) {
     // regardless of the GEP offset, the `base` and `max` don't change
     return binfo;
   } else {
+    assert(binfo->valid());
     llvm_unreachable("Missing BoundsInfo case");
   }
 }
 
 /// Propagate bounds information for a GEP instruction.
 void BoundsInfos::propagate_bounds(GetElementPtrInst& gep) {
-  map[&gep] = bounds_info_for_gep(gep);
+  mark_as(&gep, bounds_info_for_gep(gep));
 }
+
+/// Used only for the cache in `propagate_bounds(Select&)`; see notes there
+struct SelectCacheKey {
+  SelectInst* select;
+  BoundsInfo* binfo1;
+  BoundsInfo* binfo2;
+
+  explicit SelectCacheKey(SelectInst* select, BoundsInfo* binfo1, BoundsInfo* binfo2)
+    : select(select), binfo1(binfo1), binfo2(binfo2) {}
+  SelectCacheKey() : select(NULL), binfo1(NULL), binfo2(NULL) {}
+
+  bool operator==(const SelectCacheKey& other) const {
+    // compare as pointers, not deep compare, if this causes a cache miss that
+    // wasn't technically necessary that's fine
+    return select == other.select && binfo1 == other.binfo1 && binfo2 == other.binfo2;
+  }
+  bool operator!=(const SelectCacheKey& other) const {
+    return !(*this == other);
+  }
+};
+
+// it seems this is required in order for SelectCacheKey to be a key type
+// in a DenseMap
+namespace llvm {
+template<> struct DenseMapInfo<SelectCacheKey> {
+  static inline SelectCacheKey getEmptyKey() {
+    return SelectCacheKey();
+  }
+  static inline SelectCacheKey getTombstoneKey() {
+    return SelectCacheKey(
+      DenseMapInfo<SelectInst*>::getTombstoneKey(),
+      DenseMapInfo<BoundsInfo*>::getTombstoneKey(),
+      DenseMapInfo<BoundsInfo*>::getTombstoneKey()
+    );
+  }
+  static unsigned getHashValue(const SelectCacheKey &Val) {
+    return DenseMapInfo<SelectInst*>::getHashValue(Val.select) ^
+      DenseMapInfo<BoundsInfo*>::getHashValue(Val.binfo1) ^
+      DenseMapInfo<BoundsInfo*>::getHashValue(Val.binfo2);
+  }
+  static bool isEqual(const SelectCacheKey &LHS, const SelectCacheKey &RHS) {
+    return LHS == RHS;
+  }
+};
+} // end namespace llvm
 
 void BoundsInfos::propagate_bounds(SelectInst& select) {
   // if we aren't selecting a pointer, we have nothing to do
   if (!select.getType()->isPointerTy()) return;
-  const BoundsInfo& binfo1 = get_binfo(select.getTrueValue());
-  const BoundsInfo& binfo2 = get_binfo(select.getFalseValue());
-  const BoundsInfo& prev_iteration_binfo = get_binfo(&select);
-  bool needs_update = false;
-  if (prev_iteration_binfo.is_dynamic()) {
-    const BoundsInfo::Dynamic& prev_iteration_dyninfo = std::get<BoundsInfo::Dynamic>(prev_iteration_binfo.data);
-    if (prev_iteration_dyninfo.merge_inputs.size() == 2
-        && *prev_iteration_dyninfo.merge_inputs[0] == binfo1
-        && *prev_iteration_dyninfo.merge_inputs[1] == binfo2
-    ) {
-      needs_update = false;
-    } else {
-      needs_update = true;
-    }
+  BoundsInfo* binfo1 = get_binfo(select.getTrueValue());
+  BoundsInfo* binfo2 = get_binfo(select.getFalseValue());
+
+  // cache from cache key to the resulting BoundsInfo for the SelectInst
+  static DenseMap<SelectCacheKey, BoundsInfo*> cache;
+  SelectCacheKey Key(&select, binfo1, binfo2);
+  bool have_cache_entry = cache.count(Key) > 0;
+  if (have_cache_entry) {
+    mark_as(&select, cache[Key]);
   } else {
-    needs_update = true;
-  }
-  if (needs_update) {
     // the merge may need to insert instructions that use the final
     // value of the select, so we need a builder pointing after the
     // select
     DMSIRBuilder AfterSelect(&select, DMSIRBuilder::AFTER, &added_insts);
-    map[&select] = BoundsInfo::merge(binfo1, binfo2, &select, AfterSelect);
+    mark_as_merged(&select, *binfo1, *binfo2, AfterSelect);
+    // update the cache for the future
+    cache[Key] = get_binfo(&select);
   }
 }
 
@@ -406,11 +555,11 @@ void BoundsInfos::propagate_bounds(IntToPtrInst& inttoptr, PointerKind inttoptr_
   if (inttoptr_kind == PointerKind::CLEAN) {
     PointerType* resultType = cast<PointerType>(inttoptr.getType());
     auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
-    map[&inttoptr] = BoundsInfo::static_bounds(
+    mark_as(&inttoptr, BoundsInfo::static_bounds(
       zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-    );
+    ));
   } else {
-    map[&inttoptr] = BoundsInfo::unknown();
+    mark_as(&inttoptr, &unknown_binfo);
   }
 }
 
@@ -427,7 +576,7 @@ void BoundsInfos::propagate_bounds(LoadInst& load, Instruction* loaded_ptr) {
     loaded_ptr,
     added_insts
   );
-  map[&load] = BoundsInfo(std::move(dyninfo));
+  mark_as(&load, BoundsInfo(std::move(dyninfo)));
 }
 
 void BoundsInfos::propagate_bounds(PHINode& phi) {
@@ -437,7 +586,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
     /// Pointer value
     Value* ptr;
     /// Bounds info for that pointer value
-    const BoundsInfo& binfo;
+    BoundsInfo* binfo;
     /// Block that pointer is coming from
     BasicBlock* bb;
   };
@@ -450,20 +599,20 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
       phi.getIncomingBlock(use)
     });
   }
-  const BoundsInfo& prev_iteration_binfo = get_binfo(&phi);
+  BoundsInfo* prev_iteration_binfo = get_binfo(&phi);
   assert(incoming_binfos.size() >= 1);
   bool any_incoming_bounds_are_dynamic = false;
   bool any_incoming_bounds_are_unknown = false;
   for (auto& incoming : incoming_binfos) {
-    if (incoming.binfo.is_dynamic()) {
+    if (incoming.binfo->is_dynamic()) {
       any_incoming_bounds_are_dynamic = true;
     }
-    if (incoming.binfo.is_unknown()) {
+    if (incoming.binfo->is_unknown()) {
       any_incoming_bounds_are_unknown = true;
     }
   }
   if (any_incoming_bounds_are_unknown) {
-    map[&phi] = BoundsInfo::unknown();
+    mark_as(&phi, &unknown_binfo);
   } else if (any_incoming_bounds_are_dynamic) {
     // in this case, we'll use PHIs to select the proper dynamic
     // `base` and `max`, much as we used PHIs for the dynamic_kind
@@ -472,7 +621,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
     // let's not insert them again.
     PHINode* base_phi = NULL;
     PHINode* max_phi = NULL;
-    if (const BoundsInfo::Dynamic* prev_iteration_dyninfo = std::get_if<BoundsInfo::Dynamic>(&prev_iteration_binfo.data)) {
+    if (const BoundsInfo::Dynamic* prev_iteration_dyninfo = std::get_if<BoundsInfo::Dynamic>(&prev_iteration_binfo->data)) {
       if ((base_phi = dyn_cast<PHINode>(prev_iteration_dyninfo->getBase().ptr))) {
         assert(prev_iteration_dyninfo->getBase().offset == 0);
         assert(incoming_binfos.size() == base_phi->getNumIncomingValues());
@@ -482,7 +631,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
           // corresponding block, not here
           DMSIRBuilder IncomingBlockBuilder(incoming.bb, DMSIRBuilder::END, &added_insts);
           Value* incoming_base;
-          if (incoming.binfo.is_notdefinedyet()) {
+          if (incoming.binfo->is_notdefinedyet()) {
             // for now, treat this input to the phi as infinite bounds.
             // this will be updated on a future iteration if necessary, once the
             // incoming pointer has defined bounds.
@@ -495,7 +644,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
             // iteration.
             incoming_base = BoundsInfo::infinite().base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
           } else {
-            incoming_base = incoming.binfo.base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
+            incoming_base = incoming.binfo->base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
           }
           assert(incoming_base);
           const Value* old_base = base_phi->getIncomingValueForBlock(incoming.bb);
@@ -515,11 +664,11 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
           // corresponding block, not here
           DMSIRBuilder IncomingBlockBuilder(incoming.bb, DMSIRBuilder::END, &added_insts);
           Value* incoming_max;
-          if (incoming.binfo.is_notdefinedyet()) {
+          if (incoming.binfo->is_notdefinedyet()) {
             // see notes above for the base_phi case
             incoming_max = BoundsInfo::infinite().max_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
           } else {
-            incoming_max = incoming.binfo.max_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
+            incoming_max = incoming.binfo->max_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
           }
           assert(incoming_max);
           const Value* old_max = max_phi->getIncomingValueForBlock(incoming.bb);
@@ -543,7 +692,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
         // corresponding block, not here
         DMSIRBuilder IncomingBlockBuilder(incoming.bb, DMSIRBuilder::END, &added_insts);
         Value* base;
-        if (incoming.binfo.is_notdefinedyet()) {
+        if (incoming.binfo->is_notdefinedyet()) {
           // for now, treat this input to the phi as infinite bounds.
           // this will be updated on a future iteration if necessary, once the
           // incoming pointer has defined bounds.
@@ -556,7 +705,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
           // iteration.
           base = BoundsInfo::infinite().base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
         } else {
-          base = incoming.binfo.base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
+          base = incoming.binfo->base_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
         }
         assert(base);
         base_phi->addIncoming(base, incoming.bb);
@@ -573,45 +722,27 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
         // corresponding block, not here
         DMSIRBuilder IncomingBlockBuilder(incoming.bb, DMSIRBuilder::END, &added_insts);
         Value* max;
-        if (incoming.binfo.is_notdefinedyet()) {
+        if (incoming.binfo->is_notdefinedyet()) {
           // see notes above for the base_phi case
           max = BoundsInfo::infinite().max_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
         } else {
-          max = incoming.binfo.max_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
+          max = incoming.binfo->max_as_llvm_value(incoming.ptr, IncomingBlockBuilder);
         }
         assert(max);
         max_phi->addIncoming(max, incoming.bb);
       }
       assert(max_phi->isComplete());
     }
-    map[&phi] = BoundsInfo::dynamic_bounds(base_phi, max_phi);
+    mark_as(&phi, BoundsInfo::dynamic_bounds(base_phi, max_phi));
   } else {
     // no incoming bounds are dynamic. let's just merge them statically
-    bool any_merge_inputs_changed = false;
-    if (const BoundsInfo::Dynamic* prev_iteration_dyninfo = std::get_if<BoundsInfo::Dynamic>(&prev_iteration_binfo.data)) {
-      if (prev_iteration_dyninfo->merge_inputs.size() == incoming_binfos.size()) {
-        for (unsigned i = 0; i < incoming_binfos.size(); i++) {
-          if (*prev_iteration_dyninfo->merge_inputs[i] != incoming_binfos[i].binfo) {
-            any_merge_inputs_changed = true;
-            break;
-          }
-        }
-      } else {
-        any_merge_inputs_changed = true;
-      }
-    } else {
-      any_merge_inputs_changed = true;
-    }
-    if (any_merge_inputs_changed) {
-      // have to update the boundsinfo
-      BoundsInfo merged_binfo = BoundsInfo::infinite(); // just the initial value we start the merge with
-      assert(phi.getNumIncomingValues() >= 1);
-
-      DMSIRBuilder PostPhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
-      for (const Incoming& incoming : incoming_binfos) {
-        merged_binfo = BoundsInfo::merge(merged_binfo, incoming.binfo, &phi, PostPhiBuilder);
-      }
-      map[&phi] = merged_binfo;
+    // start with an initial value, which we'll merge everything else into
+    mark_as(&phi, &infinite_binfo);
+    assert(phi.getNumIncomingValues() >= 1);
+    DMSIRBuilder PostPhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
+    for (const Incoming& incoming : incoming_binfos) {
+      // merge each incoming bounds info into the final value
+      mark_as_merged(&phi, *map.lookup(&phi), *incoming.binfo, PostPhiBuilder);
     }
   }
 }
@@ -621,9 +752,9 @@ void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
     if (ConstantInt* allocationSize = dyn_cast<ConstantInt>(*IAC.allocation_bytes)) {
       // allocating a constant number of bytes.
       // we know the bounds of the allocation statically.
-      map[&call] = BoundsInfo::static_bounds(
+      mark_as(&call, BoundsInfo::static_bounds(
         zero, allocationSize->getValue() - 1
-      );
+      ));
     } else {
       // allocating a dynamic number of bytes.
       // We need a dynamic addition instruction to compute the upper
@@ -633,7 +764,7 @@ void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
         DMSIRBuilder Builder(&call, DMSIRBuilder::AFTER, &added_insts);
         Value* callPlusBytes = Builder.add_offset_to_ptr(&call, *IAC.allocation_bytes);
         Value* max = Builder.add_offset_to_ptr(callPlusBytes, minusone);
-        map[&call] = BoundsInfo::dynamic_bounds(&call, max);
+        mark_as(&call, BoundsInfo::dynamic_bounds(&call, max));
       }
     }
   } else {
@@ -643,13 +774,13 @@ void BoundsInfos::propagate_bounds(CallBase& call, IsAllocatingCall& IAC) {
         // See https://stackoverflow.com/questions/37702434/ctype-b-loc-what-is-its-purpose
         LLVMContext& ctx = call.getContext();
         uint64_t pointer_size_bytes = DL.getTypeStoreSize(Type::getInt16PtrTy(ctx)).getFixedSize();
-        map[&call] = BoundsInfo::static_bounds(0, pointer_size_bytes - 1);
+        mark_as(&call, BoundsInfo::static_bounds(0, pointer_size_bytes - 1));
         return;
       }
     }
     // If we get here, we don't have any special information about the bounds of
-    // the returned pointer. For now, we'll just mark unknown().
+    // the returned pointer. For now, we'll just mark unknown.
     // TODO: better interprocedural way to get bounds info
-    map[&call] = BoundsInfo::unknown();
+    mark_as(&call, &unknown_binfo);
   }
 }

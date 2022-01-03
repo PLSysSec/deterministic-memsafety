@@ -1388,15 +1388,7 @@ private:
           }
           break;
       }
-      DEBUG_WITH_TYPE("DMS-bounds-info",
-        if (inst.getType()->isPointerTy()) {
-          dbgs() << "DMS:     bounds info for the produced pointer " << inst.getNameOrAsOperand() << " is " << bounds_infos.get_binfo(&inst).pretty() << "\n";
-        }
-      );
       DEBUG_WITH_TYPE("DMS-inst-processing",
-        if (inst.getType()->isPointerTy()) {
-          dbgs() << "DMS:     bounds info for the produced pointer " << inst.getNameOrAsOperand() << " is " << bounds_infos.get_binfo(&inst).pretty() << "\n";
-        }
         auto num_new_insts = added_insts.size() - num_added_insts_before_processing_this_inst;
         if (num_new_insts > 0) dbgs() << "DMS:   " << num_new_insts << " new instructions added while processing this instruction\n";
       );
@@ -1480,17 +1472,17 @@ private:
       case PointerKind::BLEMISHED64:
       case PointerKind::BLEMISHEDCONST:
       case PointerKind::DIRTY: {
-        const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
-        return sw_bounds_check(addr, binfo, access_bytes, Builder, new_blocks);
+        BoundsInfo* binfo = bounds_infos.get_binfo(addr);
+        return sw_bounds_check(addr, *binfo, access_bytes, Builder, new_blocks);
       }
       case PointerKind::UNKNOWN: {
         errs() << "warning: status unknown for " << addr->getNameOrAsOperand() << "; assuming dirty and adding SW bounds check\n";
-        const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
-        return sw_bounds_check(addr, binfo, access_bytes, Builder, new_blocks);
+        BoundsInfo* binfo = bounds_infos.get_binfo(addr);
+        return sw_bounds_check(addr, *binfo, access_bytes, Builder, new_blocks);
       }
       case PointerKind::DYNAMIC: {
-        const BoundsInfo& binfo = bounds_infos.get_binfo(addr);
-        if (const BoundsInfo::Static* sinfo = std::get_if<BoundsInfo::Static>(&binfo.data)) {
+        BoundsInfo* binfo = bounds_infos.get_binfo(addr);
+        if (const BoundsInfo::Static* sinfo = std::get_if<BoundsInfo::Static>(&binfo->data)) {
           if (sinfo->fails(access_bytes)) {
             // we check the dynamic kind, if it is DYN_CLEAN or
             // DYN_BLEMISHED16 then we do nothing, else we SW-fail
@@ -1524,7 +1516,7 @@ private:
           DMSIRBuilder BoundsCheckBuilder(boundscheck, DMSIRBuilder::BEGINNING, &added_insts);
           Instruction* br = BoundsCheckBuilder.CreateBr(cont);
           BoundsCheckBuilder.SetInsertPoint(br);
-          sw_bounds_check(addr, binfo, access_bytes, BoundsCheckBuilder, new_blocks);
+          sw_bounds_check(addr, *binfo, access_bytes, BoundsCheckBuilder, new_blocks);
           assert(wellFormed(*boundscheck));
           return true;
         }
@@ -1553,7 +1545,7 @@ private:
   /// processed.
   bool sw_bounds_check(
     Value* ptr,
-    const BoundsInfo& binfo,
+    BoundsInfo& binfo,
     const unsigned access_bytes,
     DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks

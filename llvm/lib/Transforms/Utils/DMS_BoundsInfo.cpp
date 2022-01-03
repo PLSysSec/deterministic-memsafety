@@ -18,6 +18,7 @@ static Value* get_max_ptr_value(DMSIRBuilder& Builder) {
 }
 
 std::string BoundsInfo::pretty() const {
+  if (!valid()) return "<invalid>";
   if (const Static* sinfo = std::get_if<Static>(&data)) {
     std::string out;
     raw_string_ostream ostream(out);
@@ -42,6 +43,7 @@ std::string BoundsInfo::pretty() const {
 /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
 /// The BoundsInfo should not be NotDefinedYet.
 Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
+  assert(valid());
   if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
     (void)ndy; // silence warning about unused variable
     llvm_unreachable("base_as_llvm_value: BoundsInfo should be defined (at least Unknown)");
@@ -70,6 +72,7 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
 /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
 /// The BoundsInfo should not be NotDefinedYet.
 Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
+  assert(valid());
   if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
     (void)ndy; // silence warning about unused variable
     llvm_unreachable("max_as_llvm_value: BoundsInfo should be defined (at least Unknown)");
@@ -88,90 +91,17 @@ Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) cons
   }
 }
 
-/// `cur_ptr` is the pointer which these bounds are for.
-/// Can be any pointer type.
-///
-/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
-/// that is necessary.
-BoundsInfo BoundsInfo::merge(
-  const BoundsInfo& A,
-  const BoundsInfo& B,
-  Value* cur_ptr,
+BoundsInfo::Dynamic BoundsInfo::Dynamic::merge(
+  BoundsInfo::Dynamic& A,
+  BoundsInfo::Dynamic& B,
   DMSIRBuilder& Builder
 ) {
-  if (A.is_notdefinedyet()) return B;
-  if (B.is_notdefinedyet()) return A;
-  if (A.is_unknown()) return A;
-  if (B.is_unknown()) return B;
-  if (A.is_infinite()) return B;
-  if (B.is_infinite()) return A;
-
-  if (A.is_static() && B.is_static()) {
-    const Static& a_info = std::get<Static>(A.data);
-    const Static& b_info = std::get<Static>(B.data);
-    return BoundsInfo::static_bounds(
-      a_info.low_offset.sgt(b_info.low_offset) ? a_info.low_offset : b_info.low_offset,
-      a_info.high_offset.slt(b_info.high_offset) ? a_info.high_offset : b_info.high_offset
-    );
-  }
-
-  if (A.is_dynamic() && B.is_dynamic()) {
-    return merge_dynamic_dynamic(
-      std::get<Dynamic>(A.data), std::get<Dynamic>(B.data), Builder
-    );
-  }
-
-  if (A.is_static() && B.is_dynamic()) {
-    return merge_static_dynamic(
-      std::get<Static>(A.data), std::get<Dynamic>(B.data), cur_ptr, Builder
-    );
-  }
-  if (A.is_dynamic() && B.is_static()) {
-    return merge_static_dynamic(
-      std::get<Static>(B.data), std::get<Dynamic>(A.data), cur_ptr, Builder
-    );
-  }
-
-  llvm_unreachable("Missing case in BoundsInfo::merge");
-}
-
-/// `cur_ptr` is the pointer which these bounds are for.
-/// Can be any pointer type.
-///
-/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
-BoundsInfo BoundsInfo::merge_static_dynamic(
-  const Static& static_info,
-  const Dynamic& dynamic_info,
-  Value* cur_ptr,
-  DMSIRBuilder& Builder
-) {
-  // these are the base and max from the dynamic side
-  Value* incoming_base = dynamic_info.getBase().as_llvm_value(Builder);
-  Value* incoming_max = dynamic_info.getMax().as_llvm_value(Builder);
-  // these are the base and max from the static side
-  Value* static_base = static_info.base_as_llvm_value(cur_ptr, Builder);
-  Value* static_max = static_info.max_as_llvm_value(cur_ptr, Builder);
-
-  return merge_dynamic_dynamic(
-    Dynamic(incoming_base, incoming_max),
-    Dynamic(static_base, static_max),
-    Builder
-  );
-}
-
-/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
-BoundsInfo BoundsInfo::merge_dynamic_dynamic(
-  const Dynamic& a_info,
-  const Dynamic& b_info,
-  DMSIRBuilder& Builder
-) {
-  if (a_info == b_info) return BoundsInfo(a_info); // this also avoids forcing, if both a_info and b_info are still lazy but equivalent
   PointerWithOffset base;
   PointerWithOffset max;
-  const PointerWithOffset& a_base = a_info.getBase();
-  const PointerWithOffset& b_base = b_info.getBase();
-  const PointerWithOffset& a_max = a_info.getMax();
-  const PointerWithOffset& b_max = b_info.getMax();
+  const PointerWithOffset& a_base = A.getBase();
+  const PointerWithOffset& b_base = B.getBase();
+  const PointerWithOffset& a_max = A.getMax();
+  const PointerWithOffset& b_max = B.getMax();
   if (a_base.ptr == b_base.ptr) {
     base = PointerWithOffset(
       a_base.ptr,
@@ -204,11 +134,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
     );
     max = PointerWithOffset(merged_max);
   }
-  Dynamic merged(base, max);
-  merged.merge_inputs.clear();
-  merged.merge_inputs.push_back(new BoundsInfo(a_info));
-  merged.merge_inputs.push_back(new BoundsInfo(b_info));
-  return BoundsInfo(merged);
+  return Dynamic(base, max);
 }
 
 /// Insert dynamic instructions to store this bounds info.
@@ -220,6 +146,7 @@ BoundsInfo BoundsInfo::merge_dynamic_dynamic(
 ///
 /// Returns the Call instruction if one was inserted, or else NULL
 CallInst* BoundsInfo::store_dynamic(Value* addr, Value* ptr, DMSIRBuilder& Builder) const {
+  assert(valid());
   assert(ptr);
   assert(addr);
   assert(ptr->getType()->isPointerTy());
