@@ -1,7 +1,7 @@
 # DMS LLVM fork
 
-DMS implementation is at `llvm/lib/Transforms/Utils/DMS.cpp`, and DMS tests
-are at `llvm/test/Transforms/DMS`.
+DMS implementation is at `llvm/lib/Transforms/Utils/DMS.cpp`, DMS runtime is at
+`compiler-rt/lib/dms/DMS.cpp`, and DMS tests are at `llvm/test/Transforms/DMS`.
 
 ## Building
 
