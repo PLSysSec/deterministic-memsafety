@@ -117,6 +117,7 @@ private:
 
   const DataLayout &DL;
   const bool trust_llvm_struct_types;
+  const PointerKind inttoptr_kind;
 
   /// Reference to the `added_insts` where we note any instructions added for
   /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
@@ -130,6 +131,7 @@ public:
     BasicBlock& block,
     const DataLayout &DL,
     const bool trust_llvm_struct_types,
+    const PointerKind inttoptr_kind,
     DenseSet<const Instruction*>& added_insts,
     DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
   ) :
@@ -249,12 +251,15 @@ public:
             return ret;
           }
           case Instruction::IntToPtr: {
-            // if it's IntToPtr of zero, or any other number < 4K (corresponding
-            // to the first page of memory, which is unmapped), we can treat it
-            // as CLEAN, just like the null pointer
             if (const ConstantInt* cint = dyn_cast<ConstantInt>(expr->getOperand(0))) {
+              // if it's IntToPtr of zero, or any other number < 4K (corresponding
+              // to the first page of memory, which is unmapped), we can treat it
+              // as CLEAN, just like the null pointer
               if (cint->getValue().ult(4*1024)) {
                 return PointerStatus::clean();
+              } else {
+                // IntToPtr of any other constant number, we go by inttoptr_kind
+                return PointerStatus::from_kind(inttoptr_kind);
               }
             }
             // for other IntToPtrs, ideally, we have alias information, and some
@@ -359,7 +364,7 @@ public:
       assert(statuses[i]->trust_llvm_struct_types == statuses[i+1]->trust_llvm_struct_types);
       assert(&statuses[i]->added_insts == &statuses[i+1]->added_insts);
     }
-    PointerStatuses merged(merge_block, statuses[0]->DL, statuses[0]->trust_llvm_struct_types, statuses[0]->added_insts, statuses[0]->pointer_aliases);
+    PointerStatuses merged(merge_block, statuses[0]->DL, statuses[0]->trust_llvm_struct_types, statuses[0]->inttoptr_kind, statuses[0]->added_insts, statuses[0]->pointer_aliases);
     for (size_t i = 0; i < statuses.size(); i++) {
       for (const auto& pair : statuses[i]->map) {
         SmallVector<StatusWithBlock, 4> statuses_for_ptr;
@@ -400,7 +405,7 @@ public:
     }
     return merged;
   }
-};
+}; // end class PointerStatuses
 
 class DMSAnalysis final {
 public:
@@ -447,7 +452,7 @@ public:
       RPOT(ReversePostOrderTraversal<BasicBlock *>(&F.getEntryBlock())),
       blocks_in_function(F.getBasicBlockList().size()),
       pointer_encoding_is_complete(false),
-      block_states(BlockStates(F, DL, settings.trust_llvm_struct_types, added_insts, pointer_aliases)),
+      block_states(BlockStates(F, DL, settings.trust_llvm_struct_types, settings.inttoptr_kind, added_insts, pointer_aliases)),
       bounds_infos(BoundsInfos(F, DL, added_insts, pointer_aliases))
   {}
 
@@ -679,11 +684,12 @@ private:
       BasicBlock& block,
       const DataLayout &DL,
       const bool trust_llvm_struct_types,
+      const PointerKind inttoptr_kind,
       DenseSet<const Instruction*>& added_insts,
       DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
     ) :
-      ptrs_beg(PointerStatuses(block, DL, trust_llvm_struct_types, added_insts, pointer_aliases)),
-      ptrs_end(PointerStatuses(block, DL, trust_llvm_struct_types, added_insts, pointer_aliases)),
+      ptrs_beg(PointerStatuses(block, DL, trust_llvm_struct_types, inttoptr_kind, added_insts, pointer_aliases)),
+      ptrs_end(PointerStatuses(block, DL, trust_llvm_struct_types, inttoptr_kind, added_insts, pointer_aliases)),
       static_results(StaticResults { 0 }),
       added_insts(added_insts)
     {}
@@ -716,11 +722,13 @@ private:
       Function& F,
       const DataLayout &DL,
       const bool trust_llvm_struct_types,
+      const PointerKind inttoptr_kind,
       DenseSet<const Instruction*>& added_insts,
       DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
     ) :
       DL(DL),
       trust_llvm_struct_types(trust_llvm_struct_types),
+      inttoptr_kind(inttoptr_kind),
       added_insts(added_insts),
       pointer_aliases(pointer_aliases)
     {
@@ -757,6 +765,7 @@ private:
           block,
           DL,
           trust_llvm_struct_types,
+          inttoptr_kind,
           added_insts,
           pointer_aliases
         );
@@ -775,6 +784,7 @@ private:
   private:
     const DataLayout& DL;
     const bool trust_llvm_struct_types;
+    const PointerKind inttoptr_kind;
 
     /// Reference to the `added_insts` where we note any instructions added for
     /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
