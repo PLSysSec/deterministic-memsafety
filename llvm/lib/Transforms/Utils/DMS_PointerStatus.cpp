@@ -234,11 +234,21 @@ PointerStatus PointerStatus::merge_with_phi(
     }
   }
   if (cached_phi) {
+    // check that it has the same incoming blocks as last time. If not, ignore
+    // the cached phi (which will result in us making a new phi).
+    for (const StatusWithBlock& swb : statuses) {
+      if (cached_phi->getBasicBlockIndex(swb.block) < 0) {
+        cached_phi = NULL;
+        break;
+      }
+    }
+  }
+  if (cached_phi) {
     // Adjust the inputs to the phi if any incoming statuses have changed
     assert(statuses.size() == cached_phi->getNumIncomingValues());
     for (const StatusWithBlock& swb : statuses) {
       const Value* old_incoming_kind = cached_phi->getIncomingValueForBlock(swb.block);
-      assert(old_incoming_kind && "expected the same incoming blocks as last time");
+      assert(old_incoming_kind && "should have already checked that all these blocks are valid");
       if (swb.status.kind == PointerKind::DYNAMIC) {
         if (swb.status.dynamic_kind == old_incoming_kind) {
           // nothing to update
