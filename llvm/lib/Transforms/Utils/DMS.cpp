@@ -831,8 +831,11 @@ private:
   /// have reached fixpoint).
   void instrument() {
     DynamicResults results(*F.getParent());
+    #ifndef NDEBUG
+    // expensive check, do only in debug builds
     IterationResult res = doIteration(NULL, false);
     assert(!res.changed && "we should have reached fixpoint before calling instrument()");
+    #endif
     doIteration(&results, false);
     results.addPrint(settings.dynamic_print_type);
   }
@@ -841,8 +844,11 @@ private:
   /// This must only be called after the analysis is complete (pointer statuses
   /// have reached fixpoint).
   void addSpatialSafetySWChecks() {
+    #ifndef NDEBUG
+    // expensive check, do only in debug builds
     IterationResult res = doIteration(NULL, false);
     assert(!res.changed && "we should have reached fixpoint before calling addSpatialSafetySWChecks()");
+    #endif
     BoundsInfos::module_initialization(*F.getParent(), added_insts, pointer_aliases);
     doIteration(NULL, true);
     // `doIteration` with add_spatial_sw_checks=true will sometimes split basic
