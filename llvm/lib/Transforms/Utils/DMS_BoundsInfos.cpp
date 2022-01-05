@@ -273,8 +273,19 @@ BoundsInfo* BoundsInfos::get_binfo_noalias(const Value* ptr) {
           return ret;
         }
         case Instruction::IntToPtr: {
-          // ideally, we have alias information, and some alias will have bounds
-          // info
+          if (const ConstantInt* cint = dyn_cast<ConstantInt>(expr->getOperand(0))) {
+            // if it's IntToPtr of zero, or any other number < 4K (corresponding
+            // to the first page of memory, which is unmapped), we can treat it
+            // as infinite bounds, just like the null pointer
+            if (cint->getValue().ult(4*1024)) {
+              return &infinite_binfo;
+            } else {
+              // IntToPtr of any other constant number, UNKNOWN
+              return &unknown_binfo;
+            }
+          }
+          // for other IntToPtrs, ideally, we have alias information, and some
+          // alias will have bounds info
           return &notdefinedyet_binfo;
         }
         default: {
