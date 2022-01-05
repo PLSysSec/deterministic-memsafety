@@ -391,7 +391,12 @@ public:
       return !(*this == other);
     }
 
+    /// A and B need not have any particular lifetime here
     static Dynamic merge(Dynamic& A, Dynamic& B, DMSIRBuilder& Builder);
+
+    /// Create a Dynamic from the given Static and the pointer which the bounds
+    /// apply to
+    static Dynamic from_static(Static s, Value* cur_ptr, DMSIRBuilder& Builder);
   }; // end class Dynamic
 
   /// Actual data held in the `BoundsInfo`: one of the above forms

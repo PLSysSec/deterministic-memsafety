@@ -95,6 +95,7 @@ Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) cons
   }
 }
 
+/// A and B need not have any particular lifetime here
 BoundsInfo::Dynamic BoundsInfo::Dynamic::merge(
   BoundsInfo::Dynamic& A,
   BoundsInfo::Dynamic& B,
@@ -139,6 +140,18 @@ BoundsInfo::Dynamic BoundsInfo::Dynamic::merge(
     max = PointerWithOffset(merged_max);
   }
   return Dynamic(base, max);
+}
+
+/// Create a Dynamic from the given Static and the pointer which the bounds
+/// apply to
+BoundsInfo::Dynamic BoundsInfo::Dynamic::from_static(
+  Static s,
+  Value* cur_ptr,
+  DMSIRBuilder& Builder
+) {
+  Value* base = s.base_as_llvm_value(cur_ptr, Builder);
+  Value* max = s.max_as_llvm_value(cur_ptr, Builder);
+  return BoundsInfo::Dynamic(base, max);
 }
 
 /// Insert dynamic instructions to store this bounds info.

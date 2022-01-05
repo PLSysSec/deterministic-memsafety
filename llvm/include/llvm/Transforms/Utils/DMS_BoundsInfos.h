@@ -151,18 +151,6 @@ private:
   /// to the lifetime of this BoundsInfos.
   BoundsInfo* bounds_info_for_gep(GetElementPtrInst& gep);
 
-  /// Mark the given pointer as having the merger of the two given bounds
-  /// information.
-  ///
-  /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
-  /// that is necessary.
-  void mark_as_merged(
-    Value* ptr,
-    BoundsInfo::Static& static_info,
-    BoundsInfo::Dynamic& dyn_info,
-    DMSIRBuilder& Builder
-  );
-
   /// Value type for the below map
   class BoundsStoringCall final {
   public:

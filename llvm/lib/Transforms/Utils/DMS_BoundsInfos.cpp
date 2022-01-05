@@ -315,64 +315,37 @@ void BoundsInfos::mark_as_merged(
 
   if (A == B) return mark_as(ptr, &A); // this also avoids forcing, if both A and B are still dynamic-lazy but equivalent
 
-  if (A.is_static() && B.is_static()) {
-    const BoundsInfo::Static& a_info = std::get<BoundsInfo::Static>(A.data);
-    const BoundsInfo::Static& b_info = std::get<BoundsInfo::Static>(B.data);
-    return mark_as(ptr, BoundsInfo::static_bounds(
-      a_info.low_offset.sgt(b_info.low_offset) ? a_info.low_offset : b_info.low_offset,
-      a_info.high_offset.slt(b_info.high_offset) ? a_info.high_offset : b_info.high_offset
-    ));
+  // four cases remain: static-static, static-dynamic, dynamic-static, dynamic-dynamic
+  if (BoundsInfo::Static* A_sinfo = std::get_if<BoundsInfo::Static>(&A.data)) {
+    BoundsInfo::Dynamic A_dinfo = BoundsInfo::Dynamic::from_static(*A_sinfo, ptr, Builder);
+    if (BoundsInfo::Static* B_sinfo = std::get_if<BoundsInfo::Static>(&B.data)) {
+      BoundsInfo::Dynamic B_dinfo = BoundsInfo::Dynamic::from_static(*B_sinfo, ptr, Builder);
+      mark_as(ptr, BoundsInfo(std::move(
+        BoundsInfo::Dynamic::merge(A_dinfo, B_dinfo, Builder)
+      )));
+    } else if (BoundsInfo::Dynamic* B_dinfo = std::get_if<BoundsInfo::Dynamic>(&B.data)) {
+      mark_as(ptr, BoundsInfo(std::move(
+        BoundsInfo::Dynamic::merge(A_dinfo, *B_dinfo, Builder)
+      )));
+    } else {
+      llvm_unreachable("Missing BoundsInfo case");
+    }
+  } else if (BoundsInfo::Dynamic* A_dinfo = std::get_if<BoundsInfo::Dynamic>(&A.data)) {
+    if (BoundsInfo::Static* B_sinfo = std::get_if<BoundsInfo::Static>(&B.data)) {
+      BoundsInfo::Dynamic B_dinfo = BoundsInfo::Dynamic::from_static(*B_sinfo, ptr, Builder);
+      mark_as(ptr, BoundsInfo(std::move(
+        BoundsInfo::Dynamic::merge(*A_dinfo, B_dinfo, Builder)
+      )));
+    } else if (BoundsInfo::Dynamic* B_dinfo = std::get_if<BoundsInfo::Dynamic>(&B.data)) {
+      mark_as(ptr, BoundsInfo(std::move(
+        BoundsInfo::Dynamic::merge(*A_dinfo, *B_dinfo, Builder)
+      )));
+    } else {
+      llvm_unreachable("Missing BoundsInfo case");
+    }
+  } else {
+    llvm_unreachable("Missing BoundsInfo case");
   }
-
-  if (A.is_dynamic() && B.is_dynamic()) {
-    return mark_as(ptr, BoundsInfo(std::move(BoundsInfo::Dynamic::merge(
-      std::get<BoundsInfo::Dynamic>(A.data),
-      std::get<BoundsInfo::Dynamic>(B.data),
-      Builder
-    ))));
-  }
-
-  if (A.is_static() && B.is_dynamic()) {
-    return mark_as_merged(
-      ptr,
-      std::get<BoundsInfo::Static>(A.data),
-      std::get<BoundsInfo::Dynamic>(B.data),
-      Builder
-    );
-  }
-  if (A.is_dynamic() && B.is_static()) {
-    return mark_as_merged(
-      ptr,
-      std::get<BoundsInfo::Static>(B.data),
-      std::get<BoundsInfo::Dynamic>(A.data),
-      Builder
-    );
-  }
-
-  llvm_unreachable("Missing case in BoundsInfos::mark_as_merged");
-}
-
-/// Mark the given pointer as having the merger of the two given bounds
-/// information.
-///
-/// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
-/// that is necessary.
-void BoundsInfos::mark_as_merged(
-  Value* ptr,
-  BoundsInfo::Static& static_info,
-  BoundsInfo::Dynamic& dyn_info,
-  DMSIRBuilder& Builder
-) {
-  // convert the Static into a Dynamic in order to do a dynamic merge
-  Value* static_base = static_info.base_as_llvm_value(ptr, Builder);
-  Value* static_max = static_info.max_as_llvm_value(ptr, Builder);
-  BoundsInfo::Dynamic converted(static_base, static_max);
-
-  return mark_as(ptr, BoundsInfo(std::move(BoundsInfo::Dynamic::merge(
-    converted,
-    dyn_info,
-    Builder
-  ))));
 }
 
 /// Propagate bounds information for a Store instruction.
