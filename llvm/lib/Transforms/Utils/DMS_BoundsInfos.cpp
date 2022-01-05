@@ -50,7 +50,7 @@ BoundsInfos::BoundsInfos(
       // how many argv elements there are statically
       BasicBlock& Entry = F.getEntryBlock();
       BasicBlock* forloopbody = Entry.splitBasicBlock(Entry.getFirstInsertionPt());
-      DMSIRBuilder Builder(forloopbody, forloopbody->getFirstInsertionPt(), &added_insts);
+      DMSIRBuilder Builder(forloopbody, DMSIRBuilder::PHIBEGINNING, &added_insts);
       PHINode* loopindex = Builder.CreatePHI(Builder.getInt32Ty(), 2, "__dms_argc_loopindex");
       loopindex->addIncoming(Builder.getInt32(0), &Entry);
       Value* stringptr = Builder.CreateGEP(Builder.getInt8PtrTy(), argv, loopindex);
@@ -678,7 +678,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
       // prev_iteration boundsinfo was not dynamic. we'll have to insert fresh phis
     }
     if (!base_phi) {
-      DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
+      DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::PHIBEGINNING, &added_insts);
       base_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues(), Twine(phi.getNameOrAsOperand(), "_base"));
       added_insts.insert(base_phi);
       for (const Incoming& incoming : incoming_binfos) {
@@ -708,7 +708,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
       assert(base_phi->isComplete());
     }
     if (!max_phi) {
-      DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
+      DMSIRBuilder PhiBuilder(phi.getParent(), DMSIRBuilder::PHIBEGINNING, &added_insts);
       max_phi = PhiBuilder.CreatePHI(PhiBuilder.getInt8PtrTy(), phi.getNumIncomingValues(), Twine(phi.getNameOrAsOperand(), "_max"));
       added_insts.insert(max_phi);
       for (const Incoming& incoming : incoming_binfos) {

@@ -21,8 +21,14 @@ public:
   };
   enum BeginningOrEnd {
     /// Insert new instructions at the _beginning_ of the given block (after the
-    /// PHIs, if any)
+    /// PHIs and/or LandingPad, if any). This is a suitable place to insert new
+    /// non-PHI instructions.
     BEGINNING,
+    /// Insert new instructions at the _beginning_ of the given block (after the
+    /// PHIs if any, but before the LandingPad if any). This is a suitable place
+    /// to insert new PHI instructions. If there is no LandingPad, this will be
+    /// the same as BEGINNING and you can use those interchangeably.
+    PHIBEGINNING,
     /// Insert new instructions at the _end_ of the given block (before its
     /// terminator)
     END,
@@ -32,7 +38,8 @@ public:
     : IRBuilder(bb->getContext(), ConstantFolder(), Inserter([this](const Instruction* inst) mutable { this->insert(inst); })),
       inserted_insts(inserted_insts)
     {
-      if (pos == BEGINNING) SetInsertPoint(bb, bb->getFirstInsertionPt());
+      if (pos == PHIBEGINNING) SetInsertPoint(bb->getFirstNonPHI());
+      else if (pos == BEGINNING) SetInsertPoint(bb, bb->getFirstInsertionPt());
       else if (pos == END) SetInsertPoint(bb->getTerminator());
       else llvm_unreachable("Unhandled case");
     }

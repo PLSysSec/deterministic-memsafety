@@ -288,7 +288,7 @@ PointerStatus PointerStatus::merge_with_phi(
     return PointerStatus::dynamic(cached_phi);
   } else {
     // create a fresh phi
-    DMSIRBuilder Builder(phi_block, DMSIRBuilder::BEGINNING, NULL);
+    DMSIRBuilder Builder(phi_block, DMSIRBuilder::PHIBEGINNING, NULL);
     std::string ptr_name = isa<ConstantExpr>(ptr) ? "constexpr" : ptr->getNameOrAsOperand();
     PHINode* phi = Builder.CreatePHI(Builder.getInt64Ty(), 2, Twine(ptr_name, "_dynamic_kind"));
     assert(statuses.size() == pred_size(phi_block));
