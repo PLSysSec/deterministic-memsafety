@@ -1023,7 +1023,7 @@ private:
     // Count an operation occurring in the given `category` with the given `status`.
     // `ip` is the insert point: if dynamic instructions must be inserted (to do
     // dynamic counting), they will be inserted before the Instruction `ip`
-    #define COUNT_OP_AS_STATUS(category, status, ip, doing_what) \
+    #define COUNT_OP_AS_STATUS(category, status, ip, errcontext) \
       PointerStatus the_status = (status); /* in case (status) is an expensive-to-compute expression, compute it once here */ \
       switch (the_status.kind) { \
         case PointerKind::CLEAN: COUNT_OP_KIND(category, clean, ip) break; \
@@ -1034,7 +1034,10 @@ private:
         case PointerKind::DIRTY: COUNT_OP_KIND(category, dirty, ip) break; \
         case PointerKind::UNKNOWN: COUNT_OP_KIND(category, unknown, ip) break; \
         case PointerKind::DYNAMIC: COUNT_OP_DYN(category, the_status, ip) break; \
-        case PointerKind::NOTDEFINEDYET: llvm_unreachable(doing_what " with no status"); break; \
+        case PointerKind::NOTDEFINEDYET: { \
+          errs() << errcontext; \
+          llvm_unreachable("Expected a status, got NOTDEFINEDYET"); \
+        } \
         default: llvm_unreachable("PointerKind case not handled"); \
       }
 
@@ -1058,7 +1061,7 @@ private:
           StoreInst& store = cast<StoreInst>(inst);
           // first count the address
           Value* addr = store.getPointerOperand();
-          COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "Storing to pointer");
+          COUNT_OP_AS_STATUS(store_addrs, ptr_statuses.getStatus(addr), &inst, "While storing to pointer " << addr->getNameOrAsOperand() << ":\n");
           // insert a bounds check before the store, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&store)) {
             DEBUG_WITH_TYPE("DMS-inst-processing", dbgs() << "DMS:   inserting a bounds check if necessary\n");
@@ -1075,7 +1078,7 @@ private:
           if (storedVal->getType()->isPointerTy()) {
             // we count the stored pointer for stats purposes
             PointerStatus storedVal_status = ptr_statuses.getStatus(storedVal);
-            COUNT_OP_AS_STATUS(store_vals, storedVal_status, &inst, "Storing a pointer");
+            COUNT_OP_AS_STATUS(store_vals, storedVal_status, &inst, "While storing the pointer value " << storedVal->getNameOrAsOperand() << ":\n");
             OrigPointerAndStatus orig_ptr_and_status = original_stored_ptrs.lookup(&store);
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(store, orig_ptr_and_status.orig_ptr);
@@ -1121,7 +1124,7 @@ private:
           LoadInst& load = cast<LoadInst>(inst);
           Value* ptr = load.getPointerOperand();
           // first count this for static stats
-          COUNT_OP_AS_STATUS(load_addrs, ptr_statuses.getStatus(ptr), &inst, "Loading from pointer");
+          COUNT_OP_AS_STATUS(load_addrs, ptr_statuses.getStatus(ptr), &inst, "While loading from pointer " << ptr->getNameOrAsOperand() << ":\n");
           // insert a bounds check before the load, if necessary
           if (add_spatial_sw_checks && !checked_insts.count(&load)) {
             DEBUG_WITH_TYPE("DMS-inst-processing", dbgs() << "DMS:   inserting a bounds check if necessary\n");
@@ -1218,7 +1221,7 @@ private:
           mark_as(ptr_statuses, &gep, grc.classification);
           // if we added a nonzero constant to a pointer, count that for stats purposes
           if (grc.constant_offset.has_value() && !grc.trustworthy_struct_offset && *grc.constant_offset != 0) {
-            COUNT_OP_AS_STATUS(pointer_arith_const, input_status, &gep, "GEP on a pointer");
+            COUNT_OP_AS_STATUS(pointer_arith_const, input_status, &gep, "While performing GEP on input pointer " << input_ptr->getNameOrAsOperand() << ":\n");
           }
           // update aliasing information
           if (grc.constant_offset.has_value() && !grc.trustworthy_struct_offset && *grc.constant_offset == 0) {
@@ -1320,7 +1323,7 @@ private:
             for (const Use& arg : call.args()) {
               const Value* value = arg.get();
               if (value->getType()->isPointerTy()) {
-                COUNT_OP_AS_STATUS(passed_ptrs, ptr_statuses.getStatus(value), &inst, "Call argument is a pointer");
+                COUNT_OP_AS_STATUS(passed_ptrs, ptr_statuses.getStatus(value), &inst, "While processing call argument " << value->getNameOrAsOperand() << " (which is a pointer):\n");
               }
             }
           }
@@ -1379,7 +1382,7 @@ private:
           const ReturnInst& ret = cast<ReturnInst>(inst);
           const Value* retval = ret.getReturnValue();
           if (retval && retval->getType()->isPointerTy()) {
-            COUNT_OP_AS_STATUS(returned_ptrs, ptr_statuses.getStatus(retval), &inst, "Returning a pointer");
+            COUNT_OP_AS_STATUS(returned_ptrs, ptr_statuses.getStatus(retval), &inst, "While returning pointer " << retval->getNameOrAsOperand() << ":\n");
           }
           break;
         }
