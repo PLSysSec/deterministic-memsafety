@@ -127,12 +127,17 @@ void BoundsInfos::module_initialization(
   BoundsInfos binfos(*new_func, mod.getDataLayout(), added_insts, pointer_aliases);
   for (GlobalObject& gobj : mod.global_objects()) {
     if (GlobalVariable* gv = dyn_cast<GlobalVariable>(&gobj)) {
-      // store the global's size in the special table in case some other
-      // translation unit needs it via __dms_get_globalarraysize(); see notes
-      // there
+      // don't do anything for the special variables llvm.global_ctors and
+      // llvm.global_dtors
+      if (gv->hasName() && (gv->getName() == "llvm.global_ctors" || gv->getName() == "llvm.global_dtors")) {
+        continue;
+      }
       PointerType* gv_ptr_type = cast<PointerType>(gv->getType());
       Type* gv_type = gv_ptr_type->getElementType();
       if (gv_type->isSized()) {
+        // store the global's size in the special table in case some other
+        // translation unit needs it via __dms_get_globalarraysize(); see notes
+        // there
         auto global_size = mod.getDataLayout().getTypeStoreSize(gv_type);
         if (global_size > 0) {
           call_dms_store_globalarraysize(
