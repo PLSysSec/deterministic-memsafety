@@ -244,7 +244,9 @@ public:
             // constant-GEP expression
             Instruction* inst = expr->getAsInstruction();
             GetElementPtrInst* gepinst = cast<GetElementPtrInst>(inst);
-            return classifyGEPResult_cached(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL, added_insts).classification;
+            PointerStatus ret = classifyGEPResult_cached(*gepinst, getStatus(gepinst->getPointerOperand()), DL, trust_llvm_struct_types, NULL, added_insts).classification;
+            inst->deleteValue();
+            return ret;
           }
           case Instruction::IntToPtr: {
             // if it's IntToPtr of zero, or any other number < 4K (corresponding

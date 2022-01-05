@@ -32,6 +32,7 @@ private:
   /// Many keys may map to the same BoundsInfo*.
   ///
   /// Neither keys nor values in this map should ever be NULL.
+  /// (however, the Value* representing nullptr is a valid key.)
   DenseMap<const Value*, BoundsInfo*> map;
 
 public:
