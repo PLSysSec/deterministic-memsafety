@@ -132,24 +132,26 @@ void BoundsInfos::module_initialization(
       // there
       PointerType* gv_ptr_type = cast<PointerType>(gv->getType());
       Type* gv_type = gv_ptr_type->getElementType();
-      auto global_size = mod.getDataLayout().getTypeStoreSize(gv_type);
-      if (global_size > 0) {
-        call_dms_store_globalarraysize(
-          gv,
-          Builder.CreateGEP(
-            Builder.getInt8Ty(),
-            Builder.castToCharStar(gv),
-            {Builder.getInt64(global_size - 1)}
-          ),
-          Builder
-        );
-      }
+      if (gv_type->isSized()) {
+        auto global_size = mod.getDataLayout().getTypeStoreSize(gv_type);
+        if (global_size > 0) {
+          call_dms_store_globalarraysize(
+            gv,
+            Builder.CreateGEP(
+              Builder.getInt8Ty(),
+              Builder.castToCharStar(gv),
+              {Builder.getInt64(global_size - 1)}
+            ),
+            Builder
+          );
+        }
 
-      // if the initializer involves any pointer expressions, store bounds for
-      // those in the normal bounds table. see comments above
-      if (gv->hasInitializer()) {
-        Constant* initializer = gv->getInitializer();
-        binfos.store_info_for_all_ptr_exprs(gv, initializer, Builder);
+        // if the initializer involves any pointer expressions, store bounds for
+        // those in the normal bounds table. see comments above
+        if (gv->hasInitializer()) {
+          Constant* initializer = gv->getInitializer();
+          binfos.store_info_for_all_ptr_exprs(gv, initializer, Builder);
+        }
       }
     }
   }
@@ -554,10 +556,14 @@ void BoundsInfos::propagate_bounds(IntToPtrInst& inttoptr, PointerKind inttoptr_
   // entire size of the data its type claims it points to
   if (inttoptr_kind == PointerKind::CLEAN) {
     PointerType* resultType = cast<PointerType>(inttoptr.getType());
-    auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
-    mark_as(&inttoptr, BoundsInfo::static_bounds(
-      zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
-    ));
+    if (resultType->getElementType()->isSized()) {
+      auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
+      mark_as(&inttoptr, BoundsInfo::static_bounds(
+        zero, APInt(/* bits = */ 64, /* val = */ allocationSize - 1)
+      ));
+    } else {
+      mark_as(&inttoptr, &unknown_binfo);
+    }
   } else {
     mark_as(&inttoptr, &unknown_binfo);
   }
