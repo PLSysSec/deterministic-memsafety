@@ -20,17 +20,21 @@ static Value* get_max_ptr_value(DMSIRBuilder& Builder) {
 std::string BoundsInfo::pretty() const {
   if (!valid()) return "<invalid>";
   if (const Static* sinfo = std::get_if<Static>(&data)) {
-    std::string out;
-    raw_string_ostream ostream(out);
-    ostream << pretty_kind() << " [";
-    sinfo->low_offset.print(ostream, /* isSigned = */ true);
-    ostream << ",";
-    sinfo->high_offset.print(ostream, /* isSigned = */ true);
-    ostream << "]";
-    return ostream.str();
+    return sinfo->pretty();
   } else {
     return pretty_kind();
   }
+}
+
+std::string BoundsInfo::Static::pretty() const {
+  std::string out;
+  raw_string_ostream ostream(out);
+  ostream << "Static [";
+  low_offset.print(ostream, /* isSigned = */ true);
+  ostream << ",";
+  high_offset.print(ostream, /* isSigned = */ true);
+  ostream << "]";
+  return ostream.str();
 }
 
 /// `cur_ptr`: the pointer value for which these bounds apply.

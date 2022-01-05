@@ -1588,7 +1588,10 @@ private:
     DMSIRBuilder& Builder
   ) {
     if (binfo.fails(access_bytes)) {
+      DEBUG_WITH_TYPE("DMS-bounds-info", dbgs() << "DMS:    bounds check for " << ptr->getNameOrAsOperand() << " always fails\n");
       call_dms_boundscheckfail(ptr, Builder);
+    } else {
+      DEBUG_WITH_TYPE("DMS-bounds-info", dbgs() << "DMS:    bounds check for " << ptr->getNameOrAsOperand() << " always passes\n");
     }
     assert(wellFormed(*Builder.GetInsertBlock()));
   }
@@ -1612,6 +1615,7 @@ private:
     DMSIRBuilder& Builder,
     SmallVector<BasicBlock*, 4>& new_blocks
   ) {
+    DEBUG_WITH_TYPE("DMS-bounds-info", dbgs() << "DMS:    inserting dynamic bounds check for " << ptr->getNameOrAsOperand() << "\n");
     std::string ptr_name = isa<ConstantExpr>(ptr) ? "constexpr" : ptr->getNameOrAsOperand();
     Value* access_begin = Builder.castToCharStar(ptr);
     Value* access_end = Builder.CreateGEP(Builder.getInt8Ty(), access_begin, {Builder.getInt64(access_bytes - 1)}, Twine(ptr_name, "_access_end"));

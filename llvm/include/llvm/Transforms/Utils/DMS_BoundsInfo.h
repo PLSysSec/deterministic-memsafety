@@ -123,6 +123,8 @@ public:
         return false;
       }
     }
+
+    std::string pretty() const;
   }; // end class Static
 
   /// Represents a pointer value as an LLVM pointer, with an optional
