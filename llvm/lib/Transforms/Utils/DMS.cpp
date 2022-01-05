@@ -268,14 +268,14 @@ public:
             return PointerStatus::notdefinedyet();
           }
           default: {
-            dbgs() << "unhandled constant expression:\n";
+            errs() << "unhandled constant expression:\n";
             expr->dump();
             llvm_unreachable("getting status of unhandled constant expression");
           }
         }
       } else {
         // a constant, but not null, a global, or a constant expression.
-        dbgs() << "constant pointer of unhandled kind:\n";
+        errs() << "constant pointer of unhandled kind:\n";
         constant->dump();
         llvm_unreachable("getting status of constant pointer of unhandled kind");
       }
