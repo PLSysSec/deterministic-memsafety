@@ -30,7 +30,6 @@
 using namespace mlir;
 
 using llvm::yaml::Input;
-using llvm::yaml::IO;
 using llvm::yaml::MappingTraits;
 using llvm::yaml::ScalarEnumerationTraits;
 using llvm::yaml::ScalarTraits;
@@ -95,6 +94,7 @@ struct ScalarSymbolicCast {
   // NOTE: This must be of arity 1, but to break the self-referential cycle,
   // we use a heap allocated vector.
   std::vector<ScalarExpression> operands;
+  bool isUnsignedCast;
 };
 
 struct ScalarExpression {
@@ -141,8 +141,7 @@ namespace yaml {
 /// Top-level type containing op metadata and one of a concrete op type.
 /// Currently, the only defined op type is `structured_op` (maps to
 /// `LinalgStructuredOpConfig`).
-template <>
-struct MappingTraits<LinalgOpConfig> {
+template <> struct MappingTraits<LinalgOpConfig> {
   static void mapping(IO &io, LinalgOpConfig &info) {
     io.mapOptional("metadata", info.metadata);
     io.mapOptional("structured_op", info.structuredOp);
@@ -155,8 +154,7 @@ struct MappingTraits<LinalgOpConfig> {
 ///   - List of indexing maps (see `LinalgIndexingMaps`).
 ///   - Iterator types (see `LinalgIteratorTypeDef`).
 ///   - List of scalar level assignment (see `ScalarAssign`).
-template <>
-struct MappingTraits<LinalgStructuredOpConfig> {
+template <> struct MappingTraits<LinalgStructuredOpConfig> {
   static void mapping(IO &io, LinalgStructuredOpConfig &info) {
     io.mapRequired("args", info.args);
     io.mapRequired("indexing_maps", info.indexingMaps);
@@ -179,8 +177,7 @@ struct MappingTraits<LinalgStructuredOpConfig> {
 ///     attribute symbols. During op creation these symbols are replaced by the
 ///     corresponding `name` attribute values. Only attribute arguments have
 ///     an `attribute_map`.
-template <>
-struct MappingTraits<LinalgOperandDef> {
+template <> struct MappingTraits<LinalgOperandDef> {
   static void mapping(IO &io, LinalgOperandDef &info) {
     io.mapRequired("name", info.name);
     io.mapRequired("usage", info.usage);
@@ -191,8 +188,7 @@ struct MappingTraits<LinalgOperandDef> {
 };
 
 /// Usage enum for a named argument.
-template <>
-struct ScalarEnumerationTraits<LinalgOperandDefUsage> {
+template <> struct ScalarEnumerationTraits<LinalgOperandDefUsage> {
   static void enumeration(IO &io, LinalgOperandDefUsage &value) {
     io.enumCase(value, "InputOperand", LinalgOperandDefUsage::input);
     io.enumCase(value, "OutputOperand", LinalgOperandDefUsage::output);
@@ -201,8 +197,7 @@ struct ScalarEnumerationTraits<LinalgOperandDefUsage> {
 };
 
 /// Iterator type enum.
-template <>
-struct ScalarEnumerationTraits<LinalgIteratorTypeDef> {
+template <> struct ScalarEnumerationTraits<LinalgIteratorTypeDef> {
   static void enumeration(IO &io, LinalgIteratorTypeDef &value) {
     io.enumCase(value, "parallel", LinalgIteratorTypeDef::parallel);
     io.enumCase(value, "reduction", LinalgIteratorTypeDef::reduction);
@@ -210,8 +205,7 @@ struct ScalarEnumerationTraits<LinalgIteratorTypeDef> {
 };
 
 /// Metadata about the op (name, C++ name, and documentation).
-template <>
-struct MappingTraits<LinalgOpMetadata> {
+template <> struct MappingTraits<LinalgOpMetadata> {
   static void mapping(IO &io, LinalgOpMetadata &info) {
     io.mapRequired("name", info.name);
     io.mapRequired("cpp_class_name", info.cppClassName);
@@ -225,8 +219,7 @@ struct MappingTraits<LinalgOpMetadata> {
 ///     some symbols that bind to attributes of the op. Each indexing map must
 ///     be normalized over the same list of dimensions, and its symbols must
 ///     match the symbols for argument shapes.
-template <>
-struct MappingTraits<LinalgIndexingMapsConfig> {
+template <> struct MappingTraits<LinalgIndexingMapsConfig> {
   static void mapping(IO &io, LinalgIndexingMapsConfig &info) {
     io.mapOptional("static_indexing_maps", info.staticIndexingMaps);
   }
@@ -236,8 +229,7 @@ struct MappingTraits<LinalgIndexingMapsConfig> {
 ///   - The `arg` name must match a named output.
 ///   - The `value` is a scalar expression for computing the value to
 ///     assign (see `ScalarExpression`).
-template <>
-struct MappingTraits<ScalarAssign> {
+template <> struct MappingTraits<ScalarAssign> {
   static void mapping(IO &io, ScalarAssign &info) {
     io.mapRequired("arg", info.arg);
     io.mapRequired("value", info.value);
@@ -249,8 +241,7 @@ struct MappingTraits<ScalarAssign> {
 ///   - `scalar_apply`: Result of evaluating a named function (see
 ///      `ScalarApply`).
 ///   - `symbolic_cast`: Cast to a symbolic TypeVar bound elsewhere.
-template <>
-struct MappingTraits<ScalarExpression> {
+template <> struct MappingTraits<ScalarExpression> {
   static void mapping(IO &io, ScalarExpression &info) {
     io.mapOptional("scalar_arg", info.arg);
     io.mapOptional("scalar_const", info.constant);
@@ -265,26 +256,24 @@ struct MappingTraits<ScalarExpression> {
 /// functions include:
 ///   - `add(lhs, rhs)`
 ///   - `mul(lhs, rhs)`
-template <>
-struct MappingTraits<ScalarApply> {
+template <> struct MappingTraits<ScalarApply> {
   static void mapping(IO &io, ScalarApply &info) {
     io.mapRequired("fn_name", info.fnName);
     io.mapRequired("operands", info.operands);
   }
 };
 
-template <>
-struct MappingTraits<ScalarSymbolicCast> {
+template <> struct MappingTraits<ScalarSymbolicCast> {
   static void mapping(IO &io, ScalarSymbolicCast &info) {
     io.mapRequired("type_var", info.typeVar);
     io.mapRequired("operands", info.operands);
+    io.mapRequired("is_unsigned_cast", info.isUnsignedCast);
   }
 };
 
 /// Helper mapping which accesses an AffineMapAttr as a serialized string of
 /// the same.
-template <>
-struct ScalarTraits<SerializedAffineMap> {
+template <> struct ScalarTraits<SerializedAffineMap> {
   static void output(const SerializedAffineMap &value, void *rawYamlContext,
                      raw_ostream &out) {
     assert(value.affineMapAttr);
@@ -371,7 +360,7 @@ static std::string interleaveToString(Container &container,
 
 static Optional<int>
 findTensorDefArgIndex(StringRef name, SmallVectorImpl<LinalgOperandDef> &args) {
-  for (auto it : llvm::enumerate(args)) {
+  for (const auto &it : llvm::enumerate(args)) {
     if (it.value().name == name)
       return it.index();
   }
@@ -392,7 +381,7 @@ findTypeValue(StringRef typeVar, SmallVectorImpl<LinalgOperandDef> &args) {
     return std::string("helper.getFloat64Type()");
 
   // Search all argument types.
-  for (auto it : llvm::enumerate(args)) {
+  for (const auto &it : llvm::enumerate(args)) {
     if (it.value().typeVar == typeVar)
       return llvm::formatv("block.getArgument({0}).getType()", it.index())
           .str();
@@ -441,10 +430,7 @@ static const char structuredOpOdsHeaderFormat[] = R"FMT(
 // Op definition for {0}
 //===----------------------------------------------------------------------===//
 
-def {0} : LinalgStructuredBase_Op<"{1}", !listconcat([
-  AttrSizedOperandSegments,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-  SingleBlockImplicitTerminator<"YieldOp">],
+def {0} : LinalgStructuredBase_Op<"{1}", !listconcat([AttrSizedOperandSegments],
   /*extraInterfaces=*/[{2}])> {
     {3}
     let arguments = (ins
@@ -727,7 +713,7 @@ static SmallVector<AffineExpr> getSymbolBindings({0} self) {
       // {1}: Symbol position
       // {2}: Attribute index
       static const char structuredOpAccessAttrFormat[] = R"FMT(
-int64_t cst{1} = self.{0}().getValue<int64_t>({ {2} });
+int64_t cst{1} = self.{0}().getValues<int64_t>()[{2}];
 exprs.push_back(getAffineConstantExpr(cst{1}, context));
 )FMT";
       // Update all symbol bindings mapped to an attribute.
@@ -986,9 +972,10 @@ void {0}::regionBuilder(ImplicitLocOpBuilder &b, Block &block) {{
             return None;
           }
           std::string cppIdent = llvm::formatv("value{0}", ++localCounter);
-          stmts.push_back(llvm::formatv("Value {0} = helper.cast({1}, {2});",
-                                        cppIdent, typeCppValue.getValue(),
-                                        *operandCppValue));
+          stmts.push_back(
+              llvm::formatv("Value {0} = helper.cast({1}, {2}, {3});", cppIdent,
+                            typeCppValue.getValue(), *operandCppValue,
+                            expression.symbolicCast->isUnsignedCast));
           return cppIdent;
         }
         emitError(genContext.getLoc()) << "unknown ScalarExpression type";
@@ -1021,9 +1008,8 @@ static LogicalResult generateOp(LinalgOpConfig &opConfig,
     return success(
         succeeded(generateNamedGenericOpOds(opConfig, genContext)) &&
         succeeded(generateNamedGenericOpDefns(opConfig, genContext)));
-  } else {
-    return emitError(genContext.getLoc()) << "unsupported operation type";
   }
+  return emitError(genContext.getLoc()) << "unsupported operation type";
 }
 
 //===----------------------------------------------------------------------===//
@@ -1104,7 +1090,7 @@ int main(int argc, char **argv) {
     }
 
     genContext.setLoc(NameLoc::get(
-        Identifier::get(opConfig.metadata->cppClassName, &mlirContext)));
+        StringAttr::get(&mlirContext, opConfig.metadata->cppClassName)));
     if (failed(generateOp(opConfig, genContext))) {
       return 1;
     }

@@ -44,15 +44,16 @@ public:
   bool isGOTEdgeToFix(Edge &E) const { return E.getKind() == R_RISCV_GOT_HI20; }
 
   Symbol &createGOTEntry(Symbol &Target) {
-    Block &GOTBlock = G.createContentBlock(
-        getGOTSection(), getGOTEntryBlockContent(), 0, G.getPointerSize(), 0);
+    Block &GOTBlock =
+        G.createContentBlock(getGOTSection(), getGOTEntryBlockContent(),
+                             orc::ExecutorAddr(), G.getPointerSize(), 0);
     GOTBlock.addEdge(isRV64() ? R_RISCV_64 : R_RISCV_32, 0, Target, 0);
     return G.addAnonymousSymbol(GOTBlock, 0, G.getPointerSize(), false, false);
   }
 
   Symbol &createPLTStub(Symbol &Target) {
-    Block &StubContentBlock =
-        G.createContentBlock(getStubsSection(), getStubBlockContent(), 0, 4, 0);
+    Block &StubContentBlock = G.createContentBlock(
+        getStubsSection(), getStubBlockContent(), orc::ExecutorAddr(), 4, 0);
     auto &GOTEntrySymbol = getGOTEntry(Target);
     StubContentBlock.addEdge(R_RISCV_CALL, 0, GOTEntrySymbol, 0);
     return G.addAnonymousSymbol(StubContentBlock, 0, StubEntrySize, true,
@@ -80,16 +81,14 @@ public:
 private:
   Section &getGOTSection() const {
     if (!GOTSection)
-      GOTSection = &G.createSection("$__GOT", sys::Memory::MF_READ);
+      GOTSection = &G.createSection("$__GOT", MemProt::Read);
     return *GOTSection;
   }
 
   Section &getStubsSection() const {
-    if (!StubsSection) {
-      auto StubsProt = static_cast<sys::Memory::ProtectionFlags>(
-          sys::Memory::MF_READ | sys::Memory::MF_EXEC);
-      StubsSection = &G.createSection("$__STUBS", StubsProt);
-    }
+    if (!StubsSection)
+      StubsSection =
+          &G.createSection("$__STUBS", MemProt::Read | MemProt::Exec);
     return *StubsSection;
   }
 
@@ -136,13 +135,13 @@ static Expected<const Edge &> getRISCVPCRelHi20(const Edge &E) {
 
   const Symbol &Sym = E.getTarget();
   const Block &B = Sym.getBlock();
-  JITTargetAddress Offset = Sym.getOffset();
+  orc::ExecutorAddrDiff Offset = Sym.getOffset();
 
   struct Comp {
-    bool operator()(const Edge &Lhs, JITTargetAddress Offset) {
+    bool operator()(const Edge &Lhs, orc::ExecutorAddrDiff Offset) {
       return Lhs.getOffset() < Offset;
     }
-    bool operator()(JITTargetAddress Offset, const Edge &Rhs) {
+    bool operator()(orc::ExecutorAddrDiff Offset, const Edge &Rhs) {
       return Offset < Rhs.getOffset();
     }
   };
@@ -159,8 +158,8 @@ static Expected<const Edge &> getRISCVPCRelHi20(const Edge &E) {
       "No HI20 PCREL relocation type be found for LO12 PCREL relocation type");
 }
 
-static uint32_t extractBits(uint64_t Num, unsigned High, unsigned Low) {
-  return (Num & ((1ULL << (High + 1)) - 1)) >> Low;
+static uint32_t extractBits(uint32_t Num, unsigned Low, unsigned Size) {
+  return (Num & (((1ULL << (Size + 1)) - 1) << Low)) >> Low;
 }
 
 class ELFJITLinker_riscv : public JITLinker<ELFJITLinker_riscv> {
@@ -178,27 +177,27 @@ private:
 
     char *BlockWorkingMem = B.getAlreadyMutableContent().data();
     char *FixupPtr = BlockWorkingMem + E.getOffset();
-    JITTargetAddress FixupAddress = B.getAddress() + E.getOffset();
+    orc::ExecutorAddr FixupAddress = B.getAddress() + E.getOffset();
     switch (E.getKind()) {
     case R_RISCV_32: {
-      int64_t Value = E.getTarget().getAddress() + E.getAddend();
+      int64_t Value = (E.getTarget().getAddress() + E.getAddend()).getValue();
       *(little32_t *)FixupPtr = static_cast<uint32_t>(Value);
       break;
     }
     case R_RISCV_64: {
-      int64_t Value = E.getTarget().getAddress() + E.getAddend();
+      int64_t Value = (E.getTarget().getAddress() + E.getAddend()).getValue();
       *(little64_t *)FixupPtr = static_cast<uint64_t>(Value);
       break;
     }
     case R_RISCV_HI20: {
-      int64_t Value = E.getTarget().getAddress() + E.getAddend();
+      int64_t Value = (E.getTarget().getAddress() + E.getAddend()).getValue();
       int32_t Hi = (Value + 0x800) & 0xFFFFF000;
       uint32_t RawInstr = *(little32_t *)FixupPtr;
       *(little32_t *)FixupPtr = (RawInstr & 0xFFF) | static_cast<uint32_t>(Hi);
       break;
     }
     case R_RISCV_LO12_I: {
-      int64_t Value = E.getTarget().getAddress() + E.getAddend();
+      int64_t Value = (E.getTarget().getAddress() + E.getAddend()).getValue();
       int32_t Lo = Value & 0xFFF;
       uint32_t RawInstr = *(little32_t *)FixupPtr;
       *(little32_t *)FixupPtr =
@@ -240,8 +239,8 @@ private:
       int64_t Value = RelHI20->getTarget().getAddress() +
                       RelHI20->getAddend() - E.getTarget().getAddress();
       int64_t Lo = Value & 0xFFF;
-      uint32_t Imm31_25 = extractBits(Lo, 11, 5) << 25;
-      uint32_t Imm11_7 = extractBits(Lo, 4, 0) << 7;
+      uint32_t Imm31_25 = extractBits(Lo, 5, 7) << 25;
+      uint32_t Imm11_7 = extractBits(Lo, 0, 5) << 7;
       uint32_t RawInstr = *(little32_t *)FixupPtr;
 
       *(little32_t *)FixupPtr = (RawInstr & 0x1FFF07F) | Imm31_25 | Imm11_7;
@@ -286,93 +285,54 @@ private:
   }
 
   Error addRelocations() override {
+    LLVM_DEBUG(dbgs() << "Processing relocations:\n");
+
     using Base = ELFLinkGraphBuilder<ELFT>;
-    LLVM_DEBUG(dbgs() << "Adding relocations\n");
+    using Self = ELFLinkGraphBuilder_riscv<ELFT>;
+    for (const auto &RelSect : Base::Sections)
+      if (Error Err = Base::forEachRelocation(RelSect, this,
+                                              &Self::addSingleRelocation))
+        return Err;
 
-    // TODO a partern is forming of iterate some sections but only give me
-    // ones I am interested, I should abstract that concept some where
-    for (auto &SecRef : Base::Sections) {
-      if (SecRef.sh_type != ELF::SHT_RELA && SecRef.sh_type != ELF::SHT_REL)
-        continue;
-      auto RelSectName = Base::Obj.getSectionName(SecRef);
-      if (!RelSectName)
-        return RelSectName.takeError();
+    return Error::success();
+  }
 
-      LLVM_DEBUG({
-        dbgs() << "Adding relocations from section " << *RelSectName << "\n";
-      });
+  Error addSingleRelocation(const typename ELFT::Rela &Rel,
+                            const typename ELFT::Shdr &FixupSect,
+                            Section &GraphSection) {
+    using Base = ELFLinkGraphBuilder<ELFT>;
 
-      auto UpdateSection = Base::Obj.getSection(SecRef.sh_info);
-      if (!UpdateSection)
-        return UpdateSection.takeError();
+    uint32_t SymbolIndex = Rel.getSymbol(false);
+    auto ObjSymbol = Base::Obj.getRelocationSymbol(Rel, Base::SymTabSec);
+    if (!ObjSymbol)
+      return ObjSymbol.takeError();
 
-      auto UpdateSectionName = Base::Obj.getSectionName(**UpdateSection);
-      if (!UpdateSectionName)
-        return UpdateSectionName.takeError();
-      // Don't process relocations for debug sections.
-      if (Base::isDwarfSection(*UpdateSectionName)) {
-        LLVM_DEBUG({
-          dbgs() << "  Target is dwarf section " << *UpdateSectionName
-                 << ". Skipping.\n";
-        });
-        continue;
-      } else
-        LLVM_DEBUG({
-          dbgs() << "  For target section " << *UpdateSectionName << "\n";
-        });
+    Symbol *GraphSymbol = Base::getGraphSymbol(SymbolIndex);
+    if (!GraphSymbol)
+      return make_error<StringError>(
+          formatv("Could not find symbol at given index, did you add it to "
+                  "JITSymbolTable? index: {0}, shndx: {1} Size of table: {2}",
+                  SymbolIndex, (*ObjSymbol)->st_shndx,
+                  Base::GraphSymbols.size()),
+          inconvertibleErrorCode());
 
-      auto *JITSection = Base::G->findSectionByName(*UpdateSectionName);
-      if (!JITSection)
-        return make_error<llvm::StringError>(
-            "Refencing a section that wasn't added to graph" +
-                *UpdateSectionName,
-            llvm::inconvertibleErrorCode());
+    uint32_t Type = Rel.getType(false);
+    Expected<riscv::EdgeKind_riscv> Kind = getRelocationKind(Type);
+    if (!Kind)
+      return Kind.takeError();
 
-      auto Relocations = Base::Obj.relas(SecRef);
-      if (!Relocations)
-        return Relocations.takeError();
+    int64_t Addend = Rel.r_addend;
+    Block *BlockToFix = *(GraphSection.blocks().begin());
+    auto FixupAddress = orc::ExecutorAddr(FixupSect.sh_addr) + Rel.r_offset;
+    Edge::OffsetT Offset = FixupAddress - BlockToFix->getAddress();
+    Edge GE(*Kind, Offset, *GraphSymbol, Addend);
+    LLVM_DEBUG({
+      dbgs() << "    ";
+      printEdge(dbgs(), *BlockToFix, GE, riscv::getEdgeKindName(*Kind));
+      dbgs() << "\n";
+    });
 
-      for (const auto &Rela : *Relocations) {
-        auto Type = Rela.getType(false);
-
-        LLVM_DEBUG({
-          dbgs() << "Relocation Type: " << Type << "\n"
-                 << "Name: " << Base::Obj.getRelocationTypeName(Type) << "\n";
-        });
-
-        auto SymbolIndex = Rela.getSymbol(false);
-        auto Symbol = Base::Obj.getRelocationSymbol(Rela, Base::SymTabSec);
-        if (!Symbol)
-          return Symbol.takeError();
-
-        auto BlockToFix = *(JITSection->blocks().begin());
-        auto *TargetSymbol = Base::getGraphSymbol(SymbolIndex);
-
-        if (!TargetSymbol) {
-          return make_error<llvm::StringError>(
-              "Could not find symbol at given index, did you add it to "
-              "JITSymbolTable? index: " +
-                  std::to_string(SymbolIndex) + ", shndx: " +
-                  std::to_string((*Symbol)->st_shndx) + " Size of table: " +
-                  std::to_string(Base::GraphSymbols.size()),
-              llvm::inconvertibleErrorCode());
-        }
-        int64_t Addend = Rela.r_addend;
-        JITTargetAddress FixupAddress =
-            (*UpdateSection)->sh_addr + Rela.r_offset;
-
-        LLVM_DEBUG({
-          dbgs() << "Processing relocation at "
-                 << format("0x%016" PRIx64, FixupAddress) << "\n";
-        });
-        auto Kind = getRelocationKind(Type);
-        if (!Kind)
-          return Kind.takeError();
-
-        BlockToFix->addEdge(*Kind, FixupAddress - BlockToFix->getAddress(),
-                            *TargetSymbol, Addend);
-      }
-    }
+    BlockToFix->addEdge(std::move(GE));
     return Error::success();
   }
 

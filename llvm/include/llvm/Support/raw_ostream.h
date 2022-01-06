@@ -444,6 +444,7 @@ class raw_fd_ostream : public raw_pwrite_stream {
   int FD;
   bool ShouldClose;
   bool SupportsSeeking = false;
+  bool IsRegularFile = false;
   mutable Optional<bool> HasColors;
 
 #ifdef _WIN32
@@ -513,6 +514,8 @@ public:
   void close();
 
   bool supportsSeeking() const { return SupportsSeeking; }
+
+  bool isRegularFile() const { return IsRegularFile; }
 
   /// Flushes the stream and repositions the underlying file descriptor position
   /// to the offset specified from the beginning of the file.
@@ -721,7 +724,11 @@ class buffer_unique_ostream : public raw_svector_ostream {
 
 public:
   buffer_unique_ostream(std::unique_ptr<raw_ostream> OS)
-      : raw_svector_ostream(Buffer), OS(std::move(OS)) {}
+      : raw_svector_ostream(Buffer), OS(std::move(OS)) {
+    // Turn off buffering on OS, which we now own, to avoid allocating a buffer
+    // when the destructor writes only to be immediately flushed again.
+    this->OS->SetUnbuffered();
+  }
   ~buffer_unique_ostream() override { *OS << str(); }
 };
 

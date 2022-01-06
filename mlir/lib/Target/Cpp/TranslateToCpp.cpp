@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <utility>
+
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
@@ -220,9 +222,17 @@ static LogicalResult printOperation(CppEmitter &emitter,
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::ConstantOp constantOp) {
+  Operation *operation = constantOp.getOperation();
+  Attribute value = constantOp.getValue();
+
+  return printConstantOp(emitter, operation, value);
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
                                     mlir::ConstantOp constantOp) {
   Operation *operation = constantOp.getOperation();
-  Attribute value = constantOp.value();
+  Attribute value = constantOp.getValue();
 
   return printConstantOp(emitter, operation, value);
 }
@@ -248,12 +258,14 @@ static LogicalResult printOperation(CppEmitter &emitter, BranchOp branchOp) {
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     CondBranchOp condBranchOp) {
-  raw_ostream &os = emitter.ostream();
+  raw_indented_ostream &os = emitter.ostream();
   Block &trueSuccessor = *condBranchOp.getTrueDest();
   Block &falseSuccessor = *condBranchOp.getFalseDest();
 
   os << "if (" << emitter.getOrCreateName(condBranchOp.getCondition())
      << ") {\n";
+
+  os.indent();
 
   // If condition is true.
   for (auto pair : llvm::zip(condBranchOp.getTrueOperands(),
@@ -269,7 +281,8 @@ static LogicalResult printOperation(CppEmitter &emitter,
     return condBranchOp.emitOpError("unable to find label for successor block");
   }
   os << emitter.getOrCreateName(trueSuccessor) << ";\n";
-  os << "} else {\n";
+  os.unindent() << "} else {\n";
+  os.indent();
   // If condition is false.
   for (auto pair : llvm::zip(condBranchOp.getFalseOperands(),
                              falseSuccessor.getArguments())) {
@@ -285,7 +298,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
            << "unable to find label for successor block";
   }
   os << emitter.getOrCreateName(falseSuccessor) << ";\n";
-  os << "}";
+  os.unindent() << "}";
   return success();
 }
 
@@ -404,19 +417,19 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::ForOp forOp) {
   os << " ";
   os << emitter.getOrCreateName(forOp.getInductionVar());
   os << " = ";
-  os << emitter.getOrCreateName(forOp.lowerBound());
+  os << emitter.getOrCreateName(forOp.getLowerBound());
   os << "; ";
   os << emitter.getOrCreateName(forOp.getInductionVar());
   os << " < ";
-  os << emitter.getOrCreateName(forOp.upperBound());
+  os << emitter.getOrCreateName(forOp.getUpperBound());
   os << "; ";
   os << emitter.getOrCreateName(forOp.getInductionVar());
   os << " += ";
-  os << emitter.getOrCreateName(forOp.step());
+  os << emitter.getOrCreateName(forOp.getStep());
   os << ") {\n";
   os.indent();
 
-  Region &forRegion = forOp.region();
+  Region &forRegion = forOp.getRegion();
   auto regionOps = forRegion.getOps();
 
   // We skip the trailing yield op because this updates the result variables
@@ -468,7 +481,7 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::IfOp ifOp) {
   os << ") {\n";
   os.indent();
 
-  Region &thenRegion = ifOp.thenRegion();
+  Region &thenRegion = ifOp.getThenRegion();
   for (Operation &op : thenRegion.getOps()) {
     // Note: This prints a superfluous semicolon if the terminating yield op has
     // zero results.
@@ -478,7 +491,7 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::IfOp ifOp) {
 
   os.unindent() << "}";
 
-  Region &elseRegion = ifOp.elseRegion();
+  Region &elseRegion = ifOp.getElseRegion();
   if (!elseRegion.empty()) {
     os << " else {\n";
     os.indent();
@@ -678,7 +691,7 @@ bool CppEmitter::hasBlockLabel(Block &block) {
 }
 
 LogicalResult CppEmitter::emitAttribute(Location loc, Attribute attr) {
-  auto printInt = [&](APInt val, bool isUnsigned) {
+  auto printInt = [&](const APInt &val, bool isUnsigned) {
     if (val.getBitWidth() == 1) {
       if (val.getBoolValue())
         os << "true";
@@ -691,7 +704,7 @@ LogicalResult CppEmitter::emitAttribute(Location loc, Attribute attr) {
     }
   };
 
-  auto printFloat = [&](APFloat val) {
+  auto printFloat = [&](const APFloat &val) {
     if (val.isFinite()) {
       SmallString<128> strValue;
       // Use default values of toString except don't truncate zeros.
@@ -723,7 +736,7 @@ LogicalResult CppEmitter::emitAttribute(Location loc, Attribute attr) {
   }
   if (auto dense = attr.dyn_cast<DenseFPElementsAttr>()) {
     os << '{';
-    interleaveComma(dense, os, [&](APFloat val) { printFloat(val); });
+    interleaveComma(dense, os, [&](const APFloat &val) { printFloat(val); });
     os << '}';
     return success();
   }
@@ -745,7 +758,7 @@ LogicalResult CppEmitter::emitAttribute(Location loc, Attribute attr) {
                          .getElementType()
                          .dyn_cast<IntegerType>()) {
       os << '{';
-      interleaveComma(dense, os, [&](APInt val) {
+      interleaveComma(dense, os, [&](const APInt &val) {
         printInt(val, shouldMapToUnsigned(iType.getSignedness()));
       });
       os << '}';
@@ -756,7 +769,8 @@ LogicalResult CppEmitter::emitAttribute(Location loc, Attribute attr) {
                          .getElementType()
                          .dyn_cast<IndexType>()) {
       os << '{';
-      interleaveComma(dense, os, [&](APInt val) { printInt(val, false); });
+      interleaveComma(dense, os,
+                      [&](const APInt &val) { printInt(val, false); });
       os << '}';
       return success();
     }
@@ -801,7 +815,7 @@ CppEmitter::emitOperandsAndAttributes(Operation &op,
   // Insert comma in between operands and non-filtered attributes if needed.
   if (op.getNumOperands() > 0) {
     for (NamedAttribute attr : op.getAttrs()) {
-      if (!llvm::is_contained(exclude, attr.first.strref())) {
+      if (!llvm::is_contained(exclude, attr.getName().strref())) {
         os << ", ";
         break;
       }
@@ -809,10 +823,10 @@ CppEmitter::emitOperandsAndAttributes(Operation &op,
   }
   // Emit attributes.
   auto emitNamedAttribute = [&](NamedAttribute attr) -> LogicalResult {
-    if (llvm::is_contained(exclude, attr.first.strref()))
+    if (llvm::is_contained(exclude, attr.getName().strref()))
       return success();
-    os << "/* " << attr.first << " */";
-    if (failed(emitAttribute(op.getLoc(), attr.second)))
+    os << "/* " << attr.getName().getValue() << " */";
+    if (failed(emitAttribute(op.getLoc(), attr.getValue())))
       return failure();
     return success();
   };
@@ -876,7 +890,9 @@ LogicalResult CppEmitter::emitAssignPrefix(Operation &op) {
 LogicalResult CppEmitter::emitLabel(Block &block) {
   if (!hasBlockLabel(block))
     return block.getParentOp()->emitError("label for block not found");
-  os << getOrCreateName(block) << ":\n";
+  // FIXME: Add feature in `raw_indented_ostream` to ignore indent for block
+  // label instead of using `getOStream`.
+  os.getOStream() << getOrCreateName(block) << ":\n";
   return success();
 }
 
@@ -893,6 +909,9 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           // Standard ops.
           .Case<BranchOp, mlir::CallOp, CondBranchOp, mlir::ConstantOp, FuncOp,
                 ModuleOp, ReturnOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          // Arithmetic ops.
+          .Case<arith::ConstantOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Default([&](Operation *) {
             return op.emitOpError("unable to find printer for op");

@@ -2,10 +2,10 @@
 
 // CHECK-LABEL: fold_extractvalue
 llvm.func @fold_extractvalue() -> i32 {
-  //  CHECK-DAG: %[[C0:.*]] = constant 0 : i32
-  %c0 = constant 0 : i32
-  //  CHECK-DAG: %[[C1:.*]] = constant 1 : i32
-  %c1 = constant 1 : i32
+  //  CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
+  %c0 = arith.constant 0 : i32
+  //  CHECK-DAG: %[[C1:.*]] = arith.constant 1 : i32
+  %c1 = arith.constant 1 : i32
 
   %0 = llvm.mlir.undef : !llvm.struct<(i32, i32)>
 
@@ -21,3 +21,69 @@ llvm.func @fold_extractvalue() -> i32 {
   %5 = llvm.add %3, %4 : i32
   llvm.return %5 : i32
 }
+
+// -----
+
+// CHECK-LABEL: no_fold_extractvalue
+llvm.func @no_fold_extractvalue(%arr: !llvm.array<4xf32>) -> f32 {
+  %f0 = arith.constant 0.0 : f32
+  %0 = llvm.mlir.undef : !llvm.array<4 x !llvm.array<4xf32>>
+
+  // CHECK: insertvalue
+  // CHECK: insertvalue
+  // CHECK: extractvalue
+  %1 = llvm.insertvalue %f0, %0[0, 0] : !llvm.array<4 x !llvm.array<4xf32>>
+  %2 = llvm.insertvalue %arr, %1[0] : !llvm.array<4 x !llvm.array<4xf32>>
+  %3 = llvm.extractvalue %2[0, 0] : !llvm.array<4 x !llvm.array<4xf32>>
+
+  llvm.return %3 : f32
+}
+
+// -----
+// CHECK-LABEL: fold_bitcast
+// CHECK-SAME: %[[a0:arg[0-9]+]]
+// CHECK-NEXT: llvm.return %[[a0]]
+llvm.func @fold_bitcast(%x : !llvm.ptr<i8>) -> !llvm.ptr<i8> {
+  %c = llvm.bitcast %x : !llvm.ptr<i8> to !llvm.ptr<i8>
+  llvm.return %c : !llvm.ptr<i8>
+}
+
+// CHECK-LABEL: fold_bitcast2
+// CHECK-SAME: %[[a0:arg[0-9]+]]
+// CHECK-NEXT: llvm.return %[[a0]]
+llvm.func @fold_bitcast2(%x : !llvm.ptr<i8>) -> !llvm.ptr<i8> {
+  %c = llvm.bitcast %x : !llvm.ptr<i8> to !llvm.ptr<i32>
+  %d = llvm.bitcast %c : !llvm.ptr<i32> to !llvm.ptr<i8>
+  llvm.return %d : !llvm.ptr<i8>
+}
+
+// -----
+
+// CHECK-LABEL: fold_addrcast
+// CHECK-SAME: %[[a0:arg[0-9]+]]
+// CHECK-NEXT: llvm.return %[[a0]]
+llvm.func @fold_addrcast(%x : !llvm.ptr<i8>) -> !llvm.ptr<i8> {
+  %c = llvm.addrspacecast %x : !llvm.ptr<i8> to !llvm.ptr<i8>
+  llvm.return %c : !llvm.ptr<i8>
+}
+
+// CHECK-LABEL: fold_addrcast2
+// CHECK-SAME: %[[a0:arg[0-9]+]]
+// CHECK-NEXT: llvm.return %[[a0]]
+llvm.func @fold_addrcast2(%x : !llvm.ptr<i8>) -> !llvm.ptr<i8> {
+  %c = llvm.addrspacecast %x : !llvm.ptr<i8> to !llvm.ptr<i32, 5>
+  %d = llvm.addrspacecast %c : !llvm.ptr<i32, 5> to !llvm.ptr<i8>
+  llvm.return %d : !llvm.ptr<i8>
+}
+
+// -----
+
+// CHECK-LABEL: fold_gep
+// CHECK-SAME: %[[a0:arg[0-9]+]]
+// CHECK-NEXT: llvm.return %[[a0]]
+llvm.func @fold_gep(%x : !llvm.ptr<i8>) -> !llvm.ptr<i8> {
+  %c0 = arith.constant 0 : i32
+  %c = llvm.getelementptr %x[%c0] : (!llvm.ptr<i8>, i32) -> !llvm.ptr<i8>
+  llvm.return %c : !llvm.ptr<i8>
+}
+

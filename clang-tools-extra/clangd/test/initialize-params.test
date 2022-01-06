@@ -48,7 +48,8 @@
 # CHECK-NEXT:          ">",
 # CHECK-NEXT:          ":",
 # CHECK-NEXT:          "\"",
-# CHECK-NEXT:          "/"
+# CHECK-NEXT:          "/",
+# CHECK-NEXT:          "*"
 # CHECK-NEXT:        ]
 # CHECK-NEXT:      },
 # CHECK-NEXT:      "declarationProvider": true,
@@ -106,6 +107,11 @@
 # CHECK-NEXT:      "signatureHelpProvider": {
 # CHECK-NEXT:        "triggerCharacters": [
 # CHECK-NEXT:          "(",
+# CHECK-NEXT:          ")",
+# CHECK-NEXT:          "{",
+# CHECK-NEXT:          "}",
+# CHECK-NEXT:          "<",
+# CHECK-NEXT:          ">"
 # CHECK-NEXT:          ","
 # CHECK-NEXT:        ]
 # CHECK-NEXT:      },

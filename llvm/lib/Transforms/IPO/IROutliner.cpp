@@ -36,7 +36,9 @@ using namespace IRSimilarity;
 
 // A command flag to be used for debugging to exclude branches from similarity
 // matching and outlining.
+namespace llvm {
 extern cl::opt<bool> DisableBranches;
+} // namespace llvm
 
 // Set to true if the user wants the ir outliner to run on linkonceodr linkage
 // functions. This is false by default because the linker can dedupe linkonceodr
@@ -135,12 +137,8 @@ struct OutlinableGroup {
 /// \param SourceBB - the BasicBlock to pull Instructions from.
 /// \param TargetBB - the BasicBlock to put Instruction into.
 static void moveBBContents(BasicBlock &SourceBB, BasicBlock &TargetBB) {
-  BasicBlock::iterator BBCurr, BBEnd, BBNext;
-  for (BBCurr = SourceBB.begin(), BBEnd = SourceBB.end(); BBCurr != BBEnd;
-       BBCurr = BBNext) {
-    BBNext = std::next(BBCurr);
-    BBCurr->moveBefore(TargetBB, TargetBB.end());
-  }
+  for (Instruction &I : llvm::make_early_inc_range(SourceBB))
+    I.moveBefore(TargetBB, TargetBB.end());
 }
 
 /// A function to sort the keys of \p Map, which must be a mapping of constant
@@ -525,26 +523,22 @@ Function *IROutliner::createFunction(Module &M, OutlinableGroup &Group,
 /// \param [in] Old - The function to move the basic blocks from.
 /// \param [in] New - The function to move the basic blocks to.
 /// \param [out] NewEnds - The return blocks of the new overall function.
-/// \returns the first return block for the function in New.
 static void moveFunctionData(Function &Old, Function &New,
                              DenseMap<Value *, BasicBlock *> &NewEnds) {
-  Function::iterator CurrBB, NextBB, FinalBB;
-  for (CurrBB = Old.begin(), FinalBB = Old.end(); CurrBB != FinalBB;
-       CurrBB = NextBB) {
-    NextBB = std::next(CurrBB);
-    CurrBB->removeFromParent();
-    CurrBB->insertInto(&New);
-    Instruction *I = CurrBB->getTerminator();
+  for (BasicBlock &CurrBB : llvm::make_early_inc_range(Old)) {
+    CurrBB.removeFromParent();
+    CurrBB.insertInto(&New);
+    Instruction *I = CurrBB.getTerminator();
 
     // For each block we find a return instruction is, it is a potential exit
     // path for the function.  We keep track of each block based on the return
     // value here.
     if (ReturnInst *RI = dyn_cast<ReturnInst>(I))
-      NewEnds.insert(std::make_pair(RI->getReturnValue(), &(*CurrBB)));
+      NewEnds.insert(std::make_pair(RI->getReturnValue(), &CurrBB));
 
     std::vector<Instruction *> DebugInsts;
 
-    for (Instruction &Val : *CurrBB) {
+    for (Instruction &Val : CurrBB) {
       // We must handle the scoping of called functions differently than
       // other outlined instructions.
       if (!isa<CallInst>(&Val)) {
@@ -1075,7 +1069,7 @@ CallInst *replaceCalledFunction(Module &M, OutlinableRegion &Region) {
 // region with the arguments of the function for an OutlinableGroup.
 //
 /// \param [in] Region - The region of extracted code to be changed.
-/// \param [in,out] OutputBB - The BasicBlock for the output stores for this
+/// \param [in,out] OutputBBs - The BasicBlock for the output stores for this
 /// region.
 /// \param [in] FirstFunction - A flag to indicate whether we are using this
 /// function to define the overall outlined function for all the regions, or
@@ -1207,7 +1201,7 @@ void replaceConstants(OutlinableRegion &Region) {
 /// It is possible that there is a basic block that already performs the same
 /// stores. This returns a duplicate block, if it exists
 ///
-/// \param OutputBB [in] the block we are looking for a duplicate of.
+/// \param OutputBBs [in] the blocks we are looking for a duplicate of.
 /// \param OutputStoreBBs [in] The existing output blocks.
 /// \returns an optional value with the number output block if there is a match.
 Optional<unsigned> findDuplicateOutputBlock(
@@ -1306,9 +1300,9 @@ analyzeAndPruneOutputBlocks(DenseMap<Value *, BasicBlock *> &BlocksToPrune,
 ///
 /// \param [in] OG - The OutlinableGroup of regions to be outlined.
 /// \param [in] Region - The OutlinableRegion that is being analyzed.
-/// \param [in,out] OutputBB - the block that stores for this region will be
+/// \param [in,out] OutputBBs - the blocks that stores for this region will be
 /// placed in.
-/// \param [in] EndBB - the final block of the extracted function.
+/// \param [in] EndBBs - the final blocks of the extracted function.
 /// \param [in] OutputMappings - OutputMappings the mapping of values that have
 /// been replaced by a new output value.
 /// \param [in,out] OutputStoreBBs - The existing output blocks.
@@ -1392,7 +1386,7 @@ static void createAndInsertBasicBlocks(DenseMap<Value *, BasicBlock *> &OldMap,
 /// matches the needed stores for the extracted section.
 /// \param [in] M - The module we are outlining from.
 /// \param [in] OG - The group of regions to be outlined.
-/// \param [in] EndBB - The final block of the extracted function.
+/// \param [in] EndBBs - The final blocks of the extracted function.
 /// \param [in,out] OutputStoreBBs - The existing output blocks.
 void createSwitchStatement(
     Module &M, OutlinableGroup &OG, DenseMap<Value *, BasicBlock *> &EndBBs,
@@ -2214,6 +2208,7 @@ bool IROutliner::run(Module &M) {
 }
 
 // Pass Manager Boilerplate
+namespace {
 class IROutlinerLegacyPass : public ModulePass {
 public:
   static char ID;
@@ -2229,6 +2224,7 @@ public:
 
   bool runOnModule(Module &M) override;
 };
+} // namespace
 
 bool IROutlinerLegacyPass::runOnModule(Module &M) {
   if (skipModule(M))
