@@ -26,6 +26,7 @@ add_llvm_component_library(LLVMTransformUtils
   DMS_Induction.cpp
   DMS_IRBuilder.cpp
   DMS_PointerStatus.cpp
+  DMS_RuntimeStackSlots.cpp
   EntryExitInstrumenter.cpp
   EscapeEnumerator.cpp
   Evaluator.cpp

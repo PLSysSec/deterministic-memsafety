@@ -201,8 +201,8 @@ BoundsInfo::Dynamic::Info BoundsInfo::Dynamic::LazyInfo::force() {
   std::string loaded_ptr_name = isa<ConstantExpr>(loaded_ptr) ? "constexpr" : loaded_ptr->getNameOrAsOperand();
   DMSIRBuilder Builder(loaded_ptr, DMSIRBuilder::AFTER, added_insts);
   static Type* CharStarTy = Builder.getInt8PtrTy();
-  Value* output_base = Builder.CreateAlloca(CharStarTy, nullptr, Twine(loaded_ptr_name, "_output_base"));
-  Value* output_max = Builder.CreateAlloca(CharStarTy, nullptr, Twine(loaded_ptr_name, "_output_max"));
+  Value* output_base = runtime_stack_slots->getOutputBase();
+  Value* output_max = runtime_stack_slots->getOutputMax();
   call_dms_get_bounds(addr, output_base, output_max, Builder);
   Value* base = Builder.CreateLoad(CharStarTy, output_base, Twine(loaded_ptr_name, "_base"));
   Value* max = Builder.CreateLoad(CharStarTy, output_max, Twine(loaded_ptr_name, "_max"));

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llvm/Transforms/Utils/DMS_BoundsInfo.h"
+#include "llvm/Transforms/Utils/DMS_RuntimeStackSlots.h"
 
 #include "llvm/Support/Debug.h"
 
@@ -130,6 +131,10 @@ private:
   /// Reference to the `pointer_aliases` for this function; see notes on
   /// `pointer_aliases` in `DMSAnalysis`
   DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
+
+  /// RuntimeStackSlots for use in this function. See notes on
+  /// `RuntimeStackSlots`
+  RuntimeStackSlots runtime_stack_slots;
 
   /// For all pointer expressions used in the given `Constant` (which we assume
   /// is the initializer for the given `addr`), make entries in the dynamic

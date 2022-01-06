@@ -5,6 +5,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Transforms/Utils/DMS_common.h"
 #include "llvm/Transforms/Utils/DMS_IRBuilder.h"
+#include "llvm/Transforms/Utils/DMS_RuntimeStackSlots.h"
 
 #include <variant>
 
@@ -243,10 +244,17 @@ public:
       /// Reference to the `added_insts` where we note any instructions added
       /// for bounds purposes. See notes on `added_insts` in `DMSAnalysis`
       DenseSet<const Instruction*>* added_insts;
+      /// Reference to the `runtime_stack_slots` for this function. See notes
+      /// on `RuntimeStackSlots`
+      RuntimeStackSlots* runtime_stack_slots;
 
-      explicit LazyInfo(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts)
-        : addr(addr), loaded_ptr(loaded_ptr), added_insts(&added_insts) {}
-      LazyInfo() : addr(NULL), loaded_ptr(NULL), added_insts(NULL) {}
+      explicit LazyInfo(
+        Value* addr,
+        Instruction* loaded_ptr,
+        DenseSet<const Instruction*>& added_insts,
+        RuntimeStackSlots& runtime_stack_slots
+      ) : addr(addr), loaded_ptr(loaded_ptr), added_insts(&added_insts), runtime_stack_slots(&runtime_stack_slots) {}
+      LazyInfo() : addr(NULL), loaded_ptr(NULL), added_insts(NULL), runtime_stack_slots(NULL) {}
 
       // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
       // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
@@ -254,6 +262,7 @@ public:
         std::swap(A.addr, B.addr);
         std::swap(A.loaded_ptr, B.loaded_ptr);
         std::swap(A.added_insts, B.added_insts);
+        std::swap(A.runtime_stack_slots, B.runtime_stack_slots);
       }
       LazyInfo& operator=(LazyInfo rhs) noexcept {
         swap(*this, rhs);
@@ -270,7 +279,7 @@ public:
       Info force();
 
       bool operator==(const LazyInfo& other) const {
-        // don't need to check that added_insts are equal
+        // don't need to check that added_insts or runtime_stack_slots are equal
         return (addr == other.addr && loaded_ptr == other.loaded_ptr);
       }
       bool operator!=(const LazyInfo& other) const {
@@ -293,10 +302,17 @@ public:
       /// Reference to the `added_insts` where we note any instructions added
       /// for bounds purposes. See notes on `added_insts` in `DMSAnalysis`
       DenseSet<const Instruction*>* added_insts;
+      /// Reference to the `runtime_stack_slots` for this function. See notes
+      /// on `RuntimeStackSlots`
+      RuntimeStackSlots* runtime_stack_slots;
 
-      explicit LazyGlobalArraySize(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts)
-        : arr(&arr), insertion_func(&insertion_func), added_insts(&added_insts) {}
-      LazyGlobalArraySize() : arr(NULL), insertion_func(NULL), added_insts(NULL) {}
+      explicit LazyGlobalArraySize(
+        GlobalValue& arr,
+        Function& insertion_func,
+        DenseSet<const Instruction*>& added_insts,
+        RuntimeStackSlots& runtime_stack_slots
+      ) : arr(&arr), insertion_func(&insertion_func), added_insts(&added_insts), runtime_stack_slots(&runtime_stack_slots) {}
+      LazyGlobalArraySize() : arr(NULL), insertion_func(NULL), added_insts(NULL), runtime_stack_slots(NULL) {}
 
       // https://stackoverflow.com/questions/3652103/implementing-the-copy-constructor-in-terms-of-operator
       // https://stackoverflow.com/questions/3279543/what-is-the-copy-and-swap-idiom
@@ -304,6 +320,7 @@ public:
         std::swap(A.arr, B.arr);
         std::swap(A.insertion_func, B.insertion_func);
         std::swap(A.added_insts, B.added_insts);
+        std::swap(A.runtime_stack_slots, B.runtime_stack_slots);
       }
       LazyGlobalArraySize& operator=(LazyGlobalArraySize rhs) noexcept {
         swap(*this, rhs);
@@ -320,7 +337,7 @@ public:
       Info force();
 
       bool operator==(const LazyGlobalArraySize& other) const {
-        // don't need to check that insertion_func or added_insts are equal
+        // don't need to check that insertion_func, added_insts, or runtime_stack_slots are equal
         return (&arr == &other.arr);
       }
       bool operator!=(const LazyGlobalArraySize& other) const {
@@ -371,15 +388,28 @@ public:
     /// `added_insts`: Reference to the `added_insts` where we note any
     /// instructions added for bounds purposes. See notes on `added_insts` in
     /// `DMSAnalysis`
-    static Dynamic LazyDynamic(Value* addr, Instruction* loaded_ptr, DenseSet<const Instruction*>& added_insts) {
-      return Dynamic(LazyInfo(addr, loaded_ptr, added_insts));
+    ///
+    /// `runtime_stack_slots`: Reference to the `runtime_stack_slots` for this
+    /// function. See notes on `RuntimeStackSlots`
+    static Dynamic LazyDynamic(
+      Value* addr,
+      Instruction* loaded_ptr,
+      DenseSet<const Instruction*>& added_insts,
+      RuntimeStackSlots& runtime_stack_slots
+    ) {
+      return Dynamic(LazyInfo(addr, loaded_ptr, added_insts, runtime_stack_slots));
     }
 
     /// This is used to dynamically lookup the size of a global array. We only
     /// do this if the global array size is 0 in this compilation unit, eg
     /// because of a declaration like `extern int some_arr[];`.
-    static Dynamic LazyDynamicGlobalArrayBounds(GlobalValue& arr, Function& insertion_func, DenseSet<const Instruction*>& added_insts) {
-      return Dynamic(LazyGlobalArraySize(arr, insertion_func, added_insts));
+    static Dynamic LazyDynamicGlobalArrayBounds(
+      GlobalValue& arr,
+      Function& insertion_func,
+      DenseSet<const Instruction*>& added_insts,
+      RuntimeStackSlots& runtime_stack_slots
+    ) {
+      return Dynamic(LazyGlobalArraySize(arr, insertion_func, added_insts, runtime_stack_slots));
     }
 
     // operator== and operator!= intentionally ignore the .merge_inputs field
@@ -567,9 +597,10 @@ public:
   static Dynamic dynamic_bounds_for_ptr(
     Value* addr,
     Instruction* loaded_ptr,
-    DenseSet<const Instruction*>& added_insts
+    DenseSet<const Instruction*>& added_insts,
+    RuntimeStackSlots& runtime_stack_slots
   ) {
-    return Dynamic::LazyDynamic(addr, loaded_ptr, added_insts);
+    return Dynamic::LazyDynamic(addr, loaded_ptr, added_insts, runtime_stack_slots);
   }
 
   /// Get a `Dynamic` representing dynamic bounds for the global array
@@ -587,9 +618,10 @@ public:
   static Dynamic dynamic_bounds_for_global_array(
     GlobalValue& arr,
     Function& insertion_func,
-    DenseSet<const Instruction*>& added_insts
+    DenseSet<const Instruction*>& added_insts,
+    RuntimeStackSlots& runtime_stack_slots
   ) {
-    return Dynamic::LazyDynamicGlobalArrayBounds(arr, insertion_func, added_insts);
+    return Dynamic::LazyDynamicGlobalArrayBounds(arr, insertion_func, added_insts, runtime_stack_slots);
   }
 }; // end BoundsInfo
 

@@ -19,10 +19,10 @@ DynamicBounds infinite_bounds() {
 #include <stdio.h>
 #include <assert.h>
 
-// AddrHashMap docs recommend a prime for the template arg. It appears to be the
-// number of buckets in the hashtable.
-// 2311 = 2 * 3 * 5 * 7 * 11 + 1
-typedef __sanitizer::AddrHashMap<DynamicBounds, 2311> BoundsMap;
+// AddrHashMap docs recommend a prime for the template arg. It's the number of
+// buckets in the hashtable.
+// 31051 is the prime used by tsan.
+typedef __sanitizer::AddrHashMap<DynamicBounds, 31051> BoundsMap;
 static BoundsMap bounds_map;
 
 /// Maps global array to the dynamic max for that global array. (The dynamic

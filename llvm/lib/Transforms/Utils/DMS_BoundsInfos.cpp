@@ -14,7 +14,8 @@ BoundsInfos::BoundsInfos(
   notdefinedyet_binfo(BoundsInfo::notdefinedyet()),
   unknown_binfo(BoundsInfo::unknown()),
   infinite_binfo(BoundsInfo::infinite()),
-  DL(DL), added_insts(added_insts), pointer_aliases(pointer_aliases)
+  DL(DL), added_insts(added_insts), pointer_aliases(pointer_aliases),
+  runtime_stack_slots(F, added_insts)
 {
   LLVM_DEBUG(dbgs() << "Initializing bounds infos for function " << F.getNameOrAsOperand() << " with " << F.arg_size() << " operands\n");
   bool isMain = F.getName() == "main" && F.arg_size() == 2;
@@ -82,7 +83,7 @@ BoundsInfos::BoundsInfos(
         // we handle this by dynamically looking up the actual array size,
         // see notes on dynamic_bounds_for_global_array().
         mark_as(&gv, BoundsInfo(
-          BoundsInfo::dynamic_bounds_for_global_array(gv, F, added_insts)
+          BoundsInfo::dynamic_bounds_for_global_array(gv, F, added_insts, runtime_stack_slots)
         ));
       } else {
         mark_as(&gv, BoundsInfo::static_bounds(
@@ -569,7 +570,8 @@ void BoundsInfos::propagate_bounds(LoadInst& load, Instruction* loaded_ptr) {
   BoundsInfo::Dynamic dyninfo = BoundsInfo::dynamic_bounds_for_ptr(
     load.getPointerOperand(),
     loaded_ptr,
-    added_insts
+    added_insts,
+    runtime_stack_slots
   );
   mark_as(&load, BoundsInfo(std::move(dyninfo)));
 }
