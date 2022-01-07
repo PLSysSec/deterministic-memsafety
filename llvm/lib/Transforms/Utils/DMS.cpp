@@ -273,6 +273,19 @@ public:
             llvm_unreachable("getting status of unhandled constant expression");
           }
         }
+      } else if (const ConstantAggregate* cagg = dyn_cast<ConstantAggregate>(constant)) {
+        // it's a struct, array, or vector constant
+        if (Constant* el = cagg->getSplatValue(true)) {
+          // all the (non-undef, non-poison) values are the same value, `el`
+          // we can give this the same status as `el`
+          assert(el->getType()->isPointerTy());
+          return getStatus_noalias(el);
+        } else {
+          // a struct, array, or vector constant, with multiple different entries
+          errs() << "unhandled constant struct, array, or vector:\n";
+          cagg->dump();
+          llvm_unreachable("getting status of constant struct, array, or vector of unhandled kind");
+        }
       } else {
         // a constant, but not null, a global, or a constant expression.
         errs() << "constant pointer of unhandled kind:\n";
