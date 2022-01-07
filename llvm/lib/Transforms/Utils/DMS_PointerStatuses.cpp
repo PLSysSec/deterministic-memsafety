@@ -1,9 +1,12 @@
+#include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/DMS_classifyGEPResult.h"
 #include "llvm/Transforms/Utils/DMS_PointerStatuses.h"
 
 #include <sstream>  // ostringstream
 
 using namespace llvm;
+
+#define DEBUG_TYPE "DMS-pointer-statuses"
 
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 
@@ -14,6 +17,7 @@ void PointerStatuses::mark_as(const Value* ptr, PointerKind kind) {
   assert(kind != PointerKind::NOTDEFINEDYET);
   // DYNAMIC has to be handled with the other overload of `mark_as`
   assert(kind != PointerKind::DYNAMIC);
+  LLVM_DEBUG(dbgs() << "DMS:     marking pointer " << ptr->getNameOrAsOperand() << " as status " << kind.pretty() << "\n");
   // insert() does nothing if the key was already in the map.
   // instead, it appears we have to use operator[], which seems to
   // work whether or not `ptr` was already in the map
@@ -25,6 +29,7 @@ void PointerStatuses::mark_as(const Value* ptr, PointerStatus status) {
   // don't explicitly mark anything NOTDEFINEDYET - we reserve
   // "not in the map" to mean NOTDEFINEDYET
   assert(status.kind != PointerKind::NOTDEFINEDYET);
+  LLVM_DEBUG(dbgs() << "DMS:     marking pointer " << ptr->getNameOrAsOperand() << " as status " << status.pretty() << "\n");
   map[ptr] = status;
 }
 
