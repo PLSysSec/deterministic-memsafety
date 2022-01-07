@@ -250,7 +250,7 @@ BoundsInfo* BoundsInfos::get_binfo(const Value* ptr) {
 /// The returned pointer is never NULL, and should have lifetime equal
 /// to the lifetime of this BoundsInfos.
 BoundsInfo* BoundsInfos::get_binfo_noalias(const Value* ptr) {
-  assert(ptr->getType()->isPointerTy());
+  assert(ptr->getType()->isPtrOrPtrVectorTy());
   BoundsInfo* binfo = map.lookup(ptr);
   if (!binfo) {
     LLVM_DEBUG(dbgs() << "DMS:     map.lookup() returned NULL, so setting " << ptr->getNameOrAsOperand() << " to NotDefinedYet\n");

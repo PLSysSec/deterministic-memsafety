@@ -996,6 +996,7 @@ private:
           break;
         }
         case Instruction::ExtractValue: {
+          if (!inst.getType()->isPointerTy()) break;
           // this gets a pointer out of a field of a first-class struct (not a
           // pointer-to-a-struct, so ptr_statuses doesn't have any information
           // about this struct).
@@ -1013,8 +1014,75 @@ private:
           break;
         }
         case Instruction::ExtractElement: {
-          // same comments apply as for ExtractValue, basically
-          mark_as(ptr_statuses, &inst, PointerStatus::unknown());
+          if (!inst.getType()->isPointerTy()) break;
+          // extracting a pointer from a vector of pointers:
+          // see if we had a status for the vector of pointers.
+          PointerStatus vector_status = ptr_statuses.getStatus(inst.getOperand(0));
+          if (vector_status.kind == PointerKind::NOTDEFINEDYET) {
+            // if the vector doesn't have a status, just mark UNKNOWN for the
+            // element (for now)
+            mark_as(ptr_statuses, &inst, PointerStatus::unknown());
+            if (settings.add_sw_spatial_checks) {
+              bounds_infos.mark_as(&inst, BoundsInfo::unknown());
+            }
+          } else {
+            // the vector has a status, yay!
+            // in this case, that status applies to each pointer individually
+            // (because that's our rule for marking the status of a vector).
+            mark_as(ptr_statuses, &inst, vector_status);
+            // for now, the bounds info is still UNKNOWN until we think about
+            // how to do bounds info for vectors of pointers
+            if (settings.add_sw_spatial_checks) {
+              bounds_infos.mark_as(&inst, BoundsInfo::unknown());
+            }
+          }
+          break;
+        }
+        case Instruction::InsertElement: {
+          assert(inst.getType()->isVectorTy());
+          if (!cast<VectorType>(inst.getType())->getElementType()->isPointerTy()) break;
+          InsertElementInst& ie = cast<InsertElementInst>(inst);
+          // alright, we've got an InsertElement producing a vector of pointers
+          // namely, inserting a pointer into an existing vector of pointers
+          PointerStatus existing_vector_status = ptr_statuses.getStatus(ie.getOperand(0));
+          if (existing_vector_status.kind == PointerKind::NOTDEFINEDYET) {
+            // existing vector doesn't have a status, just mark UNKNOWN for now
+            mark_as(ptr_statuses, &inst, PointerStatus::unknown());
+            if (settings.add_sw_spatial_checks) {
+              bounds_infos.mark_as(&inst, BoundsInfo::unknown());
+            }
+          } else {
+            // existing vector has a status, yay!
+            // in this case, then the new vector's status is just the merger of
+            // the existing vector's status and the inserted element's status
+            DMSIRBuilder Builder(&ie, DMSIRBuilder::BEFORE, &added_insts);
+            mark_as(ptr_statuses, &inst, PointerStatus::merge_direct(
+              existing_vector_status,
+              ptr_statuses.getStatus(ie.getOperand(1)),
+              Builder
+            ));
+            // for now, the bounds info is still UNKNOWN until we think about
+            // how to do bounds info for vectors of pointers
+            if (settings.add_sw_spatial_checks) {
+              bounds_infos.mark_as(&inst, BoundsInfo::unknown());
+            }
+          }
+          break;
+        }
+        case Instruction::ShuffleVector: {
+          assert(inst.getType()->isVectorTy());
+          if (!cast<VectorType>(inst.getType())->getElementType()->isPointerTy()) break;
+          // alright, we've got a ShuffleVector producing a vector of pointers
+          // conservatively, the output vector has status equal to the merger of
+          // the statuses of the two input vectors
+          DMSIRBuilder Builder(&inst, DMSIRBuilder::BEFORE, &added_insts);
+          mark_as(ptr_statuses, &inst, PointerStatus::merge_direct(
+            ptr_statuses.getStatus(inst.getOperand(0)),
+            ptr_statuses.getStatus(inst.getOperand(1)),
+            Builder
+          ));
+          // for now, the bounds info is still UNKNOWN until we think about
+          // how to do bounds info for vectors of pointers
           if (settings.add_sw_spatial_checks) {
             bounds_infos.mark_as(&inst, BoundsInfo::unknown());
           }
@@ -1030,7 +1098,10 @@ private:
         }
         default:
           if (inst.getType()->isPointerTy()) {
-            errs() << "Encountered a pointer-producing instruction which we don't have a case for. Does it produce a clean or dirty pointer?\n";
+            errs() << "Encountered a pointer-producing instruction which we don't have a case for: ";
+            inst.dump();
+          } else if (inst.getType()->isPtrOrPtrVectorTy()) {
+            errs() << "Encountered an instruction producing a vector of pointers, which we don't have a case for: ";
             inst.dump();
           }
           break;

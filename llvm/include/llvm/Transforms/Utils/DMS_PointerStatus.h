@@ -121,6 +121,11 @@ public:
 
 struct StatusWithBlock;
 
+/// PointerStatus describes the status of a single pointer at a given program
+/// point. Or, it can be used to describe the status of a vector of pointers, if
+/// the status applies (conservatively) to all pointers in the vector
+/// individually.
+///
 /// In principle, and perhaps literally in the future with std::variant,
 /// PointerKind::DYNAMIC carries an LLVM Value*.
 /// (If we do switch to std::variant, maybe BLEMISHED would carry an int
