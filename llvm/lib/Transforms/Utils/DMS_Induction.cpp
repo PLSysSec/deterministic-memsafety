@@ -152,13 +152,13 @@ static InductionVarResult isInductionVar(const Value* val) {
     APInt induction_increment;
     for (const Use& use : phi->incoming_values()) {
       const Value* phi_val = use.get();
-      if (const Constant* phi_val_const = dyn_cast<Constant>(phi_val)) {
+      if (const ConstantInt* phi_val_constint = dyn_cast<ConstantInt>(phi_val)) {
         if (found_initial_val) {
           // two constants in this phi. For now, this isn't a pattern we'll consider for induction.
           return no_induction_var;
         }
         found_initial_val = true;
-        initial_val = phi_val_const->getUniqueInteger();
+        initial_val = phi_val_constint->getValue();
       } else {
         ValPlusConstantResult vpcr = isValuePlusConstant(phi_val);
         if (vpcr.valid) {
@@ -204,13 +204,13 @@ static ValPlusConstantResult isValuePlusConstant(const Value* val) {
         APInt constant_val;
         const Value* nonconstant_val;
         for (const Value* op : bop->operand_values()) {
-          if (const Constant* op_const = dyn_cast<Constant>(op)) {
+          if (const ConstantInt* op_const = dyn_cast<ConstantInt>(op)) {
             if (found_constant_operand) {
               // adding or subbing two constants. Shouldn't be valid LLVM, but we'll fail gracefully.
               return not_a_val_plus_constant;
             }
             found_constant_operand = true;
-            constant_val = op_const->getUniqueInteger();
+            constant_val = op_const->getValue();
             if (bop->getOpcode() == Instruction::Sub) {
               constant_val = -constant_val;
             }
