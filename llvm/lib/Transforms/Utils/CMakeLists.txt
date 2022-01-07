@@ -22,11 +22,13 @@ add_llvm_component_library(LLVMTransformUtils
   DMS.cpp
   DMS_BoundsInfo.cpp
   DMS_BoundsInfos.cpp
+  DMS_classifyGEPResult.cpp
   DMS_common.cpp
   DMS_DynamicResults.cpp
   DMS_Induction.cpp
   DMS_IRBuilder.cpp
   DMS_PointerStatus.cpp
+  DMS_PointerStatuses.cpp
   DMS_RuntimeStackSlots.cpp
   EntryExitInstrumenter.cpp
   EscapeEnumerator.cpp

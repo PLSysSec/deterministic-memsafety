@@ -5,6 +5,9 @@ using namespace llvm;
 
 #define DEBUG_TYPE "DMS-bounds-info"
 
+const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
+const APInt minusone = APInt(/* bits = */ 64, /* val = */ -1);
+
 BoundsInfos::BoundsInfos(
   Function& F,
   const DataLayout& DL,
