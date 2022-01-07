@@ -50,12 +50,11 @@ public:
     }
   }
 
-  /// Call this (at least) once for each source _module_ (not function)
-  static void module_initialization(
-    Module&,
-    DenseSet<const Instruction*>& added_insts,
-    DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
-  );
+  /// Call this (at least) once for each source _module_ (not function).
+  ///
+  /// Returns `false` if it definitely did not make any changes, or `true` if it
+  /// did (or may have).
+  static bool module_initialization(Module&);
 
   /// Mark the given pointer as having the given bounds information.
   ///

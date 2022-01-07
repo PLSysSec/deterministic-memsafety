@@ -60,6 +60,15 @@ public:
   static bool isRequired() { return true; }
 };
 
+/// This module pass is also required when we're adding SW bounds checks.
+class BoundsChecksModuleDMSPass : public PassInfoMixin<BoundsChecksModuleDMSPass> {
+public:
+	PreservedAnalyses run(Module &mod, ModuleAnalysisManager &MAM);
+
+	// This pass must run even on -O0
+	static bool isRequired() { return true; }
+};
+
 } // namespace llvm
 
 #endif // LLVM_TRANSFORMS_UTILS_DMS_H

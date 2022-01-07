@@ -1,5 +1,5 @@
 ; RUN: opt -passes=static-dms -disable-output < %s 2>&1 | FileCheck %s
-; RUN: opt -passes=bounds-dms -disable-output < %s 2>&1 > /dev/null
+; RUN: opt -passes=dms-bounds-modulepass,bounds-dms -disable-output < %s 2>&1 > /dev/null
 
 ; This checks that the load is still clean even when the alloca was in a
 ; different block.

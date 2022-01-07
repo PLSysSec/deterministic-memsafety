@@ -1,5 +1,5 @@
 ; RUN: opt -passes=static-dms -disable-output < %s 2>&1 | FileCheck %s
-; RUN: opt -passes=bounds-dms -disable-output < %s 2>&1 > /dev/null
+; RUN: opt -passes=dms-bounds-modulepass,bounds-dms -disable-output < %s 2>&1 > /dev/null
 
 ; This checks that a pointer fresh from an alloca is considered clean.
 ; CHECK-LABEL: clean_load

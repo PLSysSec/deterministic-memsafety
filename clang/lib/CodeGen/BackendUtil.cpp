@@ -1460,6 +1460,7 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
           [](ModulePassManager &MPM, OptimizationLevel Level) {
             MPM.addPass(createModuleToFunctionPassAdaptor(
               BoundsChecksDMSPass()));
+            MPM.addPass(BoundsChecksModuleDMSPass());
           });
       } else {
         assert(false && "DMS: unrecognized option");

@@ -475,7 +475,6 @@ private:
     IterationResult res = doIteration(NULL, false);
     assert(!res.changed && "we should have reached fixpoint before calling addSpatialSafetySWChecks()");
     #endif
-    BoundsInfos::module_initialization(*F.getParent(), added_insts, pointer_aliases);
     doIteration(NULL, true);
     // `doIteration` with add_spatial_sw_checks=true will sometimes split basic
     // blocks, which is a problem when it's also trying to iterate over all the
@@ -1573,6 +1572,19 @@ PreservedAnalyses BoundsChecksDMSPass::run(Function &F, FunctionAnalysisManager 
   // PreservedAnalyses::none() when they make any change, so we assume this is
   // reasonable.
   return PreservedAnalyses::none();
+}
+
+PreservedAnalyses BoundsChecksModuleDMSPass::run(Module &mod, ModuleAnalysisManager &MAM) {
+  if (BoundsInfos::module_initialization(mod)) {
+    // For now we conservatively just tell LLVM that no analyses are preserved.
+    // It seems that many existing LLVM passes also just use
+    // PreservedAnalyses::none() when they make any change, so we assume this is
+    // reasonable.
+    return PreservedAnalyses::none();
+  } else {
+    // no change was made
+    return PreservedAnalyses::all();
+  }
 }
 
 /// Is the given call one of the ones which we "should count" for stats

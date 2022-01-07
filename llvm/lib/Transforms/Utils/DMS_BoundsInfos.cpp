@@ -99,12 +99,11 @@ BoundsInfos::BoundsInfos(
   }
 }
 
-/// Call this (at least) once for each source _module_ (not function)
-void BoundsInfos::module_initialization(
-  Module& mod,
-  DenseSet<const Instruction*>& added_insts,
-  DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
-) {
+/// Call this (at least) once for each source _module_ (not function).
+///
+/// Returns `false` if it definitely did not make any changes, or `true` if it
+/// did (or may have).
+bool BoundsInfos::module_initialization(Module& mod) {
   // the problem we're solving here is that global initializers could contain
   // pointers to other globals.
   // If we load one of these pointers from a global, we expect to find dynamic
@@ -119,7 +118,7 @@ void BoundsInfos::module_initialization(
   // if this function already exists in the module, assume we've already added
   // this initialization code
   if (mod.getFunction("__DMS_bounds_initialization")) {
-    return;
+    return false;
   }
 
   // This `new_func` does the initialization
@@ -127,6 +126,11 @@ void BoundsInfos::module_initialization(
   Function* new_func = cast<Function>(mod.getOrInsertFunction("__DMS_bounds_initialization", FuncTy).getCallee());
   new_func->setLinkage(GlobalValue::PrivateLinkage);
   BasicBlock* EntryBlock = BasicBlock::Create(mod.getContext(), "entry", new_func);
+  // the added_insts and pointer_aliases aren't important for the
+  // __DMS_bounds_initialization function, so we just have some here that we'll
+  // throw away when we're done
+  DenseSet<const Instruction*> added_insts;
+  DenseMap<const Value*, SmallDenseSet<const Value*, 4>> pointer_aliases;
   DMSIRBuilder Builder(EntryBlock, DMSIRBuilder::BEGINNING, &added_insts);
   BoundsInfos binfos(*new_func, mod.getDataLayout(), added_insts, pointer_aliases);
   for (GlobalObject& gobj : mod.global_objects()) {
@@ -168,6 +172,7 @@ void BoundsInfos::module_initialization(
   // Ensure `new_func` is called during module construction. 65535 should ensure
   // it's called after any other such hooks
   appendToGlobalCtors(mod, new_func, 65535);
+  return true;
 }
 
 /// For all pointer expressions used in the given `Constant` (which we assume is

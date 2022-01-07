@@ -81,7 +81,11 @@ To get detailed debugging information, add the `-debug` flag.
 
 From the `llvm` directory: `./build/bin/opt -passes=<pass> file.ll -o=file_instrumented.bc`
 where `<pass>` is either `dynamic-dms`, `dynamic-stdout-dms`, or `bounds-dms`.
-(Again, you can use either a `.ll` or `.bc` file as input.)
+If you use `bounds-dms`, you also have to add `dms-bounds-modulepass`, and
+`opt` complains if you don't put it first. (So,
+`-passes=dms-bounds-modulepass,bounds-dms`.)
+
+Again, you can use either a `.ll` or `.bc` file as input.
 To get `.ll` _output_ instead of `.bc`, add the `-S` flag (and, to avoid
 confusion, change the extension of the output filename).
 To get detailed debugging information, add the `-debug` flag.

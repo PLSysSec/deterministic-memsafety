@@ -1,5 +1,5 @@
 ; RUN: clang -fdms=dynamic-stdout %s -o %t && %t | FileCheck %s
-; RUN: opt -passes=bounds-dms -disable-output < %s 2>&1 > /dev/null
+; RUN: opt -passes=dms-bounds-modulepass,bounds-dms -disable-output < %s 2>&1 > /dev/null
 
 ; Since we currently print dynamic counts on a per-module basis, the following
 ; totals are for this entire file.
