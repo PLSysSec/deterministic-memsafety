@@ -70,25 +70,26 @@ For instance, `-mllvm -debug-only=DMS,DMS-inst-processing`.
 ### Static DMS passes:
 
 From the `llvm` directory: `./build/bin/opt -passes=<pass> -disable-output file.ll`
-where `<pass>` is either `static-dms` or `paranoid-static-dms`.
+where `<pass>` is either `dms-static` or `dms-static-paranoid`.
 (The `-disable-output` flag avoids writing the "transformed" bitcode, which is
 uninteresting for these static passes which don't do any transformations.)
 You can use either a `.ll` (text-format) or `.bc` (binary-format bitcode) file
 as input.
-To get detailed debugging information, add the `-debug` flag.
+To get detailed debugging information, add the flag `-debug-only=DMS`, or add
+additional logging tags, as described in "Debugging" above.
 
 ### Dynamic DMS passes, including bounds-check insertion:
 
 From the `llvm` directory: `./build/bin/opt -passes=<pass> file.ll -o=file_instrumented.bc`
-where `<pass>` is either `dynamic-dms`, `dynamic-stdout-dms`, or `bounds-dms`.
-If you use `bounds-dms`, you also have to add `dms-bounds-modulepass`, and
-`opt` complains if you don't put it first. (So,
-`-passes=dms-bounds-modulepass,bounds-dms`.)
+where `<pass>` is either `dms-dynamic`, `dms-dynamic-stdout`, or `dms-bounds`.
+If you use `dms-bounds`, you also have to add `dms-bounds-modulepass`, and
+`opt` complains if you don't put it first. (So, `-passes=dms-bounds-modulepass,dms-bounds`.)
 
 Again, you can use either a `.ll` or `.bc` file as input.
 To get `.ll` _output_ instead of `.bc`, add the `-S` flag (and, to avoid
 confusion, change the extension of the output filename).
-To get detailed debugging information, add the `-debug` flag.
+To get detailed debugging information, add the flag `-debug-only=DMS`, or add
+additional logging tags, as described in "Debugging" above.
 
 ## Collecting results from the dynamic-statistics DMS pass
 

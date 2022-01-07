@@ -1,5 +1,5 @@
-; RUN: opt -passes=static-dms -disable-output < %s 2>&1 | FileCheck %s
-; RUN: opt -passes=dms-bounds-modulepass,bounds-dms -disable-output < %s 2>&1 > /dev/null
+; RUN: opt -passes=dms-static -disable-output < %s 2>&1 | FileCheck %s
+; RUN: opt -passes=dms-bounds-modulepass,dms-bounds -disable-output < %s 2>&1 > /dev/null
 
 ; With trustLLVMStructTypes = true (ie, not paranoid), loading the second
 ; element of a struct (while the struct pointer itself was clean) is a

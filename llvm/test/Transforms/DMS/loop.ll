@@ -1,5 +1,5 @@
-; RUN: opt -passes=static-dms -disable-output < %s 2>&1 | FileCheck %s
-; RUN: opt -passes=dms-bounds-modulepass,bounds-dms -disable-output < %s 2>&1 > /dev/null
+; RUN: opt -passes=dms-static -disable-output < %s 2>&1 | FileCheck %s
+; RUN: opt -passes=dms-bounds-modulepass,dms-bounds -disable-output < %s 2>&1 > /dev/null
 
 ; This very basic loop has a clean load in every iteration.
 ; CHECK-LABEL: basic_loop
