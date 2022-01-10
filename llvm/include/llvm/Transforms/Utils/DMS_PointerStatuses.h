@@ -82,6 +82,20 @@ private:
   /// if `ptr` itself doesn't have a status, returns `PointerStatus::notdefinedyet()`.
   PointerStatus getStatus_noalias(const Value* ptr) const;
 
+  /// Try to get the status of the given `Constant` of integer type.
+  ///
+  /// PointerStatus only makes sense for the status of a pointer, but this will
+  /// still try to do the right thing interpreting the const int as a pointer
+  /// value.
+  ///
+  /// For instance, this can return a sensible status for constant 0 (which is
+  /// just NULL), or for integers which are somehow eventually derived from
+  /// a pointer via PtrToInt.
+  ///
+  /// However, this only recognizes a few patterns, so in other cases where it's
+  /// not sure, it just won't return a status.
+  std::optional<PointerStatus> tryGetStatusOfConstInt(const Constant*) const;
+
 public:
   MapEqualityResult<const Value*> isEqualTo(const PointerStatuses& other) const {
     // since we assert in `mark_as()` that we never explicitly mark anything

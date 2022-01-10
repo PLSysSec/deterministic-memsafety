@@ -156,6 +156,19 @@ private:
   /// to the lifetime of this BoundsInfos.
   BoundsInfo* bounds_info_for_gep(GetElementPtrInst& gep);
 
+  /// Try to get bounds info for the given `Constant` of integer type.
+  ///
+  /// BoundsInfo only makes sense for a pointer, but this will still try to do the
+  /// right thing interpreting the const int as a pointer value.
+  ///
+  /// For instance, this can return sensible bounds for constant 0 (which is just
+  /// NULL), or for integers which are somehow eventually derived from a pointer
+  /// via PtrToInt.
+  ///
+  /// However, this only recognizes a few patterns, so in other cases where it's
+  /// not sure, it will return NULL.
+  BoundsInfo* try_get_binfo_for_const_int(const Constant*);
+
   /// Value type for the below map
   class BoundsStoringCall final {
   public:

@@ -101,21 +101,15 @@ PointerStatus PointerStatuses::getStatus_noalias(const Value* ptr) const {
           return ret;
         }
         case Instruction::IntToPtr: {
-          if (const ConstantInt* cint = dyn_cast<ConstantInt>(expr->getOperand(0))) {
-            // if it's IntToPtr of zero, or any other number < 4K (corresponding
-            // to the first page of memory, which is unmapped), we can treat it
-            // as CLEAN, just like the null pointer
-            if (cint->getValue().ult(4*1024)) {
-              return PointerStatus::clean();
-            } else {
-              // IntToPtr of any other constant number, we go by inttoptr_kind
-              return PointerStatus::from_kind(inttoptr_kind);
-            }
+          std::optional<PointerStatus> maybe_status = tryGetStatusOfConstInt(expr->getOperand(0));
+          if (maybe_status.has_value()) {
+            return *maybe_status;
+          } else {
+            // for other IntToPtrs, ideally, we have alias information, and some
+            // alias will have a status. (this comes up with constant IntToPtrs
+            // introduced by our pointer encoding)
+            return PointerStatus::notdefinedyet();
           }
-          // for other IntToPtrs, ideally, we have alias information, and some
-          // alias will have a status. (this comes up with constant IntToPtrs
-          // introduced by our pointer encoding)
-          return PointerStatus::notdefinedyet();
         }
         default: {
           errs() << "unhandled constant expression:\n";
@@ -145,6 +139,52 @@ PointerStatus PointerStatuses::getStatus_noalias(const Value* ptr) const {
   } else {
     // not found in map, and not a constant.
     return PointerStatus::notdefinedyet();
+  }
+}
+
+/// Try to get the status of the given `Constant` of integer type.
+///
+/// PointerStatus only makes sense for the status of a pointer, but this will
+/// still try to do the right thing interpreting the const int as a pointer
+/// value.
+///
+/// For instance, this can return a sensible status for constant 0 (which is
+/// just NULL), or for integers which are somehow eventually derived from
+/// a pointer via PtrToInt.
+///
+/// However, this only recognizes a few patterns, so in other cases where it's
+/// not sure, it just won't return a status.
+std::optional<PointerStatus> PointerStatuses::tryGetStatusOfConstInt(const Constant* c) const {
+  if (const ConstantInt* cint = dyn_cast<ConstantInt>(c)) {
+    // if the integer we're treating as a pointer is zero, or any other number <
+    // 4K (corresponding to the first page of memory, which is unmapped), we can
+    // treat it as CLEAN, just like the null pointer
+    if (cint->getValue().ult(4*1024)) {
+      return PointerStatus::clean();
+    } else {
+      // IntToPtr of any other constant number, we go by inttoptr_kind
+      return PointerStatus::from_kind(inttoptr_kind);
+    }
+  } else if (const ConstantExpr* cexpr = dyn_cast<ConstantExpr>(c)) {
+    // the integer we're treating as a pointer is another constant expression, of int type.
+    switch (cexpr->getOpcode()) {
+      case Instruction::PtrToInt: {
+        // derived from a PtrToInt ... just use the status of the orig ptr
+        return getStatus(cexpr->getOperand(0));
+      }
+      case Instruction::SExt:
+      case Instruction::ZExt:
+      {
+        // derived from a SExt or ZExt. Recurse
+        return tryGetStatusOfConstInt(cexpr->getOperand(0));
+      }
+      default:
+        // anything else is not a pattern we handle here
+        return std::nullopt;
+    }
+  } else {
+    // anything else is not a pattern we handle here
+    return std::nullopt;
   }
 }
 

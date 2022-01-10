@@ -287,20 +287,13 @@ BoundsInfo* BoundsInfos::get_binfo_noalias(const Value* ptr) {
           return ret;
         }
         case Instruction::IntToPtr: {
-          if (const ConstantInt* cint = dyn_cast<ConstantInt>(expr->getOperand(0))) {
-            // if it's IntToPtr of zero, or any other number < 4K (corresponding
-            // to the first page of memory, which is unmapped), we can treat it
-            // as infinite bounds, just like the null pointer
-            if (cint->getValue().ult(4*1024)) {
-              return &infinite_binfo;
-            } else {
-              // IntToPtr of any other constant number, UNKNOWN
-              return &unknown_binfo;
-            }
+          if (BoundsInfo* binfo = try_get_binfo_for_const_int(expr->getOperand(0))) {
+            return binfo;
+          } else {
+            // for other IntToPtrs, ideally, we have alias information, and some
+            // alias will have bounds info
+            return &notdefinedyet_binfo;
           }
-          // for other IntToPtrs, ideally, we have alias information, and some
-          // alias will have bounds info
-          return &notdefinedyet_binfo;
         }
         default: {
           dbgs() << "unhandled constant expression:\n";
@@ -316,6 +309,51 @@ BoundsInfo* BoundsInfos::get_binfo_noalias(const Value* ptr) {
   }
   assert(binfo->valid());
   return binfo;
+}
+
+/// Try to get bounds info for the given `Constant` of integer type.
+///
+/// BoundsInfo only makes sense for a pointer, but this will still try to do the
+/// right thing interpreting the const int as a pointer value.
+///
+/// For instance, this can return sensible bounds for constant 0 (which is just
+/// NULL), or for integers which are somehow eventually derived from a pointer
+/// via PtrToInt.
+///
+/// However, this only recognizes a few patterns, so in other cases where it's
+/// not sure, it will return NULL.
+BoundsInfo* BoundsInfos::try_get_binfo_for_const_int(const Constant* c) {
+  if (const ConstantInt* cint = dyn_cast<ConstantInt>(c)) {
+    // if the integer we're treating as a pointer is zero, or any other number <
+    // 4K (corresponding to the first page of memory, which is unmapped), we can
+    // treat it as infinite bounds, just like the null pointer
+    if (cint->getValue().ult(4*1024)) {
+      return &infinite_binfo;
+    } else {
+      // any other constant number, UNKNOWN
+      return &unknown_binfo;
+    }
+  } else if (const ConstantExpr* cexpr = dyn_cast<ConstantExpr>(c)) {
+    // the integer we're treating as a pointer is another constant expression, of int type.
+    switch (cexpr->getOpcode()) {
+      case Instruction::PtrToInt: {
+        // derived from a PtrToInt ... just use the binfo of the orig ptr
+        return get_binfo(cexpr->getOperand(0));
+      }
+      case Instruction::SExt:
+      case Instruction::ZExt:
+      {
+        // derived from a SExt or ZExt. Recurse
+        return try_get_binfo_for_const_int(cexpr->getOperand(0));
+      }
+      default:
+        // anything else is not a pattern we handle here
+        return NULL;
+    }
+  } else {
+    // anything else is not a pattern we handle here
+    return NULL;
+  }
 }
 
 /// Mark the given pointer as having the merger of the two given bounds
