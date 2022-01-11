@@ -257,9 +257,37 @@ define i32 @gep_still_blemished() {
   ret i32 %res
 }
 
-; This checks that adding 1 to a blemished16 pointer is a blemished32 pointer.
-; (Someday maybe we could consider this blemished16 in some cases.)
-; CHECK-LABEL: double_blemished
+; This checks that adding 1 and then 2 to a clean pointer is still just a
+; blemished16 pointer.
+; CHECK-LABEL: double_blemished16
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 1
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 0
+; CHECK-NEXT: Loads with unknown addr: 0
+; CHECK-NEXT: Stores with clean addr: 0
+; CHECK-NEXT: Stores with blemished16 addr: 0
+; CHECK-NEXT: Stores with blemished32 addr: 0
+; CHECK-NEXT: Stores with blemished64 addr: 0
+; CHECK-NEXT: Stores with blemishedconst addr: 0
+; CHECK-NEXT: Stores with dirty addr: 0
+; CHECK-NEXT: Stores with unknown addr: 0
+; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
+; CHECK: Nonzero constant pointer arithmetic on a blemished16 ptr: 1
+define i8 @double_blemished16() {
+  %ptr = alloca [64 x i8]
+  %castedptr = bitcast [64 x i8]* %ptr to i8*
+  %blemptr = getelementptr i8, i8* %castedptr, i32 2
+  %newptr = getelementptr i8, i8* %blemptr, i32 1
+  %res = load i8, i8* %newptr
+  ret i8 %res
+}
+
+; This checks that adding 10 and then 12 to a clean pointer is a blemished32
+; pointer.
+; CHECK-LABEL: double_blemished32
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with blemished16 addr: 0
 ; CHECK-NEXT: Loads with blemished32 addr: 1
@@ -276,17 +304,17 @@ define i32 @gep_still_blemished() {
 ; CHECK-NEXT: Stores with unknown addr: 0
 ; CHECK: Nonzero constant pointer arithmetic on a clean ptr: 1
 ; CHECK: Nonzero constant pointer arithmetic on a blemished16 ptr: 1
-define i8 @double_blemished() {
+define i8 @double_blemished32() {
   %ptr = alloca [64 x i8]
   %castedptr = bitcast [64 x i8]* %ptr to i8*
-  %blemptr = getelementptr i8, i8* %castedptr, i32 2
-  %newptr = getelementptr i8, i8* %blemptr, i32 1
+  %blemptr = getelementptr i8, i8* %castedptr, i32 10
+  %newptr = getelementptr i8, i8* %blemptr, i32 12
   %res = load i8, i8* %newptr
   ret i8 %res
 }
 
-; This checks that adding 1 to a blemished64 pointer is a blemishedconst pointer.
-; (Someday maybe we could consider this blemished64 in some cases.)
+; This checks that adding 50 and then 22 to a clean pointer is a blemishedconst
+; pointer.
 ; CHECK-LABEL: double_blemishedconst
 ; CHECK-NEXT: Loads with clean addr: 0
 ; CHECK-NEXT: Loads with blemished16 addr: 0
@@ -311,7 +339,7 @@ define i8 @double_blemishedconst() {
   %ptr = alloca [64 x i8]
   %castedptr = bitcast [64 x i8]* %ptr to i8*
   %blemptr = getelementptr i8, i8* %castedptr, i32 50
-  %newptr = getelementptr i8, i8* %blemptr, i32 1
+  %newptr = getelementptr i8, i8* %blemptr, i32 22
   %res = load i8, i8* %newptr
   ret i8 %res
 }

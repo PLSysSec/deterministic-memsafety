@@ -1,123 +1,13 @@
 #ifndef DMS_POINTERSTATUS_H
 #define DMS_POINTERSTATUS_H
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/Transforms/Utils/DMS_IRBuilder.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Value.h"
 
-class PointerKind final {
-public:
-  enum Kind {
-    // As of this writing, the operations producing UNKNOWN are: returning a
-    // pointer from a call; or receiving a pointer as a function parameter
-    UNKNOWN = 0,
-    // CLEAN means "not modified since last allocated or dereferenced", or for
-    // some other reason we know it is in-bounds
-    CLEAN,
-    // BLEMISHED16 means "incremented by 16 bytes or less from a clean pointer"
-    BLEMISHED16,
-    // BLEMISHED32 means "incremented by 32 bytes or less from a clean pointer".
-    // We'll make some effort to keep BLEMISHED16 pointers out of this bucket, but
-    // if we can't determine which bucket it belongs in, it conservatively goes
-    // here.
-    BLEMISHED32,
-    // BLEMISHED64 means "incremented by 64 bytes or less from a clean pointer".
-    // We'll make some effort to keep BLEMISHED16 and BLEMISHED32 pointers out of
-    // this bucket, but if we can't determine which bucket it belongs in, it
-    // conservatively goes here.
-    BLEMISHED64,
-    // BLEMISHEDCONST means "incremented/decremented by some compile-time-constant
-    // number of bytes from a clean pointer".
-    // We'll make some effort to keep BLEMISHED16 / BLEMISHED32 / BLEMISHED64
-    // pointers out of this bucket (leaving this bucket just for constants greater
-    // than 64, or negative constants), but if we can't determine which bucket it
-    // belongs in, it conservatively goes here.
-    BLEMISHEDCONST,
-    // DIRTY means "may have been incremented/decremented by a
-    // non-compile-time-constant amount since last allocated or dereferenced"
-    DIRTY,
-    // DYNAMIC means that we don't know the kind statically, but the kind is
-    // stored in an LLVM variable. Currently, the only operation producing DYNAMIC
-    // is loading a pointer from memory. See `PointerStatus`.
-    DYNAMIC,
-    // NOTDEFINEDYET means that the pointer has not been defined yet at this program
-    // point (at least, to our current knowledge). All pointers are (effectively)
-    // initialized to NOTDEFINEDYET at the beginning of the fixpoint analysis, and
-    // as we iterate we gradually refine this.
-    NOTDEFINEDYET,
-  };
-
-  constexpr PointerKind(Kind kind) : kind(kind) { }
-  PointerKind() : kind(UNKNOWN) {}
-
-  bool operator==(PointerKind& other) {
-    return kind == other.kind;
-  }
-  bool operator!=(PointerKind& other) {
-    return kind != other.kind;
-  }
-
-  /// Enable switch() on a `PointerKind` with the expected syntax
-  operator Kind() const { return kind; }
-  /// Disable if(kind) where `kind` is a `PointerKind`
-  explicit operator bool() = delete;
-
-  const char* pretty() const {
-    switch (kind) {
-      case UNKNOWN: return "UNKNOWN";
-      case CLEAN: return "CLEAN";
-      case BLEMISHED16: return "BLEMISHED16";
-      case BLEMISHED32: return "BLEMISHED32";
-      case BLEMISHED64: return "BLEMISHED64";
-      case BLEMISHEDCONST: return "BLEMISHEDCONST";
-      case DIRTY: return "DIRTY";
-      case DYNAMIC: return "DYNAMIC";
-      case NOTDEFINEDYET: return "NOTDEFINEDYET";
-      default: llvm_unreachable("Missing PointerKind case");
-    }
-  }
-
-  llvm::ConstantInt* to_constant_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
-
-  /// Merge two `PointerKind`s.
-  /// For the purposes of this function, the ordering is
-  /// DIRTY < UNKNOWN < BLEMISHEDCONST < BLEMISHED64 < BLEMISHED32 < BLEMISHED16 < CLEAN,
-  /// and the merge returns the least element.
-  /// NOTDEFINEDYET has the property where the merger of x and NOTDEFINEDYET is x
-  /// (for all x) - for instance, if we are at a join point in the CFG where the
-  /// pointer is x status on one incoming branch and not defined on the other,
-  /// the pointer can have x status going forward.
-  static PointerKind merge(const PointerKind a, const PointerKind b);
-
-private:
-  Kind kind;
-
-  /// This private function is like PointerKind::merge, but can handle some
-  /// cases of DYNAMIC. If it knows the merge result will be static, it returns
-  /// that; if it doesn't know, it returns DYNAMIC.
-  static PointerKind merge_maybe_dynamic(const PointerKind a, const PointerKind b);
-  friend class PointerStatus;
-};
-
-typedef enum DynamicPointerKind {
-  /// Same as PointerKind::CLEAN
-  DYN_CLEAN = 3,
-  /// Same as PointerKind::BLEMISHED16
-  DYN_BLEMISHED16 = 1,
-  /// Any BLEMISHED other than BLEMISHED16
-  DYN_BLEMISHEDOTHER = 2,
-  /// Anything else is conservatively considered DIRTY
-  DYN_DIRTY = 0,
-} DynamicPointerKind;
-
-class DynamicKindMasks final {
-public:
-  static const uint64_t dirty = ((uint64_t)DYN_DIRTY) << 48;
-  static const uint64_t blemished16 = ((uint64_t)DYN_BLEMISHED16) << 48;
-  static const uint64_t blemished_other = ((uint64_t)DYN_BLEMISHEDOTHER) << 48;
-  static const uint64_t clean = ((uint64_t)DYN_CLEAN) << 48;
-  static const uint64_t dynamic_kind_mask = ((uint64_t)0b11) << 48;
-};
+#include <optional>
+#include <variant>
 
 struct StatusWithBlock;
 
@@ -125,84 +15,252 @@ struct StatusWithBlock;
 /// point. Or, it can be used to describe the status of a vector of pointers, if
 /// the status applies (conservatively) to all pointers in the vector
 /// individually.
-///
-/// In principle, and perhaps literally in the future with std::variant,
-/// PointerKind::DYNAMIC carries an LLVM Value*.
-/// (If we do switch to std::variant, maybe BLEMISHED would carry an int
-/// indicating exactly how blemished.)
-/// For now, we have this, representing the ADT.
 class PointerStatus final {
 public:
-  /// the PointerKind
-  PointerKind kind;
-  /// Only for PointerKind::DYNAMIC, this holds the dynamic kind. This will be a
-  /// Value of type i64, where all bits are zeroes except possibly bits 48 and
-  /// 49, whose value together indicate the dynamic kind according to
-  /// DynamicPointerKind (above).
-  ///
-  /// This field is undefined if `kind` is not `DYNAMIC`.
-  ///
-  /// This field may be NULL before `pointer_encoding_is_complete` -- in
-  /// particular if we're not doing pointer encoding at all.
-  /// (If we aren't inserting dynamic instructions for pointer encoding, we
-  /// don't have the dynamic Values representing dynamic kinds.)
-  /// If/when `pointer_encoding_is_complete`, this field must not be NULL.
-  llvm::Value* dynamic_kind;
+  // A `PointerStatus` can take one of these forms:
 
-  static PointerStatus unknown() { return { PointerKind::UNKNOWN, NULL }; }
-  static PointerStatus clean() { return { PointerKind::CLEAN, NULL }; }
-  static PointerStatus blemished16() { return { PointerKind::BLEMISHED16, NULL }; }
-  static PointerStatus blemished32() { return { PointerKind::BLEMISHED32, NULL }; }
-  static PointerStatus blemished64() { return { PointerKind::BLEMISHED64, NULL }; }
-  static PointerStatus blemishedconst() { return { PointerKind::BLEMISHEDCONST, NULL }; }
-  static PointerStatus dirty() { return { PointerKind::DIRTY, NULL }; }
-  static PointerStatus notdefinedyet() { return { PointerKind::NOTDEFINEDYET, NULL }; }
-  static PointerStatus dynamic(llvm::Value* dynamic_kind) { return { PointerKind::DYNAMIC, dynamic_kind }; }
+  /// Unknown status.
+  /// As of this writing, two important ways Unknowns arise are: returning a
+  /// pointer from a call; or receiving a pointer as a function parameter
+  struct Unknown {
+    // no additional information needed
+    Unknown() = default;
+    bool operator==(const Unknown& other) const { return true; }
+    bool operator!=(const Unknown& other) const { return !(*this == other); }
+  };
 
-  /// Create a `PointerStatus` from a `PointerKind`. If the `PointerKind` is `DYNAMIC`,
-  /// the `PointerStatus` will have dynamic_kind `NULL`; see notes on `dynamic_kind`.
-  static PointerStatus from_kind(PointerKind kind) { return { kind, NULL }; }
+  /// `Clean` means "not modified since last allocated or dereferenced", or for
+  /// some other reason we know it is in-bounds
+  struct Clean {
+    // no additional information needed
+    Clean() = default;
+    bool operator==(const Clean& other) const { return true; }
+    bool operator!=(const Clean& other) const { return !(*this == other); }
+  };
+
+  /// `Blemished` means "incremented by some constant amount from a clean
+  /// pointer".
+  struct Blemished {
+    /// If this value is present, it is the (total) amount by which this pointer
+    /// has been incremented, in bytes, since we last knew it was `Clean`.
+    ///
+    /// If we're unsure, this is the most conservative (largest) amount by which
+    /// it could have been incremented, in bytes, since we last knew it was
+    /// `Clean`.
+    ///
+    /// If the pointer has been (in total) decremented since we last knew it was
+    /// `Clean`, or if we're unsure but some of the possible (total)
+    /// modifications are negative, then this will be std::nullopt.
+    /// `max_modification` should never be negative.
+    ///
+    /// If the pointer has been (or may have been) modified by a
+    /// non-compile-time-constant, it gets `Dirty` instead of `Blemished`.
+    std::optional<llvm::APInt> max_modification;
+
+    /// Returns `true` if this `Blemished` has a max_modification value and it's
+    /// <=16.
+    bool under16() const {
+      return max_modification.has_value() && max_modification->ule(16);
+    }
+
+    std::string pretty() const;
+
+    Blemished() : max_modification(std::nullopt) {}
+    Blemished(llvm::APInt max_modification) : max_modification(max_modification) {}
+    Blemished(std::optional<llvm::APInt> max_modification) : max_modification(max_modification) {}
+    bool operator==(const Blemished& other) const { return max_modification == other.max_modification; }
+    bool operator!=(const Blemished& other) const { return !(*this == other); }
+  };
+
+  /// `Dirty` means "may have been incremented/decremented by a
+  /// non-compile-time-constant amount since we last knew it was `Clean`"
+  struct Dirty {
+    // no additional information needed
+    Dirty() = default;
+    bool operator==(const Dirty& other) const { return true; }
+    bool operator!=(const Dirty& other) const { return !(*this == other); }
+  };
+
+  /// `Dynamic` means that we don't know the status statically, but the status
+  /// is indicated in an LLVM variable. Currently, the only operation producing
+  /// `Dynamic` is loading a pointer from memory.
+  struct Dynamic {
+    /// LLVM Value holding information about the dynamic status.
+    ///
+    /// This will be a Value of type i64, where all bits are zeroes except
+    /// possibly bits 48 and 49, whose value together indicate the dynamic kind
+    /// according to DynamicKind (below).
+    ///
+    /// This may be NULL before `pointer_encoding_is_complete` -- in
+    /// particular if we're not doing pointer encoding at all.
+    /// (If we aren't inserting dynamic instructions for pointer encoding, we
+    /// don't have the dynamic Values representing DynamicKinds.)
+    /// If/when `pointer_encoding_is_complete`, this must not be NULL.
+    llvm::Value* dynamic_kind;
+
+    /// Interpretations for each possible value of bits 48 and 49 in
+    /// `dynamic_kind`
+    enum DynamicKind {
+      /// indicates `Clean`
+      DYN_CLEAN = 3,
+      /// indicates `Blemished` with <=16
+      DYN_BLEMISHED16 = 1,
+      /// indicates any other `Blemished`
+      DYN_BLEMISHEDOTHER = 2,
+      /// indicates anything else, which we conservatively interpret as `Dirty`
+      DYN_DIRTY = 0,
+    };
+
+    struct Masks final {
+      static const uint64_t dirty = ((uint64_t)DYN_DIRTY) << 48;
+      static const uint64_t blemished16 = ((uint64_t)DYN_BLEMISHED16) << 48;
+      static const uint64_t blemished_other = ((uint64_t)DYN_BLEMISHEDOTHER) << 48;
+      static const uint64_t clean = ((uint64_t)DYN_CLEAN) << 48;
+      static const uint64_t dynamic_kind_mask = ((uint64_t)0b11) << 48;
+    };
+
+    Dynamic(llvm::Value* dynamic_kind) : dynamic_kind(dynamic_kind) {}
+    bool operator==(const Dynamic& other) const {
+      // require dynamic kinds to be pointer-equal
+      return dynamic_kind == other.dynamic_kind;
+    }
+    bool operator!=(const Dynamic& other) const { return !(*this == other); }
+  };
+
+  /// `NotDefinedYet` means that the pointer has not been defined yet at this
+  /// program point (at least, to our current knowledge). All pointers are
+  /// (effectively) initialized to `NotDefinedYet` at the beginning of the
+  /// fixpoint analysis, and as we iterate we gradually refine this.
+  struct NotDefinedYet {
+    // no additional information needed
+    NotDefinedYet() = default;
+    bool operator==(const NotDefinedYet& other) const { return true; }
+    bool operator!=(const NotDefinedYet& other) const { return !(*this == other); }
+  };
+
+  /// Actual data held in the `PointerStatus`: one of the above forms
+  std::variant<Unknown, Clean, Blemished, Dirty, Dynamic, NotDefinedYet> data;
+
+  bool valid() const {
+    return !data.valueless_by_exception();
+  }
+
+  bool is_unknown() const {
+    assert(valid());
+    return std::holds_alternative<Unknown>(data);
+  }
+
+  bool is_clean() const {
+    assert(valid());
+    return std::holds_alternative<Clean>(data);
+  }
+
+  bool is_blemished() const {
+    assert(valid());
+    return std::holds_alternative<Blemished>(data);
+  }
+
+  bool is_dirty() const {
+    assert(valid());
+    return std::holds_alternative<Dirty>(data);
+  }
+
+  bool is_dynamic() const {
+    assert(valid());
+    return std::holds_alternative<Dynamic>(data);
+  }
+
+  bool is_notdefinedyet() const {
+    assert(valid());
+    return std::holds_alternative<NotDefinedYet>(data);
+  }
+
+  PointerStatus(Unknown data) : data(data) {}
+  static PointerStatus unknown() {
+    return Unknown();
+  }
+
+  PointerStatus(Clean data) : data(data) {}
+  static PointerStatus clean() {
+    return Clean();
+  }
+
+  PointerStatus(Blemished data) : data(data) {}
+  static PointerStatus blemished() {
+    return Blemished();
+  }
+  static PointerStatus blemished(llvm::APInt max_modification) {
+    return Blemished(max_modification);
+  }
+  static PointerStatus blemished(std::optional<llvm::APInt> max_modification) {
+    return Blemished(max_modification);
+  }
+
+  PointerStatus(Dirty data) : data(data) {}
+  static PointerStatus dirty() {
+    return Dirty();
+  }
+
+  PointerStatus(Dynamic data) : data(data) {}
+  static PointerStatus dynamic(llvm::Value* dynamic_kind) {
+    return Dynamic(dynamic_kind);
+  }
+
+  PointerStatus(NotDefinedYet data) : data(data) {}
+  static PointerStatus notdefinedyet() {
+    return NotDefinedYet();
+  }
+
+  /// The default constructor produces a NotDefinedYet
+  explicit PointerStatus() : data(NotDefinedYet()) {}
 
   bool operator==(const PointerStatus& other) const {
-    if (kind != other.kind) return false;
-    if (kind == PointerKind::DYNAMIC) {
-      // require dynamic_kinds to be pointer-equal
-      if (dynamic_kind != other.dynamic_kind) return false;
-    }
-    return true;
+    return (data == other.data);
   }
   bool operator!=(const PointerStatus& other) const {
     return !(*this == other);
   }
 
-  std::string pretty() const { return kind.pretty(); }
+  std::string pretty() const;
+
+  /// This is for DenseMap, see notes where it's used
+  static unsigned getHashValue(const PointerStatus& status);
 
   llvm::Value* to_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
 
-  /// Like `to_dynamic_kind_mask()`, but only for `kind`s that aren't `DYNAMIC`.
+  /// Like `to_dynamic_kind_mask()`, but only when `data` isn't `Dynamic`.
   /// Returns a `ConstantInt` instead of an arbitrary `Value`.
   llvm::ConstantInt* to_constant_dynamic_kind_mask(llvm::LLVMContext& ctx) const;
 
   /// Merge two `PointerStatus`es.
-  /// See comments on PointerKind::merge.
+  /// For the purposes of this function, the ordering is
+  /// `Dirty` < `Unknown` < `Blemished`(nullopt) < `Blemished`(larger value)
+  ///   < `Blemished`(smaller value) < `Clean`,
+  /// and the merge returns the least element.
+  /// `NotDefinedYet` has the property where the merger of x and `NotDefinedYet`
+  /// is x (for all x) - for instance, if we are at a join point in the CFG
+  /// where the pointer is x status on one incoming branch and not defined on
+  /// the other, the pointer can have x status going forward.
   ///
   /// If we need to insert dynamic instructions to handle the merge, use
   /// `Builder`.
-  /// If neither of the statuses are DYNAMIC with non-null `dynamic_kind`, then
-  /// no dynamic instructions will be inserted and `Builder` may be NULL.
+  /// If neither of the statuses are `Dynamic` with non-null `dynamic_kind`,
+  /// then no dynamic instructions will be inserted and `Builder` may be NULL.
   /// Otherwise, dynamic instructions may be inserted.
   static PointerStatus merge_direct(
-    const PointerStatus a,
-    const PointerStatus b,
+    const PointerStatus A,
+    const PointerStatus B,
     llvm::DMSIRBuilder* Builder
   );
 
   /// Merge a set of `PointerStatus`es for the given `ptr` in `phi_block`.
   ///
+  /// (See general comments on merging on `merge_direct`.)
+  ///
   /// If necessary, insert a phi instruction in `phi_block` to perform the
   /// merge.
   /// We will only potentially need to do this if at least one of the statuses
-  /// is DYNAMIC with a non-null `dynamic_kind`.
+  /// is `Dynamic` with a non-null `dynamic_kind`.
   static PointerStatus merge_with_phi(
     const llvm::SmallVector<StatusWithBlock, 4>& statuses,
     const llvm::Value* ptr,
@@ -210,10 +268,21 @@ public:
   );
 
 private:
-  /// Merge a static `PointerKind` and a `dynamic_kind`.
+  /// Merge a static `PointerStatus` and a `dynamic_kind`.
   /// See comments on PointerStatus::merge_direct.
   static PointerStatus merge_static_dynamic_direct(
-    const PointerKind static_kind,
+    const PointerStatus static_status,
+    llvm::Value* dynamic_kind,
+    /// Builder to insert instructions with (if necessary)
+    llvm::DMSIRBuilder& Builder
+  );
+
+  /// Merge a static `PointerStatus` and a `dynamic_kind`.
+  /// See comments on PointerStatus::merge_direct.
+  ///
+  /// This function computes the merger without caching.
+  static PointerStatus merge_static_dynamic_nocache_direct(
+    const PointerStatus static_status,
     llvm::Value* dynamic_kind,
     /// Builder to insert instructions with (if necessary)
     llvm::DMSIRBuilder& Builder

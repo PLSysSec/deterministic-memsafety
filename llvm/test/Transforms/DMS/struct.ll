@@ -56,7 +56,7 @@ define i8 @load_first_from_blemished_struct() {
   ret i8 %res
 }
 
-; but loading the second element of a struct from a BLEMISHED16 struct pointer is
+; but loading the third element of a struct from a BLEMISHED16 struct pointer is
 ; (in this case) a BLEMISHED32 load
 ; CHECK-LABEL: load_second_from_blemished_struct
 ; CHECK-NEXT: Loads with clean addr: 0
@@ -67,10 +67,10 @@ define i8 @load_first_from_blemished_struct() {
 ; CHECK-NEXT: Loads with dirty addr: 0
 ; CHECK-NEXT: Loads with unknown addr: 0
 define i8 @load_second_from_blemished_struct() {
-  %ptr = alloca [4 x { i8, i8 }]
-  %castedptr = bitcast [4 x { i8, i8 }]* %ptr to { i8, i8 }*
-  %blemptr = getelementptr { i8, i8 }, { i8, i8 }* %castedptr, i32 1
-  %newptr = getelementptr { i8, i8 }, { i8, i8 }* %blemptr, i32 0, i32 1
+  %ptr = alloca [16 x { i8, i8, i8 }]
+  %castedptr = bitcast [16 x { i8, i8, i8 }]* %ptr to { i8, i8, i8 }*
+  %blemptr = getelementptr { i8, i8, i8 }, { i8, i8, i8 }* %castedptr, i32 5
+  %newptr = getelementptr { i8, i8, i8 }, { i8, i8, i8 }* %blemptr, i32 0, i32 2
   %res = load i8, i8* %newptr
   ret i8 %res
 }

@@ -1,131 +1,191 @@
 #include "llvm/Transforms/Utils/DMS_PointerStatus.h"
 
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
-/// Merge two `PointerKind`s.
-/// For the purposes of this function, the ordering is
-/// DIRTY < UNKNOWN < BLEMISHEDCONST < BLEMISHED64 < BLEMISHED32 < BLEMISHED16 < CLEAN,
-/// and the merge returns the least element.
-/// NOTDEFINEDYET has the property where the merger of x and NOTDEFINEDYET is x
-/// (for all x) - for instance, if we are at a join point in the CFG where the
-/// pointer is x status on one incoming branch and not defined on the other,
-/// the pointer can have x status going forward.
-PointerKind PointerKind::merge(const PointerKind a, const PointerKind b) {
-  if (a == DYNAMIC || b == DYNAMIC) {
-    llvm_unreachable("Can't PointerKind::merge a DYNAMIC; use PointerStatus::merge instead");
-  } else if (a == NOTDEFINEDYET) {
-    return b;
-  } else if (b == NOTDEFINEDYET) {
-    return a;
-  } else if (a == DIRTY || b == DIRTY) {
-    return DIRTY;
-  } else if (a == UNKNOWN || b == UNKNOWN) {
-    return UNKNOWN;
-  } else if (a == BLEMISHEDCONST || b == BLEMISHEDCONST) {
-    return BLEMISHEDCONST;
-  } else if (a == BLEMISHED64 || b == BLEMISHED64) {
-    return BLEMISHED64;
-  } else if (a == BLEMISHED32 || b == BLEMISHED32) {
-    return BLEMISHED32;
-  } else if (a == BLEMISHED16 || b == BLEMISHED16) {
-    return BLEMISHED16;
-  } else if (a == CLEAN && b == CLEAN) {
-    return CLEAN;
+std::string PointerStatus::pretty() const {
+  if (!valid()) return "<invalid>";
+  if (const Blemished* blem = std::get_if<Blemished>(&data)) {
+    return blem->pretty();
+  } else if (is_unknown()) {
+    return "Unknown";
+  } else if (is_clean()) {
+    return "Clean";
+  } else if (is_dirty()) {
+    return "Dirty";
+  } else if (is_dynamic()) {
+    return "Dynamic";
+  } else if (is_notdefinedyet()) {
+    return "NotDefinedYet";
   } else {
-    llvm_unreachable("Missing case in merge function");
+    llvm_unreachable("PointerStatus case not handled");
   }
 }
 
-/// This private function is like PointerKind::merge, but can handle some
-/// cases of DYNAMIC. If it knows the merge result will be static, it returns
-/// that; if it doesn't know, it returns DYNAMIC.
-PointerKind PointerKind::merge_maybe_dynamic(const PointerKind a, const PointerKind b) {
-  if (a != DYNAMIC && b != DYNAMIC) {
-    return PointerKind::merge(a, b);
-  } else if (a == NOTDEFINEDYET) {
-    return b;
-  } else if (b == NOTDEFINEDYET) {
-    return a;
-  } else if (a == DIRTY || b == DIRTY) {
-    // merging a DIRTY with anything, including a DYNAMIC, will just be DIRTY
-    return DIRTY;
-  } else if (a == CLEAN) {
-    // merging a CLEAN with any x, including a DYNAMIC, will just be that x
-    return b;
-  } else if (b == CLEAN) {
-    // merging a CLEAN with any x, including a DYNAMIC, will just be that x
-    return a;
+std::string PointerStatus::Blemished::pretty() const {
+  if (max_modification.has_value()) {
+    std::string out;
+    raw_string_ostream ostream(out);
+    ostream << "Blemished (";
+    max_modification->print(ostream, /* isSigned = */ false);
+    ostream << ")";
+    return ostream.str();
   } else {
-    // in other cases, we don't know the status statically, so return DYNAMIC
-    return DYNAMIC;
+    return "Blemished (otherconst)";
   }
 }
 
-ConstantInt* PointerKind::to_constant_dynamic_kind_mask(LLVMContext& ctx) const {
+/// Like `to_dynamic_kind_mask()`, but only when `data` isn't `Dynamic`.
+/// Returns a `ConstantInt` instead of an arbitrary `Value`.
+ConstantInt* PointerStatus::to_constant_dynamic_kind_mask(LLVMContext& ctx) const {
   Type* i64Ty = Type::getInt64Ty(ctx);
-  switch (kind) {
-    case PointerKind::CLEAN:
-      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::clean));
-    case PointerKind::BLEMISHED16:
-      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::blemished16));
-    case PointerKind::BLEMISHED32:
-    case PointerKind::BLEMISHED64:
-    case PointerKind::BLEMISHEDCONST:
-      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::blemished_other));
-    case PointerKind::DIRTY:
-      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::dirty));
-    case PointerKind::UNKNOWN:
-      // for now we just mark UNKNOWN pointers as dirty when storing them
-      return cast<ConstantInt>(ConstantInt::get(i64Ty, DynamicKindMasks::dirty));
-    case PointerKind::DYNAMIC:
-      llvm_unreachable("to_constant_dynamic_kind_mask can't be called with a DYNAMIC status");
-    case PointerKind::NOTDEFINEDYET:
-      llvm_unreachable("Shouldn't call to_constant_dynamic_kind_mask on a NOTDEFINEDYET");
-    default:
-      llvm_unreachable("PointerKind case not handled");
+  if (const Clean* clean = std::get_if<Clean>(&data)) {
+    (void)clean; // silence warning about unused variable
+    return cast<ConstantInt>(ConstantInt::get(i64Ty, Dynamic::Masks::clean));
+  } else if (const Blemished* blem = std::get_if<Blemished>(&data)) {
+    if (blem->under16()) {
+      return cast<ConstantInt>(ConstantInt::get(i64Ty, Dynamic::Masks::blemished16));
+    } else {
+      return cast<ConstantInt>(ConstantInt::get(i64Ty, Dynamic::Masks::blemished_other));
+    }
+  } else if (const Dirty* dirty = std::get_if<Dirty>(&data)) {
+    (void)dirty; // silence warning about unused variable
+    return cast<ConstantInt>(ConstantInt::get(i64Ty, Dynamic::Masks::dirty));
+  } else if (const Unknown* unk = std::get_if<Unknown>(&data)) {
+    // for now we just mark UNKNOWN pointers as dirty when storing them
+    (void)unk; // silence warning about unused variable
+    return cast<ConstantInt>(ConstantInt::get(i64Ty, Dynamic::Masks::dirty));
+  } else if (const Dynamic* dyn = std::get_if<Dynamic>(&data)) {
+    (void)dyn; // silence warning about unused variable
+    llvm_unreachable("to_constant_dynamic_kind_mask can't be called with a `Dynamic` status");
+  } else if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
+    (void)ndy; // silence warning about unused variable
+    llvm_unreachable("Shouldn't call to_constant_dynamic_kind_mask on a `NotDefinedYet`");
+  } else {
+    llvm_unreachable("PointerStatus case not handled");
   }
 }
 
 Value* PointerStatus::to_dynamic_kind_mask(LLVMContext& ctx) const {
-  if (kind == PointerKind::DYNAMIC) {
-    return dynamic_kind;
+  if (const Dynamic* dyn = std::get_if<Dynamic>(&data)) {
+    return dyn->dynamic_kind;
   } else {
     return to_constant_dynamic_kind_mask(ctx);
   }
 }
 
-/// Like `to_dynamic_kind_mask()`, but only for `kind`s that aren't `DYNAMIC`.
-/// Returns a `ConstantInt` instead of an arbitrary `Value`.
-ConstantInt* PointerStatus::to_constant_dynamic_kind_mask(LLVMContext& ctx) const {
-  return kind.to_constant_dynamic_kind_mask(ctx);
-}
-
 /// Merge two `PointerStatus`es.
-/// See comments on PointerKind::merge.
+/// For the purposes of this function, the ordering is
+/// `Dirty` < `Unknown` < `Blemished`(nullopt) < `Blemished`(larger value)
+///   < `Blemished`(smaller value) < `Clean`,
+/// and the merge returns the least element.
+/// `NotDefinedYet` has the property where the merger of x and `NotDefinedYet`
+/// is x (for all x) - for instance, if we are at a join point in the CFG
+/// where the pointer is x status on one incoming branch and not defined on
+/// the other, the pointer can have x status going forward.
 ///
 /// If we need to insert dynamic instructions to handle the merge, use
 /// `Builder`.
-/// If neither of the statuses are DYNAMIC with non-null `dynamic_kind`, then
-/// no dynamic instructions will be inserted and `Builder` may be NULL.
+/// If neither of the statuses are `Dynamic` with non-null `dynamic_kind`,
+/// then no dynamic instructions will be inserted and `Builder` may be NULL.
 /// Otherwise, dynamic instructions may be inserted.
 PointerStatus PointerStatus::merge_direct(
-  const PointerStatus a,
-  const PointerStatus b,
+  const PointerStatus A,
+  const PointerStatus B,
   llvm::DMSIRBuilder* Builder
 ) {
-  if (a.kind == PointerKind::DYNAMIC && b.kind == PointerKind::DYNAMIC) {
+  if (A.is_dynamic() && B.is_dynamic()) {
     assert(Builder);
-    return { PointerKind::DYNAMIC, merge_two_dynamic_direct(a.dynamic_kind, b.dynamic_kind, *Builder) };
-  } else if (a.kind == PointerKind::DYNAMIC) {
+    auto A_dyn = std::get<Dynamic>(A.data);
+    auto B_dyn = std::get<Dynamic>(B.data);
+    return Dynamic(merge_two_dynamic_direct(A_dyn.dynamic_kind, B_dyn.dynamic_kind, *Builder));
+  } else if (A.is_dynamic()) {
     assert(Builder);
-    return merge_static_dynamic_direct(b.kind, a.dynamic_kind, *Builder);
-  } else if (b.kind == PointerKind::DYNAMIC) {
+    auto A_dyn = std::get<Dynamic>(A.data);
+    return merge_static_dynamic_direct(B, A_dyn.dynamic_kind, *Builder);
+  } else if (B.is_dynamic()) {
     assert(Builder);
-    return merge_static_dynamic_direct(a.kind, b.dynamic_kind, *Builder);
+    auto B_dyn = std::get<Dynamic>(B.data);
+    return merge_static_dynamic_direct(A, B_dyn.dynamic_kind, *Builder);
   } else {
-    return PointerStatus { PointerKind::merge(a.kind, b.kind), NULL };
+    // no dynamic statuses involved in this merger.
+    if (A.is_notdefinedyet()) {
+      return B;
+    } else if (B.is_notdefinedyet()) {
+      return A;
+    } else if (A.is_dirty() || B.is_dirty()) {
+      return dirty();
+    } else if (A.is_unknown() || B.is_unknown()) {
+      return unknown();
+    } else if (A.is_blemished() && B.is_blemished()) {
+      auto A_blem = std::get<Blemished>(A.data);
+      auto B_blem = std::get<Blemished>(B.data);
+      if (!A_blem.max_modification.has_value() || !B_blem.max_modification.has_value()) {
+        return blemished();
+      } else {
+        if (A_blem.max_modification->uge(*B_blem.max_modification)) {
+          return A;
+        } else {
+          return B;
+        }
+      }
+    } else if (A.is_blemished()) {
+      return A;
+    } else if (B.is_blemished()) {
+      return B;
+    } else if (A.is_clean() && B.is_clean()) {
+      return clean();
+    } else {
+      llvm_unreachable("Missing case in merge function");
+    }
+  }
+}
+
+/// This private function is like PointerStatus::merge_direct, but never inserts
+/// dynamic instructions. If the merge result is known statically, it returns
+/// that; if the merge must be done dynamically, it returns `Dynamic(NULL)`
+/// instead of doing the merge.
+static PointerStatus merge_maybe_dynamic(
+  const PointerStatus A,
+  const PointerStatus B
+) {
+  if (!A.is_dynamic() && !B.is_dynamic()) {
+    return PointerStatus::merge_direct(A, B, NULL);
+  } else if (A.is_notdefinedyet()) {
+    return B;
+  } else if (B.is_notdefinedyet()) {
+    return A;
+  } else if (A.is_dirty() || B.is_dirty()) {
+    // merging a `Dirty` with anything, including a `Dynamic`, will just be `Dirty`
+    return PointerStatus::dirty();
+  } else if (A.is_clean()) {
+    // merging a `Clean` with any x, including a `Dynamic`, will just be that x
+    return B;
+  } else if (B.is_clean()) {
+    // merging a `Clean` with any x, including a `Dynamic`, will just be that x
+    return A;
+  } else {
+    // in other cases, we don't know the merged status statically, so return `Dynamic(NULL)`
+    return PointerStatus::dynamic(NULL);
+  }
+}
+
+/// This is for DenseMap, see notes where it's used
+unsigned PointerStatus::getHashValue(const PointerStatus& status) {
+  if (status.is_blemished()) {
+    const Blemished& blem = std::get<Blemished>(status.data);
+    if (blem.max_modification.has_value()) {
+      return status.data.index() ^ DenseMapInfo<APInt>::getHashValue(*blem.max_modification);
+    } else {
+      return status.data.index() ^ (-1);
+    }
+  } else if (status.is_dynamic()) {
+    const Dynamic& dyn = std::get<Dynamic>(status.data);
+    return status.data.index() ^ DenseMapInfo<Value*>::getHashValue(dyn.dynamic_kind);
+  } else {
+    return status.data.index();
   }
 }
 
@@ -179,30 +239,32 @@ static bool block_is_pred_of_block(BasicBlock* A, BasicBlock* B) {
 
 /// Merge a set of `PointerStatus`es for the given `ptr` in `phi_block`.
 ///
+/// (See general comments on merging on `merge_direct`.)
+///
 /// If necessary, insert a phi instruction in `phi_block` to perform the
 /// merge.
 /// We will only potentially need to do this if at least one of the statuses
-/// is DYNAMIC with a non-null `dynamic_kind`.
+/// is `Dynamic` with a non-null `dynamic_kind`.
 PointerStatus PointerStatus::merge_with_phi(
   const llvm::SmallVector<StatusWithBlock, 4>& statuses,
   const Value* ptr,
   llvm::BasicBlock* phi_block
 ) {
   bool have_dynamic_null = false;
-  PointerKind maybe_merged = PointerKind::NOTDEFINEDYET;
+  PointerStatus maybe_merged = notdefinedyet();
   for (const StatusWithBlock& swb : statuses) {
-    maybe_merged = PointerKind::merge_maybe_dynamic(maybe_merged, swb.status.kind);
-    if (swb.status.kind == PointerKind::DYNAMIC) {
-      if (swb.status.dynamic_kind == NULL) have_dynamic_null = true;
+    maybe_merged = merge_maybe_dynamic(maybe_merged, swb.status);
+    if (const Dynamic* dyn = std::get_if<Dynamic>(&swb.status.data)) {
+      if (dyn->dynamic_kind == NULL) have_dynamic_null = true;
     }
   }
-  // if the result of the merger is a kind known statically, use that.
+  // if the result of the merger is completely known statically, use that.
   // (We could theoretically use a PHI even in this case.
   // This would have the advantage of path-sensitive status instead of
   // a conservative static merger; but the disadvantage of having a dynamic
-  // status (from phi) instead of a statically-known (merged) status.
-  if (maybe_merged != PointerKind::DYNAMIC) return PointerStatus { maybe_merged, NULL };
-  // ok so we don't know the kind statically
+  // status (from phi) instead of a statically-known (merged) status.)
+  if (!maybe_merged.is_dynamic()) return maybe_merged;
+  // ok so we don't know the merge result statically
   if (have_dynamic_null) {
     // one of the pointers we're merging is dynamic with dynamic_kind NULL.
     // result will be dynamic with dynamic_kind NULL.
@@ -253,23 +315,23 @@ PointerStatus PointerStatus::merge_with_phi(
     for (const StatusWithBlock& swb : statuses) {
       const Value* old_incoming_kind = cached_phi->getIncomingValueForBlock(swb.block);
       assert(old_incoming_kind && "should have already checked that all these blocks are valid");
-      if (swb.status.kind == PointerKind::DYNAMIC) {
-        if (swb.status.dynamic_kind == old_incoming_kind) {
+      if (const Dynamic* dyn = std::get_if<Dynamic>(&swb.status.data)) {
+        if (dyn->dynamic_kind == old_incoming_kind) {
           // nothing to update
         } else {
           // a different dynamic status than we had previously.
           // (or maybe we previously had a constant mask here.)
           // Update the incoming value in place.
-          cached_phi->setIncomingValueForBlock(swb.block, swb.status.dynamic_kind);
+          cached_phi->setIncomingValueForBlock(swb.block, dyn->dynamic_kind);
         }
       } else {
-        ConstantInt* new_mask = swb.status.kind == PointerKind::NOTDEFINEDYET ?
-          // for now, treat this input to the phi as CLEAN.
+        ConstantInt* new_mask = swb.status.is_notdefinedyet() ?
+          // for now, treat this input to the phi as `Clean`.
           // this will be updated on a future iteration if necessary, once the
-          // incoming pointer has a defined kind.
-          // But if considering this CLEAN leads to the incoming pointer eventually
-          // being CLEAN, that's fine, we're happy with that result
-          ConstantInt::get(Type::getInt64Ty(swb.block->getContext()), DynamicKindMasks::clean)
+          // incoming pointer has a defined status.
+          // But if considering this `Clean` leads to the incoming pointer
+          // eventually being `Clean`, that's fine, we're happy with that result
+          ConstantInt::get(Type::getInt64Ty(swb.block->getContext()), Dynamic::Masks::clean)
           // incoming pointer status is defined, just get the appopriate dynamic
           // mask
           : swb.status.to_constant_dynamic_kind_mask(swb.block->getContext());
@@ -298,14 +360,14 @@ PointerStatus PointerStatus::merge_with_phi(
     assert(statuses.size() == pred_size(phi_block));
     for (const StatusWithBlock& swb : statuses) {
       assert(block_is_pred_of_block(swb.block, phi_block));
-      if (swb.status.kind == PointerKind::NOTDEFINEDYET) {
-        // for now, treat this input to the phi as CLEAN.
+      if (swb.status.is_notdefinedyet()) {
+        // for now, treat this input to the phi as `Clean`.
         // this will be updated on a future iteration if necessary, once the
-        // incoming pointer has a defined kind.
-        // But if considering this CLEAN leads to the incoming pointer eventually
-        // being CLEAN, that's fine, we're happy with that result
+        // incoming pointer has a defined status.
+        // But if considering this `Clean` leads to the incoming pointer
+        // eventually being `Clean`, that's fine, we're happy with that result
         phi->addIncoming(
-          Builder.getInt64(DynamicKindMasks::clean),
+          Builder.getInt64(Dynamic::Masks::clean),
           swb.block
         );
       } else {
@@ -322,73 +384,80 @@ PointerStatus PointerStatus::merge_with_phi(
   }
 }
 
-/// Merge a static `PointerKind` and a `dynamic_kind`, directly (inserting
+/// Merge a static `PointerStatus` and a `dynamic_kind`, directly (inserting
 /// dynamic instructions if necessary).
 ///
 /// This function computes the merger without caching.
-static PointerStatus merge_static_dynamic_nocache_direct(
-  const PointerKind static_kind,
+PointerStatus PointerStatus::merge_static_dynamic_nocache_direct(
+  const PointerStatus static_status,
   Value* dynamic_kind,
   DMSIRBuilder& Builder
 ) {
-  switch (static_kind) {
-    case PointerKind::NOTDEFINEDYET:
-      // As in PointerKind::merge, merging x with NOTDEFINEDYET is always x
-      return PointerStatus::dynamic(dynamic_kind);
-    case PointerKind::CLEAN:
-      // For all x, merging CLEAN with x results in x
-      return PointerStatus::dynamic(dynamic_kind);
-    case PointerKind::BLEMISHED16:
-      // merging BLEMISHED16 with DYN_CLEAN is DYN_BLEMISHED16.
-      // merging BLEMISHED16 with any other x results in x.
-      if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
-      return PointerStatus::dynamic(Builder.CreateSelect(
-        Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(DynamicKindMasks::clean), "isclean"),
-        Builder.getInt64(DynamicKindMasks::blemished16),
+  if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&static_status.data)) {
+    // As in PointerStatus::merge_direct, merging x with `NotDefinedYet` is
+    // always x
+    (void)ndy; // silence warning about unused variable
+    return dynamic(dynamic_kind);
+  } else if (const Clean* clean = std::get_if<Clean>(&static_status.data)) {
+    // For all x, merging `Clean` with x results in x
+    (void)clean; // silence warning about unused variable
+    return dynamic(dynamic_kind);
+  } else if (const Blemished* blem = std::get_if<Blemished>(&static_status.data)) {
+    if (blem->under16()) {
+      // merging `Blemished`(<=16) with DYN_CLEAN or DYN_BLEMISHED16 is
+      // DYN_BLEMISHED16.
+      // merging `Blemished`(<=16) with any other x results in x.
+      if (dynamic_kind == NULL) return dynamic(NULL);
+      return dynamic(Builder.CreateSelect(
+        Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(Dynamic::Masks::clean), "isclean"),
+        Builder.getInt64(Dynamic::Masks::blemished16),
         dynamic_kind,
         "merged_dynamic_kind"
       ));
-    case PointerKind::BLEMISHED32:
-    case PointerKind::BLEMISHED64:
-    case PointerKind::BLEMISHEDCONST:
-      // merging any of these with DYN_CLEAN, DYN_BLEMISHED16, or
-      // DYN_BLEMISHEDOTHER results in DYN_BLEMISHEDOTHER.
-      // merging any of these with DYN_DIRTY results in DYN_DIRTY.
+    } else {
+      // in all other cases, merging any `Blemished` with DYN_CLEAN,
+      // DYN_BLEMISHED16, or DYN_BLEMISHEDOTHER results in DYN_BLEMISHEDOTHER.
+      // merging any `Blemished` with DYN_DIRTY results in DYN_DIRTY.
       if (dynamic_kind == NULL) return PointerStatus::dynamic(NULL);
       return PointerStatus::dynamic(Builder.CreateSelect(
-        Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(DynamicKindMasks::dirty), "isdirty"),
-        Builder.getInt64(DynamicKindMasks::dirty),
-        Builder.getInt64(DynamicKindMasks::blemished_other),
+        Builder.CreateICmpEQ(dynamic_kind, Builder.getInt64(Dynamic::Masks::dirty), "isdirty"),
+        Builder.getInt64(Dynamic::Masks::dirty),
+        Builder.getInt64(Dynamic::Masks::blemished_other),
         "merged_dynamic_kind"
       ));
-    case PointerKind::DIRTY:
-    case PointerKind::UNKNOWN:
-      // merging anything with DIRTY or UNKNOWN results in DIRTY
-      return PointerStatus::dirty();
-    case PointerKind::DYNAMIC:
-      llvm_unreachable("merge_static_dynamic: expected a static PointerKind");
-    default:
-      llvm_unreachable("Missing PointerKind case");
+    }
+  } else if (const Dirty* d = std::get_if<Dirty>(&static_status.data)) {
+    // merging anything with `Dirty` results in `Dirty`
+    (void)d; // silence warning about unused variable
+    return dirty();
+  } else if (const Unknown* unk = std::get_if<Unknown>(&static_status.data)) {
+    // merging anything with `Unknown` results in `Unknown`
+    (void)unk; // silence warning about unused variable
+    return unknown();
+  } else if (static_status.is_dynamic()) {
+    llvm_unreachable("merge_static_dynamic: expected a static PointerStatus");
+  } else {
+    llvm_unreachable("Missing PointerStatus case");
   }
 }
 
 /// Used only for the cache in `PointerStatus::merge_static_dynamic_direct`; see
 /// notes there
 struct StaticDynamicCacheKey {
-  PointerKind static_kind;
+  PointerStatus static_status;
   Value* dynamic_kind;
   BasicBlock* block;
 
   StaticDynamicCacheKey(
-    PointerKind static_kind,
+    PointerStatus static_status,
     Value* dynamic_kind,
     BasicBlock* block
-  ) : static_kind(static_kind), dynamic_kind(dynamic_kind), block(block)
+  ) : static_status(static_status), dynamic_kind(dynamic_kind), block(block)
   {}
 
   bool operator==(const StaticDynamicCacheKey& other) const {
     return
-      static_kind == other.static_kind &&
+      static_status == other.static_status &&
       dynamic_kind == other.dynamic_kind &&
       block == other.block;
   }
@@ -402,11 +471,11 @@ struct StaticDynamicCacheKey {
 namespace llvm {
 template<> struct DenseMapInfo<StaticDynamicCacheKey> {
   static inline StaticDynamicCacheKey getEmptyKey() {
-    return StaticDynamicCacheKey(PointerKind::NOTDEFINEDYET, NULL, NULL);
+    return StaticDynamicCacheKey(PointerStatus::notdefinedyet(), NULL, NULL);
   }
   static inline StaticDynamicCacheKey getTombstoneKey() {
     return StaticDynamicCacheKey(
-      PointerKind::NOTDEFINEDYET,
+      PointerStatus::notdefinedyet(),
       DenseMapInfo<Value*>::getTombstoneKey(),
       DenseMapInfo<BasicBlock*>::getTombstoneKey()
     );
@@ -415,7 +484,7 @@ template<> struct DenseMapInfo<StaticDynamicCacheKey> {
     return
       DenseMapInfo<Value*>::getHashValue(Val.dynamic_kind) ^
       DenseMapInfo<BasicBlock*>::getHashValue(Val.block) ^
-      Val.static_kind;
+      PointerStatus::getHashValue(Val.static_status);
   }
   static bool isEqual(const StaticDynamicCacheKey &LHS, const StaticDynamicCacheKey &RHS) {
     return LHS == RHS;
@@ -423,21 +492,21 @@ template<> struct DenseMapInfo<StaticDynamicCacheKey> {
 };
 } // end namespace llvm
 
-/// Merge a static `PointerKind` and a `dynamic_kind`.
+/// Merge a static `PointerStatus` and a `dynamic_kind`.
 /// See comments on PointerStatus::merge_direct.
 ///
 /// This function performs caching. If these two things have been merged before,
 /// in the same block (eg on a previous iteration), it returns the cached value;
 /// else it computes the merger fresh.
 PointerStatus PointerStatus::merge_static_dynamic_direct(
-  const PointerKind static_kind,
+  const PointerStatus static_status,
   Value* dynamic_kind,
   DMSIRBuilder& Builder
 ) {
   static DenseMap<StaticDynamicCacheKey, PointerStatus> cache;
-  StaticDynamicCacheKey Key(static_kind, dynamic_kind, Builder.GetInsertBlock());
+  StaticDynamicCacheKey Key(static_status, dynamic_kind, Builder.GetInsertBlock());
   if (cache.count(Key) > 0) return cache[Key];
-  PointerStatus merged = merge_static_dynamic_nocache_direct(static_kind, dynamic_kind, Builder);
+  PointerStatus merged = merge_static_dynamic_nocache_direct(static_status, dynamic_kind, Builder);
   cache[Key] = merged;
   return merged;
 }
@@ -466,10 +535,10 @@ static Value* merge_two_dynamic_nocache_direct(
   //     (a is blemother or b is blemother) ? blemother :
   //     (a is blem16 or b is blem16) ? blem16 :
   //     clean
-  Value* dirty = Builder.getInt64(DynamicKindMasks::dirty);
-  Value* blemother = Builder.getInt64(DynamicKindMasks::blemished_other);
-  Value* blem16 = Builder.getInt64(DynamicKindMasks::blemished16);
-  Value* clean = Builder.getInt64(DynamicKindMasks::clean);
+  Value* dirty = Builder.getInt64(PointerStatus::Dynamic::Masks::dirty);
+  Value* blemother = Builder.getInt64(PointerStatus::Dynamic::Masks::blemished_other);
+  Value* blem16 = Builder.getInt64(PointerStatus::Dynamic::Masks::blemished16);
+  Value* clean = Builder.getInt64(PointerStatus::Dynamic::Masks::clean);
   Value* either_is_dirty = Builder.CreateLogicalOr(
     Builder.CreateICmpEQ(dynamic_kind_a, dirty),
     Builder.CreateICmpEQ(dynamic_kind_b, dirty),

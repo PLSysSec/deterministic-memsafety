@@ -28,8 +28,8 @@ std::string GEPResultClassification::pretty() const {
   return out.str();
 }
 
-/// Classify the `PointerKind` of the result of the given `gep`, assuming that its
-/// input pointer is `input_kind`.
+/// Classify the `PointerStatus` of the result of the given `gep`, assuming that
+/// its input pointer is `input_status`.
 /// This looks only at the `GetElementPtrInst` itself, and thus does not try to
 /// do any loop induction reasoning etc (that is done elsewhere).
 /// Think of this as giving the raw/default result for the `gep`.
@@ -44,7 +44,7 @@ static GEPResultClassification classifyGEPResult_direct(
   const APInt* override_constant_offset,
   DenseSet<const Instruction*>& added_insts
 ) {
-  assert(input_status.kind != PointerKind::NOTDEFINEDYET && "Shouldn't call classifyGEPResult() with NOTDEFINEDYET input_ptr");
+  assert(!input_status.is_notdefinedyet() && "Shouldn't call classifyGEPResult() with `NotDefinedYet` input_ptr");
   GEPResultClassification grc;
   if (override_constant_offset == NULL) {
     grc.constant_offset = computeGEPOffset(gep, DL);
@@ -63,50 +63,44 @@ static GEPResultClassification classifyGEPResult_direct(
     // nonzero offset, but "trustworthy" offset.
     assert(grc.constant_offset.has_value());
     grc.trustworthy_struct_offset = true;
-    switch (input_status.kind) {
-      case PointerKind::CLEAN: {
-        grc.classification = PointerStatus::clean();
-        return grc;
+    if (input_status.is_clean()) {
+      grc.classification = PointerStatus::clean();
+      return grc;
+    } else if (input_status.is_unknown()) {
+      grc.classification = PointerStatus::unknown();
+      return grc;
+    } else if (input_status.is_dirty()) {
+      grc.classification = PointerStatus::dirty();
+      return grc;
+    } else if (input_status.is_blemished()) {
+      // fall through. "Trustworthy" offset from a blemished pointer still needs
+      // to increase the blemished-ness of the pointer, as handled below.
+    } else if (input_status.is_dynamic()) {
+      const PointerStatus::Dynamic& dyn = std::get<PointerStatus::Dynamic>(input_status.data);
+      if (dyn.dynamic_kind == NULL) {
+        grc.classification = PointerStatus::dynamic(NULL);
+      } else {
+        // "trustworthy" offset from clean is clean, from dirty is dirty,
+        // from BLEMISHED16 is arbitrarily blemished, and from arbitrarily
+        // blemished is still arbitrarily blemished.
+        DMSIRBuilder Builder(&gep, DMSIRBuilder::BEFORE, &added_insts);
+        std::string gep_name = isa<ConstantExpr>(gep) ? "constgep" : gep.getNameOrAsOperand();
+        Value* dynamic_kind = Builder.CreateSelect(
+          Builder.CreateICmpEQ(
+            dyn.dynamic_kind,
+            Builder.getInt64(PointerStatus::Dynamic::Masks::blemished16),
+            Twine(gep_name, "_input_blem16")
+          ),
+          Builder.getInt64(PointerStatus::Dynamic::Masks::blemished_other),
+          dyn.dynamic_kind
+        );
+        grc.classification = PointerStatus::dynamic(dynamic_kind);
       }
-      case PointerKind::UNKNOWN: {
-        grc.classification = PointerStatus::unknown();
-        return grc;
-      }
-      case PointerKind::DIRTY: {
-        grc.classification = PointerStatus::dirty();
-        return grc;
-      }
-      case PointerKind::BLEMISHED16:
-      case PointerKind::BLEMISHED32:
-      case PointerKind::BLEMISHED64:
-      case PointerKind::BLEMISHEDCONST: {
-        // fall through. "Trustworthy" offset from a blemished pointer still needs
-        // to increase the blemished-ness of the pointer, as handled below.
-        break;
-      }
-      case PointerKind::DYNAMIC: {
-        if (input_status.dynamic_kind == NULL) {
-          grc.classification = PointerStatus::dynamic(NULL);
-        } else {
-          // "trustworthy" offset from clean is clean, from dirty is dirty,
-          // from BLEMISHED16 is arbitrarily blemished, and from arbitrarily
-          // blemished is still arbitrarily blemished.
-          DMSIRBuilder Builder(&gep, DMSIRBuilder::BEFORE, &added_insts);
-          std::string gep_name = isa<ConstantExpr>(gep) ? "constgep" : gep.getNameOrAsOperand();
-          Value* dynamic_kind = Builder.CreateSelect(
-            Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16), Twine(gep_name, "_input_blem16")),
-            Builder.getInt64(DynamicKindMasks::blemished_other),
-            input_status.dynamic_kind
-          );
-          grc.classification = PointerStatus::dynamic(dynamic_kind);
-        }
-        return grc;
-      }
-      case PointerKind::NOTDEFINEDYET: {
-        llvm_unreachable("GEP on a pointer with no status");
-      }
-      default:
-        llvm_unreachable("PointerKind case not handled");
+      return grc;
+    } else if (input_status.is_notdefinedyet()) {
+      llvm_unreachable("GEP on a pointer with no status");
+    } else {
+      llvm_unreachable("PointerStatus case not handled");
     }
   }
 
@@ -114,132 +108,98 @@ static GEPResultClassification classifyGEPResult_direct(
   // or a nonconstant.
   grc.trustworthy_struct_offset = false;
   if (grc.constant_offset.has_value()) {
-    switch (input_status.kind) {
-      case PointerKind::CLEAN: {
-        // This GEP adds a constant but nonzero amount to a CLEAN
-        // pointer. The result is some flavor of BLEMISHED depending
-        // on how far the pointer arithmetic goes.
-        if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) {
-          grc.classification = PointerStatus::blemished16();
-          return grc;
-        } else if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 32))) {
-          grc.classification = PointerStatus::blemished32();
-          return grc;
-        } else if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 64))) {
-          grc.classification = PointerStatus::blemished64();
+    if (const PointerStatus::Clean* clean = std::get_if<PointerStatus::Clean>(&input_status.data)) {
+      // This GEP adds a constant but nonzero amount to a `Clean` pointer. The
+      // result is an appropriate `Blemished` based on what's being added.
+      (void)clean; // silence warning about unused variable
+      if (grc.constant_offset->isNegative()) {
+        grc.classification = PointerStatus::blemished(std::nullopt);
+        return grc;
+      } else {
+        grc.classification = PointerStatus::blemished(*grc.constant_offset);
+        return grc;
+      }
+    } else if (const PointerStatus::Blemished* blem = std::get_if<PointerStatus::Blemished>(&input_status.data)) {
+      // This GEP adds a constant but nonzero amount to a `Blemished` pointer.
+      // The result is a pointer which is even more `Blemished`.
+      if (grc.constant_offset->isNegative()) {
+        // conservatively, any decrement at all and we bail.
+        // this is because the `max_modification_value` is only a max; all we
+        // know for sure is that the true modification value is in the range
+        // [0, max] inclusive. If it's 0, then the total modification would be
+        // negative, meaning we're obligated to put nullopt per Blemished's
+        // rules.
+        grc.classification = PointerStatus::blemished(std::nullopt);
+        return grc;
+      } else {
+        if (blem->max_modification.has_value()) {
+          grc.classification = PointerStatus::blemished(*grc.constant_offset + *blem->max_modification);
           return grc;
         } else {
-          // offset is constant, but larger than 64 bytes
-          grc.classification = PointerStatus::blemishedconst();
+          grc.classification = PointerStatus::blemished(std::nullopt);
           return grc;
         }
-        break;
       }
-      case PointerKind::BLEMISHED16: {
-        // This GEP adds a constant but nonzero amount to a
-        // BLEMISHED16 pointer. The result is some flavor of BLEMISHED
-        // depending on how far the pointer arithmetic goes.
-        if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) {
-          // Conservatively, the total offset can't exceed 32
-          grc.classification = PointerStatus::blemished32();
-          return grc;
-        } else if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 48))) {
-          // Conservatively, the total offset can't exceed 64
-          grc.classification = PointerStatus::blemished64();
-          return grc;
-        } else {
-          // offset is constant, but may be larger than 64 bytes
-          grc.classification = PointerStatus::blemishedconst();
-          return grc;
-        }
-        break;
+    } else if (const PointerStatus::Dirty* dirty = std::get_if<PointerStatus::Dirty>(&input_status.data)) {
+      // result of a GEP with any nonzero indices, on a `Dirty` or `Unknown`
+      // pointer, is always `Dirty`.
+      (void)dirty; // silence warning about unused variable
+      grc.classification = PointerStatus::dirty();
+      return grc;
+    } else if (const PointerStatus::Unknown* unk = std::get_if<PointerStatus::Unknown>(&input_status.data)) {
+      // result of a GEP with any nonzero indices, on a `Dirty` or `Unknown`
+      // pointer, is always `Dirty`.
+      (void)unk; // silence warning about unused variable
+      grc.classification = PointerStatus::dirty();
+      return grc;
+    } else if (const PointerStatus::Dynamic* dyn = std::get_if<PointerStatus::Dynamic>(&input_status.data)) {
+      // This GEP adds a constant but nonzero amount to a `Dynamic` pointer.
+      if (dyn->dynamic_kind == NULL) {
+        grc.classification = PointerStatus::dynamic(NULL);
+      } else {
+        // We need to dynamically check the kind in order to classify the
+        // result.
+        DMSIRBuilder Builder(&gep, DMSIRBuilder::BEFORE, &added_insts);
+        std::string gep_name = isa<ConstantExpr>(gep) ? "constgep" : gep.getNameOrAsOperand();
+        Value* is_clean = Builder.CreateICmpEQ(
+          dyn->dynamic_kind,
+          Builder.getInt64(PointerStatus::Dynamic::Masks::clean),
+          Twine(gep_name, "_input_clean")
+        );
+        Value* is_blem16 = Builder.CreateICmpEQ(
+          dyn->dynamic_kind,
+          Builder.getInt64(PointerStatus::Dynamic::Masks::blemished16),
+          Twine(gep_name, "_input_blem16")
+        );
+        Value* is_blemother = Builder.CreateICmpEQ(
+          dyn->dynamic_kind,
+          Builder.getInt64(PointerStatus::Dynamic::Masks::blemished_other),
+          Twine(gep_name, "_input_blemother")
+        );
+        Value* dynamic_kind = Builder.getInt64(PointerStatus::Dynamic::Masks::dirty);
+        dynamic_kind = Builder.CreateSelect(
+          is_clean,
+          (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) ?
+            Builder.getInt64(PointerStatus::Dynamic::Masks::blemished16) : // offset <= 16 from a dynamically clean pointer
+            Builder.getInt64(PointerStatus::Dynamic::Masks::blemished_other), // offset >16 from a dynamically clean pointer
+          dynamic_kind
+        );
+        dynamic_kind = Builder.CreateSelect(
+          Builder.CreateLogicalOr(is_blem16, is_blemother),
+          Builder.getInt64(PointerStatus::Dynamic::Masks::blemished_other), // any offset from any blemished has to be blemished_other, as we can't prove it stays within blemished16
+          dynamic_kind
+        );
+        // the case where the kind was DYN_DIRTY is implicitly handled by the
+        // default value of `dynamic_kind`. Result is still DYN_DIRTY in that
+        // case.
+        grc.classification = PointerStatus::dynamic(dynamic_kind);
       }
-      case PointerKind::BLEMISHED32: {
-        // This GEP adds a constant but nonzero amount to a
-        // BLEMISHED32 pointer. The result is some flavor of BLEMISHED
-        // depending on how far the pointer arithmetic goes.
-        if (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 32))) {
-          // Conservatively, the total offset can't exceed 64
-          grc.classification = PointerStatus::blemished64();
-          return grc;
-        } else {
-          // offset is constant, but may be larger than 64 bytes
-          grc.classification = PointerStatus::blemishedconst();
-          return grc;
-        }
-        break;
-      }
-      case PointerKind::BLEMISHED64: {
-        // This GEP adds a constant but nonzero amount to a
-        // BLEMISHED64 pointer. The result is BLEMISHEDCONST, as we
-        // can't prove the total constant offset remains 64 or less.
-        grc.classification = PointerStatus::blemishedconst();
-        return grc;
-        break;
-      }
-      case PointerKind::BLEMISHEDCONST: {
-        // This GEP adds a constant but nonzero amount to a
-        // BLEMISHEDCONST pointer. The result is still BLEMISHEDCONST,
-        // as the total offset is still a constant.
-        grc.classification = PointerStatus::blemishedconst();
-        return grc;
-        break;
-      }
-      case PointerKind::DIRTY: {
-        // result of a GEP with any nonzero indices, on a DIRTY or
-        // UNKNOWN pointer, is always DIRTY.
-        grc.classification = PointerStatus::dirty();
-        return grc;
-        break;
-      }
-      case PointerKind::UNKNOWN: {
-        // result of a GEP with any nonzero indices, on a DIRTY or
-        // UNKNOWN pointer, is always DIRTY.
-        grc.classification = PointerStatus::dirty();
-        return grc;
-        break;
-      }
-      case PointerKind::DYNAMIC: {
-        // This GEP adds a constant but nonzero amount to a DYNAMIC pointer.
-        if (input_status.dynamic_kind == NULL) {
-          grc.classification = PointerStatus::dynamic(NULL);
-        } else {
-          // We need to dynamically check the kind in order to classify the
-          // result.
-          DMSIRBuilder Builder(&gep, DMSIRBuilder::BEFORE, &added_insts);
-          std::string gep_name = isa<ConstantExpr>(gep) ? "constgep" : gep.getNameOrAsOperand();
-          Value* is_clean = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::clean), Twine(gep_name, "_input_clean"));
-          Value* is_blem16 = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished16), Twine(gep_name, "_input_blem16"));
-          Value* is_blemother = Builder.CreateICmpEQ(input_status.dynamic_kind, Builder.getInt64(DynamicKindMasks::blemished_other), Twine(gep_name, "_input_blemother"));
-          Value* dynamic_kind = Builder.getInt64(DynamicKindMasks::dirty);
-          dynamic_kind = Builder.CreateSelect(
-            is_clean,
-            (grc.constant_offset->ule(APInt(/* bits = */ 64, /* val = */ 16))) ?
-              Builder.getInt64(DynamicKindMasks::blemished16) : // offset <= 16 from a dynamically clean pointer
-              Builder.getInt64(DynamicKindMasks::blemished_other), // offset >16 from a dynamically clean pointer
-            dynamic_kind
-          );
-          dynamic_kind = Builder.CreateSelect(
-            Builder.CreateLogicalOr(is_blem16, is_blemother),
-            Builder.getInt64(DynamicKindMasks::blemished_other), // any offset from any blemished has to be blemished_other, as we can't prove it stays within blemished16
-            dynamic_kind
-          );
-          // the case where the kind was DYN_DIRTY is implicitly handled by the
-          // default value of `dynamic_kind`. Result is still DYN_DIRTY in that
-          // case.
-          grc.classification = PointerStatus::dynamic(dynamic_kind);
-        }
-        return grc;
-        break;
-      }
-      case PointerKind::NOTDEFINEDYET: {
-        llvm_unreachable("GEP on a pointer with no status");
-        break;
-      }
-      default: {
-        llvm_unreachable("Missing PointerKind case");
-        break;
-      }
+      return grc;
+    } else if (const PointerStatus::NotDefinedYet* ndy = std::get_if<PointerStatus::NotDefinedYet>(&input_status.data)) {
+      (void)ndy; // silence warning about unused variable
+      llvm_unreachable("GEP on a pointer with no status");
+    } else {
+      llvm_unreachable("Missing PointerStatus case");
     }
   } else {
     // offset is not constant; so, result is dirty
@@ -349,8 +309,7 @@ template<> struct DenseMapInfo<GEPResultCacheKey> {
   static unsigned getHashValue(const GEPResultCacheKey &Val) {
     return
       DenseMapInfo<GetElementPtrInst*>::getHashValue(Val.gep) ^
-      Val.input_status.kind ^
-      DenseMapInfo<const Value*>::getHashValue(Val.input_status.dynamic_kind) ^
+      PointerStatus::getHashValue(Val.input_status) ^
       (Val.trust_llvm_struct_types ? 0 : -1) ^
       DenseMapInfo<const APInt*>::getHashValue(Val.override_constant_offset);
   }

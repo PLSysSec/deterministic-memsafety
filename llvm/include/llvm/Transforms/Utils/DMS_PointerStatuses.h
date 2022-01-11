@@ -24,7 +24,7 @@ private:
 
   const DataLayout &DL;
   const bool trust_llvm_struct_types;
-  const PointerKind inttoptr_kind;
+  const PointerStatus inttoptr_status;
 
   /// Reference to the `added_insts` where we note any instructions added for
   /// bounds purposes. See notes on `added_insts` in `DMSAnalysis`
@@ -38,13 +38,14 @@ public:
     BasicBlock& block,
     const DataLayout &DL,
     const bool trust_llvm_struct_types,
-    const PointerKind inttoptr_kind,
+    const PointerStatus inttoptr_status,
     DenseSet<const Instruction*>& added_insts,
     DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
   ) :
     block(block),
     DL(DL),
     trust_llvm_struct_types(trust_llvm_struct_types),
+    inttoptr_status(inttoptr_status),
     added_insts(added_insts),
     pointer_aliases(pointer_aliases)
   {}
@@ -55,17 +56,14 @@ public:
     assert(&block == &other.block);
     assert(DL == other.DL);
     assert(trust_llvm_struct_types == other.trust_llvm_struct_types);
-    assert(inttoptr_kind == other.inttoptr_kind);
+    assert(inttoptr_status == other.inttoptr_status);
     assert(&added_insts == &other.added_insts);
     assert(&pointer_aliases == &other.pointer_aliases);
     map = other.map;
     return *this;
   }
 
-  // Use this for any `kind` except NOTDEFINEDYET or DYNAMIC
-  void mark_as(const Value* ptr, PointerKind kind);
-
-  // Use this for any `kind` except NOTDEFINEDYET
+  // Use this for any `status` except `NotDefinedYet`
   void mark_as(const Value* ptr, PointerStatus status);
 
   /// Get the status of `ptr`. If necessary, check its aliases, and those

@@ -10,26 +10,15 @@ using namespace llvm;
 
 static void describePointerList(const SmallVector<const Value*, 8>& ptrs, std::ostringstream& out, StringRef desc);
 
-// Use this for any `kind` except NOTDEFINEDYET or DYNAMIC
-void PointerStatuses::mark_as(const Value* ptr, PointerKind kind) {
-  // don't explicitly mark anything NOTDEFINEDYET - we reserve
-  // "not in the map" to mean NOTDEFINEDYET
-  assert(kind != PointerKind::NOTDEFINEDYET);
-  // DYNAMIC has to be handled with the other overload of `mark_as`
-  assert(kind != PointerKind::DYNAMIC);
-  LLVM_DEBUG(dbgs() << "DMS:     marking pointer " << ptr->getNameOrAsOperand() << " as status " << kind.pretty() << "\n");
+// Use this for any `status` except `NotDefinedYet`
+void PointerStatuses::mark_as(const Value* ptr, PointerStatus status) {
+  // don't explicitly mark anything `NotDefinedYet` - we reserve
+  // "not in the map" to mean `NotDefinedYet`
+  assert(!status.is_notdefinedyet());
+  LLVM_DEBUG(dbgs() << "DMS:     marking pointer " << ptr->getNameOrAsOperand() << " as status " << status.pretty() << "\n");
   // insert() does nothing if the key was already in the map.
   // instead, it appears we have to use operator[], which seems to
   // work whether or not `ptr` was already in the map
-  map[ptr] = { kind, NULL };
-}
-
-// Use this for any `kind` except NOTDEFINEDYET
-void PointerStatuses::mark_as(const Value* ptr, PointerStatus status) {
-  // don't explicitly mark anything NOTDEFINEDYET - we reserve
-  // "not in the map" to mean NOTDEFINEDYET
-  assert(status.kind != PointerKind::NOTDEFINEDYET);
-  LLVM_DEBUG(dbgs() << "DMS:     marking pointer " << ptr->getNameOrAsOperand() << " as status " << status.pretty() << "\n");
   map[ptr] = status;
 }
 
@@ -45,14 +34,14 @@ PointerStatus PointerStatuses::getStatus(const Value* ptr) const {
 /// `norecurse`. (We use this to avoid infinite recursion.)
 PointerStatus PointerStatuses::getStatus_checking_aliases_except(const Value* ptr, SmallDenseSet<const Value*, 4>& norecurse) const {
   PointerStatus status = getStatus_noalias(ptr);
-  if (status.kind != PointerKind::NOTDEFINEDYET) return status;
+  if (!status.is_notdefinedyet()) return status;
   // if status isn't defined, see if it's defined for any alias of this pointer
   norecurse.insert(ptr);
   for (const Value* alias : pointer_aliases[ptr]) {
     if (norecurse.insert(alias).second) {
       status = getStatus_checking_aliases_except(alias, norecurse);
     }
-    if (status.kind != PointerKind::NOTDEFINEDYET) return status;
+    if (!status.is_notdefinedyet()) return status;
   }
   return status;
 }
@@ -173,7 +162,7 @@ std::optional<PointerStatus> PointerStatuses::tryGetStatusOfConstInt(const Const
       return PointerStatus::clean();
     } else {
       // IntToPtr of any other constant number, we go by inttoptr_kind
-      return PointerStatus::from_kind(inttoptr_kind);
+      return inttoptr_status;
     }
   } else if (const ConstantExpr* cexpr = dyn_cast<ConstantExpr>(c)) {
     // the integer we're treating as a pointer is another constant expression, of int type.
@@ -229,31 +218,22 @@ std::string PointerStatuses::describe() const {
       continue;
     }
     const PointerStatus& status = pair.getSecond();
-    switch (status.kind) {
-      case PointerKind::CLEAN:
-        clean_ptrs.push_back(ptr);
-        break;
-      case PointerKind::BLEMISHED16:
-      case PointerKind::BLEMISHED32:
-      case PointerKind::BLEMISHED64:
-      case PointerKind::BLEMISHEDCONST:
-        blem_ptrs.push_back(ptr);
-        break;
-      case PointerKind::DIRTY:
-        dirty_ptrs.push_back(ptr);
-        break;
-      case PointerKind::UNKNOWN:
-        unk_ptrs.push_back(ptr);
-        break;
-      case PointerKind::DYNAMIC:
-        if (status.dynamic_kind) dyn_ptrs.push_back(ptr);
-        else dynnull_ptrs.push_back(ptr);
-        break;
-      case PointerKind::NOTDEFINEDYET:
-        ndy_ptrs.push_back(ptr);
-        break;
-      default:
-        llvm_unreachable("Missing PointerKind case");
+    if (status.is_clean()) {
+      clean_ptrs.push_back(ptr);
+    } else if (status.is_blemished()) {
+      blem_ptrs.push_back(ptr);
+    } else if (status.is_dirty()) {
+      dirty_ptrs.push_back(ptr);
+    } else if (status.is_unknown()) {
+      unk_ptrs.push_back(ptr);
+    } else if (status.is_dynamic()) {
+      const PointerStatus::Dynamic& dyn = std::get<PointerStatus::Dynamic>(status.data);
+      if (dyn.dynamic_kind) dyn_ptrs.push_back(ptr);
+      else dynnull_ptrs.push_back(ptr);
+    } else if (status.is_notdefinedyet()) {
+      ndy_ptrs.push_back(ptr);
+    } else {
+      llvm_unreachable("Missing PointerStatus case");
     }
   }
   std::ostringstream out;
@@ -285,7 +265,7 @@ PointerStatuses PointerStatuses::merge(const SmallVector<const PointerStatuses*,
     assert(statuses[i]->trust_llvm_struct_types == statuses[i+1]->trust_llvm_struct_types);
     assert(&statuses[i]->added_insts == &statuses[i+1]->added_insts);
   }
-  PointerStatuses merged(merge_block, statuses[0]->DL, statuses[0]->trust_llvm_struct_types, statuses[0]->inttoptr_kind, statuses[0]->added_insts, statuses[0]->pointer_aliases);
+  PointerStatuses merged(merge_block, statuses[0]->DL, statuses[0]->trust_llvm_struct_types, statuses[0]->inttoptr_status, statuses[0]->added_insts, statuses[0]->pointer_aliases);
   for (size_t i = 0; i < statuses.size(); i++) {
     for (const auto& pair : statuses[i]->map) {
       SmallVector<StatusWithBlock, 4> statuses_for_ptr;

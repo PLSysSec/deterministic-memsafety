@@ -618,10 +618,10 @@ void BoundsInfos::propagate_bounds(SelectInst& select) {
   }
 }
 
-void BoundsInfos::propagate_bounds(IntToPtrInst& inttoptr, PointerKind inttoptr_kind) {
+void BoundsInfos::propagate_bounds(IntToPtrInst& inttoptr, PointerStatus inttoptr_status) {
   // if we're considering it a clean ptr, then also assume it is valid for the
   // entire size of the data its type claims it points to
-  if (inttoptr_kind == PointerKind::CLEAN) {
+  if (inttoptr_status.is_clean()) {
     PointerType* resultType = cast<PointerType>(inttoptr.getType());
     if (resultType->getElementType()->isSized()) {
       auto allocationSize = DL.getTypeStoreSize(resultType->getElementType()).getFixedSize();
