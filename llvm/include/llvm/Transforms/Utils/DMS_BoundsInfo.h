@@ -92,7 +92,7 @@ public:
     ///
     /// Returns the "base" (pointer to the first byte) of the allocation, as an
     /// LLVM `Value` of type `i8*`.
-    Value* base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
+    Value* base_as_llvm_value(const Value* cur_ptr, DMSIRBuilder& Builder) const {
       return Builder.add_offset_to_ptr(cur_ptr, low_offset);
     }
 
@@ -102,7 +102,7 @@ public:
     ///
     /// Returns the "max" (pointer to the last byte) of the allocation, as an
     /// LLVM `Value` of type `i8*`.
-    Value* max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
+    Value* max_as_llvm_value(const Value* cur_ptr, DMSIRBuilder& Builder) const {
       return Builder.add_offset_to_ptr(cur_ptr, high_offset);
     }
 
@@ -426,7 +426,7 @@ public:
 
     /// Create a Dynamic from the given Static and the pointer which the bounds
     /// apply to
-    static Dynamic from_static(Static s, Value* cur_ptr, DMSIRBuilder& Builder);
+    static Dynamic from_static(Static s, const Value* cur_ptr, DMSIRBuilder& Builder);
   }; // end class Dynamic
 
   /// Actual data held in the `BoundsInfo`: one of the above forms
@@ -561,7 +561,7 @@ public:
   /// as an LLVM `Value` of type `i8*`.
   /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
   /// The BoundsInfo should not be NotDefinedYet.
-  Value* base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const;
+  Value* base_as_llvm_value(const Value* cur_ptr, DMSIRBuilder& Builder) const;
 
   /// `cur_ptr`: the pointer value for which these bounds apply.
   ///
@@ -571,7 +571,7 @@ public:
   /// as an LLVM `Value` of type `i8*`.
   /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
   /// The BoundsInfo should not be NotDefinedYet.
-  Value* max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const;
+  Value* max_as_llvm_value(const Value* cur_ptr, DMSIRBuilder& Builder) const;
 
   /// Insert dynamic instructions to store this bounds info.
   ///
@@ -581,7 +581,7 @@ public:
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
   ///
   /// Returns the Call instruction if one was inserted, or else NULL
-  CallInst* store_dynamic(Value* addr, Value* ptr, DMSIRBuilder& Builder) const;
+  CallInst* store_dynamic(Value* addr, const Value* ptr, DMSIRBuilder& Builder) const;
 
   /// Get a `Dynamic` representing dynamic bounds for the pointer
   /// `loaded_ptr`, which should have been loaded from the given `addr`. (I.e.,

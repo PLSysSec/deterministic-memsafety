@@ -46,7 +46,7 @@ std::string BoundsInfo::Static::pretty() const {
 /// as an LLVM `Value` of type `i8*`.
 /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
 /// The BoundsInfo should not be NotDefinedYet.
-Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
+Value* BoundsInfo::base_as_llvm_value(const Value* cur_ptr, DMSIRBuilder& Builder) const {
   assert(valid());
   if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
     (void)ndy; // silence warning about unused variable
@@ -75,7 +75,7 @@ Value* BoundsInfo::base_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) con
 /// as an LLVM `Value` of type `i8*`.
 /// Or, if the BoundsInfo is Unknown or Infinite, returns NULL.
 /// The BoundsInfo should not be NotDefinedYet.
-Value* BoundsInfo::max_as_llvm_value(Value* cur_ptr, DMSIRBuilder& Builder) const {
+Value* BoundsInfo::max_as_llvm_value(const Value* cur_ptr, DMSIRBuilder& Builder) const {
   assert(valid());
   if (const NotDefinedYet* ndy = std::get_if<NotDefinedYet>(&data)) {
     (void)ndy; // silence warning about unused variable
@@ -146,7 +146,7 @@ BoundsInfo::Dynamic BoundsInfo::Dynamic::merge(
 /// apply to
 BoundsInfo::Dynamic BoundsInfo::Dynamic::from_static(
   Static s,
-  Value* cur_ptr,
+  const Value* cur_ptr,
   DMSIRBuilder& Builder
 ) {
   Value* base = s.base_as_llvm_value(cur_ptr, Builder);
@@ -162,7 +162,7 @@ BoundsInfo::Dynamic BoundsInfo::Dynamic::from_static(
 /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions.
 ///
 /// Returns the Call instruction if one was inserted, or else NULL
-CallInst* BoundsInfo::store_dynamic(Value* addr, Value* ptr, DMSIRBuilder& Builder) const {
+CallInst* BoundsInfo::store_dynamic(Value* addr, const Value* ptr, DMSIRBuilder& Builder) const {
   assert(valid());
   assert(ptr);
   assert(addr);

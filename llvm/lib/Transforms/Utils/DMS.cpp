@@ -896,7 +896,7 @@ private:
             const PointerStatus true_status = ptr_statuses.getStatus(select.getTrueValue());
             const PointerStatus false_status = ptr_statuses.getStatus(select.getFalseValue());
             DMSIRBuilder Builder(&select, DMSIRBuilder::BEFORE, &added_insts);
-            mark_as(ptr_statuses, &select, PointerStatus::merge_direct(true_status, false_status, Builder));
+            mark_as(ptr_statuses, &select, PointerStatus::merge_direct(true_status, false_status, &Builder));
             if (settings.add_sw_spatial_checks) {
               bounds_infos.propagate_bounds(select);
             }
@@ -1058,7 +1058,7 @@ private:
             mark_as(ptr_statuses, &inst, PointerStatus::merge_direct(
               existing_vector_status,
               ptr_statuses.getStatus(ie.getOperand(1)),
-              Builder
+              &Builder
             ));
             // for now, the bounds info is still UNKNOWN until we think about
             // how to do bounds info for vectors of pointers
@@ -1078,7 +1078,7 @@ private:
           mark_as(ptr_statuses, &inst, PointerStatus::merge_direct(
             ptr_statuses.getStatus(inst.getOperand(0)),
             ptr_statuses.getStatus(inst.getOperand(1)),
-            Builder
+            &Builder
           ));
           // for now, the bounds info is still UNKNOWN until we think about
           // how to do bounds info for vectors of pointers

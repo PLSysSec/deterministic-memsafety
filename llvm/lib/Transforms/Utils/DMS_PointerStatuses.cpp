@@ -92,6 +92,16 @@ PointerStatus PointerStatuses::getStatus_noalias(const Value* ptr) const {
           // bitcast doesn't change the status
           return getStatus(expr->getOperand(0));
         }
+        case Instruction::Select: {
+          // derived from a Select of two other constant pointers.
+          // merger of their two statuses.
+          PointerStatus A = getStatus(expr->getOperand(1));
+          PointerStatus B = getStatus(expr->getOperand(2));
+          // we assume that one of them is actually or functionally NULL, so we
+          // can assume we don't need to insert dynamic instructions for this
+          // merger
+          return PointerStatus::merge_direct(A, B, NULL);
+        }
         case Instruction::GetElementPtr: {
           // constant-GEP expression
           Instruction* inst = expr->getAsInstruction();
@@ -177,6 +187,22 @@ std::optional<PointerStatus> PointerStatuses::tryGetStatusOfConstInt(const Const
       {
         // derived from a SExt or ZExt. Recurse
         return tryGetStatusOfConstInt(cexpr->getOperand(0));
+      }
+      case Instruction::Select: {
+        // derived from a Select of two other constant integers.
+        // merger of their two statuses.
+        std::optional<PointerStatus> A = tryGetStatusOfConstInt(cexpr->getOperand(1));
+        std::optional<PointerStatus> B = tryGetStatusOfConstInt(cexpr->getOperand(2));
+        if (A.has_value() && B.has_value()) {
+          // we assume that one of them is actually or functionally NULL, so we
+          // can assume we don't need to insert dynamic instructions for this
+          // merger
+          return PointerStatus::merge_direct(*A, *B, NULL);
+        } else {
+          // couldn't get bounds for one or both of A or B, so can't get bounds
+          // for the Select
+          return std::nullopt;
+        }
       }
       default:
         // anything else is not a pattern we handle here

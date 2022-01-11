@@ -19,17 +19,17 @@ void DMSIRBuilder::SetInsertPointToAfterInst(Instruction* inst) {
 /// Casts the given input pointer `ptr` to the LLVM type `i8*`.
 /// The input pointer can be any pointer type, including `i8*` (in which case
 /// this will return the pointer unchanged).
-Value* DMSIRBuilder::castToCharStar(Value* ptr) {
+Value* DMSIRBuilder::castToCharStar(const Value* ptr) {
   assert(ptr->getType()->isPointerTy());
   std::string ptr_name = isa<ConstantExpr>(ptr) ? "constexpr" : ptr->getNameOrAsOperand();
-  return CreatePointerCast(ptr, getInt8PtrTy(), Twine(ptr_name, "_casted"));
+  return CreatePointerCast(const_cast<Value*>(ptr), getInt8PtrTy(), Twine(ptr_name, "_casted"));
 }
 
 /// Adds the given `offset` (in _bytes_) to the given `ptr`, and returns
 /// the resulting pointer.
 /// The input pointer can be any pointer type, the output pointer will
 /// have type `i8*`.
-Value* DMSIRBuilder::add_offset_to_ptr(Value* ptr, const APInt offset) {
+Value* DMSIRBuilder::add_offset_to_ptr(const Value* ptr, const APInt offset) {
   Value* casted = castToCharStar(ptr);
   if (offset == 0) {
     return casted;
@@ -43,7 +43,7 @@ Value* DMSIRBuilder::add_offset_to_ptr(Value* ptr, const APInt offset) {
 /// The input pointer can be any pointer type, the output pointer will
 /// have type `i8*`.
 /// `offset` should be a non-pointer value -- ie, the number of bytes.
-Value* DMSIRBuilder::add_offset_to_ptr(Value* ptr, Value* offset) {
+Value* DMSIRBuilder::add_offset_to_ptr(const Value* ptr, Value* offset) {
   return CreateGEP(getInt8Ty(), castToCharStar(ptr), offset);
 }
 

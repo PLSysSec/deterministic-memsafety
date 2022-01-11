@@ -277,6 +277,16 @@ BoundsInfo* BoundsInfos::get_binfo_noalias(const Value* ptr) {
           // bitcast doesn't change the bounds
           return get_binfo_noalias(expr->getOperand(0));
         }
+        case Instruction::Select: {
+          // merger of the bounds for the two constant pointers we're selecting between.
+          // we assume that one of them is actually or functionally NULL, so we
+          // can assume we don't need to insert dynamic instructions for this
+          // merger
+          BoundsInfo* A = get_binfo(expr->getOperand(1));
+          BoundsInfo* B = get_binfo(expr->getOperand(2));
+          mark_as_merged(expr, *A, *B, NULL);
+          return get_binfo_noalias(expr);
+        }
         case Instruction::GetElementPtr: {
           // constant-GEP expression
           Instruction* inst = expr->getAsInstruction();
@@ -346,6 +356,22 @@ BoundsInfo* BoundsInfos::try_get_binfo_for_const_int(const Constant* c) {
         // derived from a SExt or ZExt. Recurse
         return try_get_binfo_for_const_int(cexpr->getOperand(0));
       }
+      case Instruction::Select: {
+        // derived from a Select of two other constant integers. Recurse.
+        BoundsInfo* A = try_get_binfo_for_const_int(cexpr->getOperand(1));
+        BoundsInfo* B = try_get_binfo_for_const_int(cexpr->getOperand(2));
+        if (A && B) {
+          // we assume that one of them is actually or functionally NULL, so we
+          // can assume we don't need to insert dynamic instructions for this
+          // merger
+          mark_as_merged(cexpr, *A, *B, NULL);
+          return get_binfo_noalias(cexpr);
+        } else {
+          // couldn't get bounds for one or both of A or B, so can't get bounds
+          // for the Select
+          return NULL;
+        }
+      }
       default:
         // anything else is not a pattern we handle here
         return NULL;
@@ -363,11 +389,13 @@ BoundsInfo* BoundsInfos::try_get_binfo_for_const_int(const Constant* c) {
 ///
 /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
 /// that is necessary.
+/// Passing NULL for `Builder` is allowed if you know that at least one of A
+/// or B has "trivial" bounds -- e.g., Unknown or Infinite.
 void BoundsInfos::mark_as_merged(
-  Value* ptr,
+  const Value* ptr,
   BoundsInfo& A,
   BoundsInfo& B,
-  DMSIRBuilder& Builder
+  DMSIRBuilder* Builder
 ) {
   if (A.is_notdefinedyet()) return mark_as(ptr, &B);
   if (B.is_notdefinedyet()) return mark_as(ptr, &A);
@@ -378,30 +406,33 @@ void BoundsInfos::mark_as_merged(
 
   if (A == B) return mark_as(ptr, &A); // this also avoids forcing, if both A and B are still dynamic-lazy but equivalent
 
+  // if we reach this point, Builder must not be NULL. Caller is responsible for this
+  assert(Builder);
+
   // four cases remain: static-static, static-dynamic, dynamic-static, dynamic-dynamic
   if (BoundsInfo::Static* A_sinfo = std::get_if<BoundsInfo::Static>(&A.data)) {
-    BoundsInfo::Dynamic A_dinfo = BoundsInfo::Dynamic::from_static(*A_sinfo, ptr, Builder);
+    BoundsInfo::Dynamic A_dinfo = BoundsInfo::Dynamic::from_static(*A_sinfo, ptr, *Builder);
     if (BoundsInfo::Static* B_sinfo = std::get_if<BoundsInfo::Static>(&B.data)) {
-      BoundsInfo::Dynamic B_dinfo = BoundsInfo::Dynamic::from_static(*B_sinfo, ptr, Builder);
+      BoundsInfo::Dynamic B_dinfo = BoundsInfo::Dynamic::from_static(*B_sinfo, ptr, *Builder);
       mark_as(ptr, BoundsInfo(std::move(
-        BoundsInfo::Dynamic::merge(A_dinfo, B_dinfo, Builder)
+        BoundsInfo::Dynamic::merge(A_dinfo, B_dinfo, *Builder)
       )));
     } else if (BoundsInfo::Dynamic* B_dinfo = std::get_if<BoundsInfo::Dynamic>(&B.data)) {
       mark_as(ptr, BoundsInfo(std::move(
-        BoundsInfo::Dynamic::merge(A_dinfo, *B_dinfo, Builder)
+        BoundsInfo::Dynamic::merge(A_dinfo, *B_dinfo, *Builder)
       )));
     } else {
       llvm_unreachable("Missing BoundsInfo case");
     }
   } else if (BoundsInfo::Dynamic* A_dinfo = std::get_if<BoundsInfo::Dynamic>(&A.data)) {
     if (BoundsInfo::Static* B_sinfo = std::get_if<BoundsInfo::Static>(&B.data)) {
-      BoundsInfo::Dynamic B_dinfo = BoundsInfo::Dynamic::from_static(*B_sinfo, ptr, Builder);
+      BoundsInfo::Dynamic B_dinfo = BoundsInfo::Dynamic::from_static(*B_sinfo, ptr, *Builder);
       mark_as(ptr, BoundsInfo(std::move(
-        BoundsInfo::Dynamic::merge(*A_dinfo, B_dinfo, Builder)
+        BoundsInfo::Dynamic::merge(*A_dinfo, B_dinfo, *Builder)
       )));
     } else if (BoundsInfo::Dynamic* B_dinfo = std::get_if<BoundsInfo::Dynamic>(&B.data)) {
       mark_as(ptr, BoundsInfo(std::move(
-        BoundsInfo::Dynamic::merge(*A_dinfo, *B_dinfo, Builder)
+        BoundsInfo::Dynamic::merge(*A_dinfo, *B_dinfo, *Builder)
       )));
     } else {
       llvm_unreachable("Missing BoundsInfo case");
@@ -581,7 +612,7 @@ void BoundsInfos::propagate_bounds(SelectInst& select) {
     // value of the select, so we need a builder pointing after the
     // select
     DMSIRBuilder AfterSelect(&select, DMSIRBuilder::AFTER, &added_insts);
-    mark_as_merged(&select, *binfo1, *binfo2, AfterSelect);
+    mark_as_merged(&select, *binfo1, *binfo2, &AfterSelect);
     // update the cache for the future
     cache[Key] = get_binfo(&select);
   }
@@ -785,7 +816,7 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
     DMSIRBuilder PostPhiBuilder(phi.getParent(), DMSIRBuilder::BEGINNING, &added_insts);
     for (const Incoming& incoming : incoming_binfos) {
       // merge each incoming bounds info into the final value
-      mark_as_merged(&phi, *map.lookup(&phi), *incoming.binfo, PostPhiBuilder);
+      mark_as_merged(&phi, *map.lookup(&phi), *incoming.binfo, &PostPhiBuilder);
     }
   }
 }

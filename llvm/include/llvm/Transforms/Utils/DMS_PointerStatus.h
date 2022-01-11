@@ -188,12 +188,13 @@ public:
   ///
   /// If we need to insert dynamic instructions to handle the merge, use
   /// `Builder`.
-  /// We will only potentially need to do this if at least one of the statuses
-  /// is DYNAMIC with a non-null `dynamic_kind`.
+  /// If neither of the statuses are DYNAMIC with non-null `dynamic_kind`, then
+  /// no dynamic instructions will be inserted and `Builder` may be NULL.
+  /// Otherwise, dynamic instructions may be inserted.
   static PointerStatus merge_direct(
     const PointerStatus a,
     const PointerStatus b,
-    llvm::DMSIRBuilder& Builder
+    llvm::DMSIRBuilder* Builder
   );
 
   /// Merge a set of `PointerStatus`es for the given `ptr` in `phi_block`.

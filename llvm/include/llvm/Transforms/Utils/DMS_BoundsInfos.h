@@ -85,11 +85,13 @@ public:
   ///
   /// `Builder` is the DMSIRBuilder to use to insert dynamic instructions, if
   /// that is necessary.
+  /// Passing NULL for `Builder` is allowed if you know that at least one of A
+  /// or B has "trivial" bounds -- e.g., Unknown or Infinite.
   void mark_as_merged(
-    Value* ptr,
+    const Value* ptr,
     BoundsInfo& A,
     BoundsInfo& B,
-    DMSIRBuilder& Builder
+    DMSIRBuilder* Builder
   );
 
   /// Get the bounds information for the given pointer.
