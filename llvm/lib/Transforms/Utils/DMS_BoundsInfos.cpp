@@ -821,6 +821,9 @@ void BoundsInfos::propagate_bounds(PHINode& phi) {
   }
 }
 
+static SmallVector<int64_t> get_pointer_offsets(StructType* struct_ty, const DataLayout& DL, DMSIRBuilder& Builder);
+static SmallVector<int64_t> get_pointer_offsets(ArrayType* array_ty, const DataLayout& DL, DMSIRBuilder& Builder);
+
 /// private helper function:
 ///
 /// return a SmallVector containing all of the (byte) offsets within the struct
@@ -840,48 +843,51 @@ static SmallVector<int64_t> get_pointer_offsets(StructType* struct_ty, const Dat
         results.push_back(offset_of_struct + inner_offset);
       }
     } else if (struct_el_type->isArrayTy()) {
-      ArrayType* array_type = cast<ArrayType>(struct_el_type);
-      Type* array_el_type = array_type->getElementType();
-      if (array_el_type->isIntegerTy() || array_el_type->isFloatingPointTy()) {
-        // assume it's non-pointer data. Nothing to do.
-      } else if (array_el_type->isPointerTy()) {
-        int64_t offset_of_array = DL.getIndexedOffsetInType(struct_ty, {Builder.getInt64(i)});
-        for (unsigned a = 0; a < array_type->getNumElements(); a++) {
-          results.push_back(offset_of_array + a*DL.getTypeStoreSize(array_el_type));
-        }
-      } else if (array_el_type->isArrayTy()) {
-        // wow, now we're meta. one of the struct elements is something like
-        // [4 x [16 x i8]]
-        ArrayType* inner_array_type = cast<ArrayType>(array_el_type);
-        Type* inner_el_type = inner_array_type->getElementType();
-        if (inner_el_type->isIntegerTy() || inner_el_type->isFloatingPointTy()) {
-          // assume it's non-pointer data. Nothing to do.
-        } else if (inner_el_type->isPointerTy()) {
-          // one of the struct elements is something like
-          // [4 x [16 x i8*]]
-          // assume the entire element is all pointers
-          int64_t offset_of_outer_array = DL.getIndexedOffsetInType(struct_ty, {Builder.getInt64(i)});
-          for (unsigned a = 0; a < array_type->getNumElements(); a++) {
-            int64_t offset_of_inner_array = offset_of_outer_array + a*DL.getTypeStoreSize(array_el_type);
-            for (unsigned b = 0; b < inner_array_type->getNumElements(); b++) {
-              results.push_back(offset_of_inner_array + b*DL.getTypeStoreSize(inner_el_type));
-            }
-          }
-        } else {
-          errs() << "get_pointer_offsets: unhandled inner element type:\n";
-          inner_el_type->dump();
-          llvm_unreachable("add handling for this inner element type");
-        }
-      } else {
-        errs() << "get_pointer_offsets: unhandled array element type:\n";
-        array_el_type->dump();
-        llvm_unreachable("add handling for this array element type");
+      int64_t offset_of_array = DL.getIndexedOffsetInType(struct_ty, {Builder.getInt64(i)});
+      SmallVector<int64_t> inner_offsets = get_pointer_offsets(cast<ArrayType>(struct_el_type), DL, Builder);
+      for (int64_t inner_offset : inner_offsets) {
+        results.push_back(offset_of_array + inner_offset);
       }
     } else {
       errs() << "get_pointer_offsets: unhandled struct element type:\n";
       struct_el_type->dump();
       llvm_unreachable("add handling for this struct element type");
     }
+  }
+  return results;
+}
+
+/// private helper function:
+///
+/// return a SmallVector containing all of the (byte) offsets within the array
+/// type at which pointers are stored
+static SmallVector<int64_t> get_pointer_offsets(ArrayType* array_ty, const DataLayout& DL, DMSIRBuilder& Builder) {
+  SmallVector<int64_t> results;
+  Type* el_type = array_ty->getElementType();
+  if (el_type->isIntegerTy() || el_type->isFloatingPointTy()) {
+    // assume it's non-pointer data. Nothing to do.
+  } else if (el_type->isPointerTy()) {
+    for (unsigned i = 0; i < array_ty->getNumElements(); i++) {
+      results.push_back(i * DL.getTypeStoreSize(el_type));
+    }
+  } else if (el_type->isStructTy()) {
+    SmallVector<int64_t> struct_offsets = get_pointer_offsets(cast<StructType>(el_type), DL, Builder);
+    for (unsigned i = 0; i < array_ty->getNumElements(); i++) {
+      for (int64_t struct_offset : struct_offsets) {
+        results.push_back(i * DL.getTypeStoreSize(el_type) + struct_offset);
+      }
+    }
+  } else if (el_type->isArrayTy()) {
+    SmallVector<int64_t> array_offsets = get_pointer_offsets(cast<ArrayType>(el_type), DL, Builder);
+    for (unsigned i = 0; i < array_ty->getNumElements(); i++) {
+      for (int64_t array_offset : array_offsets) {
+        results.push_back(i * DL.getTypeStoreSize(el_type) + array_offset);
+      }
+    }
+  } else {
+    errs() << "get_pointer_offsets: unhandled array element type:\n";
+    el_type->dump();
+    llvm_unreachable("add handling for this array element type");
   }
   return results;
 }
