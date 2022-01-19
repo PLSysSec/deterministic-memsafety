@@ -103,6 +103,20 @@ llvm::CallInst* call_dms_store_infinite_bounds(llvm::Value* addr, llvm::DMSIRBui
 llvm::CallInst* call_dms_get_bounds(llvm::Value* addr, llvm::Value* output_base, llvm::Value* output_max, llvm::DMSIRBuilder& Builder);
 
 /// Convenience function to create calls to our runtime support function
+/// `__dms_copy_single_bounds()`. See docs in dms_interface.h.
+///
+/// The arguments `src` and `dst` can be any pointer type (not necessarily
+/// `void*`). They should be UNENCODED values, ie with all upper bits clear.
+llvm::CallInst* call_dms_copy_single_bounds(llvm::Value* src, llvm::Value* dst, llvm::DMSIRBuilder& Builder);
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_copy_bounds_in_interval()`. See docs in dms_interface.h.
+///
+/// The arguments `src` and `dst` can be any pointer type (not necessarily
+/// `void*`). They should be UNENCODED values, ie with all upper bits clear.
+llvm::CallInst* call_dms_copy_bounds_in_interval(llvm::Value* src, llvm::Value* dst, llvm::Value* len_bytes, llvm::Value* stride, llvm::DMSIRBuilder& Builder);
+
+/// Convenience function to create calls to our runtime support function
 /// `__dms_store_globalarraysize()`. See docs in dms_interface.h.
 ///
 /// The arguments `arr` and `max` can be any pointer type (not necessarily

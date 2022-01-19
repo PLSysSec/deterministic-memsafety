@@ -89,6 +89,50 @@ void __dms_get_bounds(void* addr, void** base, void** max) {
   }
 }
 
+/// Copy the current bounds for pointer stored at `src` so that they also apply
+/// to the pointer stored at `dst`. (Both `src` and `dst` should have type T**
+/// for some T.)
+/// Both `src` and `dst` should be UNENCODED pointer values, ie with all upper
+/// bits clear.
+///
+/// Not an error to call this when we haven't previously stored any bounds for
+/// `src`. In that case this is a no-op.
+void __dms_copy_single_bounds(void* src, void* dst) {
+  assert(src != NULL);
+  assert(dst != NULL);
+  if (src == dst) return;
+  BoundsMap::Handle src_h(&bounds_map, (__sanitizer::uptr)src, /* remove = */ false, /* create = */ false);
+  if (!src_h.exists()) return;
+  assert(!src_h.created());
+  BoundsMap::Handle dst_h(&bounds_map, (__sanitizer::uptr)dst);
+  dst_h->base = src_h->base;
+  dst_h->max = src_h->max;
+}
+
+/// Copy the current bounds for every pointer stored in the memory interval
+/// [`src`, `src` + `len_bytes`), so that they also apply to the corresponding
+/// pointer stored in the interval [`dst`, `dst` + `len_bytes`).
+/// Both `src` and `dst` should be UNENCODED pointer values, ie with all upper
+/// bits clear.
+///
+/// This function checks for bounds info for pointers stored at `src`, and every
+/// `stride` bytes from `src` within the designated interval.
+///
+/// Not an error to call this when we haven't previously stored any bounds for
+/// any/all of the memory locations in the src interval. In that case this is a
+/// no-op.
+void __dms_copy_bounds_in_interval(void* src, void* dst, size_t len_bytes, size_t stride) {
+  assert(src != NULL);
+  assert(dst != NULL);
+  for (
+    __sanitizer::uptr cur_src = (__sanitizer::uptr)src, cur_dst = (__sanitizer::uptr)dst;
+    cur_src < (__sanitizer::uptr)src + len_bytes;
+    cur_src += stride, cur_dst += stride
+  ) {
+    __dms_copy_single_bounds((void*)cur_src, (void*)cur_dst);
+  }
+}
+
 /// Mark that the given global array `arr` has dynamic base `arr` and max `max`.
 /// This is used in case the array is declared in another translation unit as
 /// e.g. `extern int some_arr[];`. That other translation unit can then dynamically

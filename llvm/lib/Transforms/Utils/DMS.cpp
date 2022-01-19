@@ -31,7 +31,7 @@ using namespace llvm;
 
 #define DEBUG_TYPE "DMS"
 
-static bool shouldCountCallForStatsPurposes(const CallBase &call);
+static bool shouldCountCallForStatsPurposes(const CallNameInfo& CNI);
 
 class DMSAnalysis final {
 public:
@@ -966,8 +966,10 @@ private:
         // handle them the same
         {
           CallBase& call = cast<CallBase>(inst);
+          DMSIRBuilder Builder(&call, DMSIRBuilder::BEFORE, &added_insts);
+          IsAllocatingCall IAC = isAllocatingCall(call, Builder);
           // count call arguments for stats purposes, if appropriate
-          if (shouldCountCallForStatsPurposes(call)) {
+          if (shouldCountCallForStatsPurposes(IAC.CNI)) {
             for (const Use& arg : call.args()) {
               const Value* value = arg.get();
               if (value->getType()->isPointerTy()) {
@@ -977,8 +979,6 @@ private:
           }
           // now classify the returned pointer, if the return value is a pointer
           if (call.getType()->isPointerTy()) {
-            DMSIRBuilder Builder(&call, DMSIRBuilder::BEFORE, &added_insts);
-            IsAllocatingCall IAC = isAllocatingCall(call, Builder);
             if (IAC.allocation_bytes.has_value()) {
               // If this is an allocating call (eg, a call to `malloc`), then the
               // returned pointer is CLEAN
@@ -995,9 +995,11 @@ private:
               // For now, mark pointers returned from other calls as UNKNOWN
               mark_as(ptr_statuses, &call, PointerStatus::unknown());
             }
-            if (settings.add_sw_spatial_checks) {
-              bounds_infos.propagate_bounds(call, IAC);
-            }
+          }
+          // we may need to propagate bounds even if the return value isn't a
+          // pointer, so we do this here
+          if (settings.add_sw_spatial_checks) {
+            bounds_infos.propagate_bounds(call, IAC);
           }
           break;
         }
@@ -1621,27 +1623,30 @@ PreservedAnalyses BoundsChecksModuleDMSPass::run(Module &mod, ModuleAnalysisMana
 /// i.e., won't appear in the final binary)
 ///
 /// (When unsure, we conservatively return `true`)
-static bool shouldCountCallForStatsPurposes(const CallBase &call) {
-  Function* callee = call.getCalledFunction();
-  if (!callee) {
-    // indirect call. when in doubt, count it.
-    return true;
+static bool shouldCountCallForStatsPurposes(const CallNameInfo& CNI) {
+  switch (CNI.kind) {
+    case CallNameInfo::INDIRECTCALL:
+      // when in doubt, count it
+      return true;
+    case CallNameInfo::ANONCALL:
+      // when in doubt, count it
+      return true;
+    case CallNameInfo::NAMEDCALL: {
+      if (CNI.name.startswith("llvm.lifetime")
+        || CNI.name.startswith("llvm.invariant")
+        || CNI.name.startswith("llvm.launder.invariant")
+        || CNI.name.startswith("llvm.strip.invariant")
+        || CNI.name.startswith("llvm.dbg")
+        || CNI.name.startswith("llvm.expect"))
+      {
+        // these LLVM intrinsics shouldn't be counted for stats purposes
+        return false;
+      } else {
+        // count calls to all other functions
+        return true;
+      }
+    }
+    default:
+      llvm_unreachable("Missing CNI.kind case");
   }
-  if (!callee->hasName()) {
-    // call to anonymous function. when in doubt, count it.
-    return true;
-  }
-  StringRef name = callee->getName();
-  if (name.startswith("llvm.lifetime")
-    || name.startswith("llvm.invariant")
-    || name.startswith("llvm.launder.invariant")
-    || name.startswith("llvm.strip.invariant")
-    || name.startswith("llvm.dbg")
-    || name.startswith("llvm.expect"))
-  {
-    // these LLVM intrinsics shouldn't be counted for stats purposes
-    return false;
-  }
-  // count calls to all other functions
-  return true;
 }

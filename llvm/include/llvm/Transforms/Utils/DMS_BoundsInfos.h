@@ -109,10 +109,10 @@ public:
   void propagate_bounds(AllocaInst&);
   void propagate_bounds(GetElementPtrInst&);
   void propagate_bounds(SelectInst&);
-  void propagate_bounds(IntToPtrInst&, PointerStatus inttoptr_status);
+  void propagate_bounds(IntToPtrInst&, const PointerStatus inttoptr_status);
   void propagate_bounds(LoadInst& load, Instruction* loaded_ptr); // the loaded_ptr may be different from the literal result of the `load` due to pointer encoding
   void propagate_bounds(PHINode&);
-  void propagate_bounds(CallBase& call, IsAllocatingCall& IAC);
+  void propagate_bounds(CallBase& call, const IsAllocatingCall& IAC);
 
   /// Copy the bounds for the input pointer (must be operand 0) to the output
   /// pointer

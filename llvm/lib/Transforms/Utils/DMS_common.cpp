@@ -114,6 +114,10 @@ static const char* get_bounds_func = "_ZN5__dms16__dms_get_boundsEPvPS0_S1_";
 static const char* store_bounds_func = "_ZN5__dms18__dms_store_boundsEPvS0_S0_";
 /// Mangled name of the store_infinite_bounds function
 static const char* store_bounds_inf_func = "_ZN5__dms27__dms_store_infinite_boundsEPv";
+/// Mangled name of the copy_single_bounds function
+static const char* copy_single_bounds_func = "_ZN5__dms24__dms_copy_single_boundsEPvS0_";
+/// Mangled name of the copy_bounds_in_interval function
+static const char* copy_bounds_in_interval_func = "_ZN5__dms29__dms_copy_bounds_in_intervalEPvS0_mm";
 /// Mangled name of the store_globalarraysize function
 static const char* store_global_array_size_func = "_ZN5__dms27__dms_store_globalarraysizeEPvS0_";
 /// Mangled name of the get_globalarraysize function
@@ -130,9 +134,17 @@ static const char* boundscheckfail_func = "_ZN5__dms21__dms_boundscheckfailEPv";
 CallInst* call_dms_store_bounds(Value* addr, Value* base, Value* max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
-  static FunctionType* StoreBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
+  static FunctionType* StoreBoundsTy = FunctionType::get(
+    Builder.getVoidTy(),
+    {CharStarTy, CharStarTy, CharStarTy},
+    /* IsVarArgs = */ false
+  );
   FunctionCallee StoreBounds = mod->getOrInsertFunction(store_bounds_func, StoreBoundsTy);
-  return Builder.CreateCall(StoreBounds, {Builder.castToCharStar(addr), Builder.castToCharStar(base), Builder.castToCharStar(max)});
+  return Builder.CreateCall(StoreBounds, {
+    Builder.castToCharStar(addr),
+    Builder.castToCharStar(base),
+    Builder.castToCharStar(max)
+  });
 }
 
 /// Convenience function to create calls to our runtime support function
@@ -143,9 +155,15 @@ CallInst* call_dms_store_bounds(Value* addr, Value* base, Value* max, DMSIRBuild
 CallInst* call_dms_store_infinite_bounds(Value* addr, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
-  static FunctionType* StoreBoundsInfTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
+  static FunctionType* StoreBoundsInfTy = FunctionType::get(
+    Builder.getVoidTy(),
+    {CharStarTy},
+    /* IsVarArgs = */ false
+  );
   FunctionCallee StoreBoundsInf = mod->getOrInsertFunction(store_bounds_inf_func, StoreBoundsInfTy);
-  return Builder.CreateCall(StoreBoundsInf, {Builder.castToCharStar(addr)});
+  return Builder.CreateCall(StoreBoundsInf, {
+    Builder.castToCharStar(addr)
+  });
 }
 
 /// Convenience function to create calls to our runtime support function
@@ -160,11 +178,64 @@ CallInst* call_dms_get_bounds(Value* addr, Value* output_base, Value* output_max
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static Type* CharStarStarTy = CharStarTy->getPointerTo();
-  FunctionType* GetBoundsTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarStarTy, CharStarStarTy}, /* IsVarArgs = */ false);
+  FunctionType* GetBoundsTy = FunctionType::get(
+    Builder.getVoidTy(),
+    {CharStarTy, CharStarStarTy, CharStarStarTy},
+    /* IsVarArgs = */ false
+  );
   FunctionCallee GetBounds = mod->getOrInsertFunction(get_bounds_func, GetBoundsTy);
   assert(output_base->getType() == CharStarStarTy);
   assert(output_max->getType() == CharStarStarTy);
-  return Builder.CreateCall(GetBounds, {Builder.castToCharStar(addr), output_base, output_max});
+  return Builder.CreateCall(GetBounds, {
+    Builder.castToCharStar(addr),
+    output_base,
+    output_max
+  });
+}
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_copy_single_bounds()`. See docs in dms_interface.h.
+///
+/// The arguments `src` and `dst` can be any pointer type (not necessarily
+/// `void*`). They should be UNENCODED values, ie with all upper bits clear.
+llvm::CallInst* call_dms_copy_single_bounds(llvm::Value* src, llvm::Value* dst, llvm::DMSIRBuilder& Builder) {
+  Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharStarTy = Builder.getInt8PtrTy();
+  FunctionType* CopySingleBoundsTy = FunctionType::get(
+    Builder.getVoidTy(),
+    {CharStarTy, CharStarTy},
+    /* IsVarArgs = */ false
+  );
+  FunctionCallee CopySingleBounds = mod->getOrInsertFunction(copy_single_bounds_func, CopySingleBoundsTy);
+  return Builder.CreateCall(CopySingleBounds, {
+    Builder.castToCharStar(src),
+    Builder.castToCharStar(dst)
+  });
+}
+
+/// Convenience function to create calls to our runtime support function
+/// `__dms_copy_bounds_in_interval()`. See docs in dms_interface.h.
+///
+/// The arguments `src` and `dst` can be any pointer type (not necessarily
+/// `void*`). They should be UNENCODED values, ie with all upper bits clear.
+llvm::CallInst* call_dms_copy_bounds_in_interval(llvm::Value* src, llvm::Value* dst, llvm::Value* len_bytes, llvm::Value* stride, llvm::DMSIRBuilder& Builder) {
+  Module* mod = Builder.GetInsertBlock()->getModule();
+  static Type* CharStarTy = Builder.getInt8PtrTy();
+  static Type* SizeTTy = Builder.getInt64Ty();
+  FunctionType* CopyBoundsInIntervalTy = FunctionType::get(
+    Builder.getVoidTy(),
+    {CharStarTy, CharStarTy, SizeTTy, SizeTTy},
+    /* IsVarArgs = */ false
+  );
+  FunctionCallee CopyBoundsInInterval = mod->getOrInsertFunction(copy_bounds_in_interval_func, CopyBoundsInIntervalTy);
+  assert(!len_bytes->getType()->isPointerTy());
+  assert(!stride->getType()->isPointerTy());
+  return Builder.CreateCall(CopyBoundsInInterval, {
+    Builder.castToCharStar(src),
+    Builder.castToCharStar(dst),
+    len_bytes,
+    stride
+  });
 }
 
 /// Convenience function to create calls to our runtime support function
@@ -175,9 +246,16 @@ CallInst* call_dms_get_bounds(Value* addr, Value* output_base, Value* output_max
 CallInst* call_dms_store_globalarraysize(GlobalValue* arr, Value* max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
-  static FunctionType* StoreGlobalArraySizeTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarTy}, /* IsVarArgs = */ false);
+  static FunctionType* StoreGlobalArraySizeTy = FunctionType::get(
+    Builder.getVoidTy(),
+    {CharStarTy, CharStarTy},
+    /* IsVarArgs = */ false
+  );
   FunctionCallee StoreGlobalArraySize = mod->getOrInsertFunction(store_global_array_size_func, StoreGlobalArraySizeTy);
-  return Builder.CreateCall(StoreGlobalArraySize, {Builder.castToCharStar(arr), Builder.castToCharStar(max)});
+  return Builder.CreateCall(StoreGlobalArraySize, {
+    Builder.castToCharStar(arr),
+    Builder.castToCharStar(max)
+  });
 }
 
 /// Convenience function to create calls to our runtime support function
@@ -191,10 +269,17 @@ CallInst* call_dms_get_globalarraysize(GlobalValue* arr, Value* output_max, DMSI
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static Type* CharStarStarTy = CharStarTy->getPointerTo();
-  FunctionType* GetGlobalArraySizeTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy, CharStarStarTy}, /* IsVarArgs = */ false);
+  FunctionType* GetGlobalArraySizeTy = FunctionType::get(
+    Builder.getVoidTy(),
+    {CharStarTy, CharStarStarTy},
+    /* IsVarArgs = */ false
+  );
   FunctionCallee GetGlobalArraySize = mod->getOrInsertFunction(get_global_array_size_func, GetGlobalArraySizeTy);
   assert(output_max->getType() == CharStarStarTy);
-  return Builder.CreateCall(GetGlobalArraySize, {Builder.castToCharStar(arr), output_max});
+  return Builder.CreateCall(GetGlobalArraySize, {
+    Builder.castToCharStar(arr),
+    output_max
+  });
 }
 
 /// Convenience function to create calls to our runtime support function
@@ -205,7 +290,13 @@ CallInst* call_dms_get_globalarraysize(GlobalValue* arr, Value* output_max, DMSI
 CallInst* call_dms_boundscheckfail(Value* ptr, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
-  FunctionType* BoundsCheckFailTy = FunctionType::get(Builder.getVoidTy(), {CharStarTy}, /* IsVarArgs = */ false);
+  FunctionType* BoundsCheckFailTy = FunctionType::get(
+    Builder.getVoidTy(),
+    {CharStarTy},
+    /* IsVarArgs = */ false
+  );
   FunctionCallee BoundsCheckFail = mod->getOrInsertFunction(boundscheckfail_func, BoundsCheckFailTy);
-  return Builder.CreateCall(BoundsCheckFail, {Builder.castToCharStar(ptr)});
+  return Builder.CreateCall(BoundsCheckFail, {
+    Builder.castToCharStar(ptr)
+  });
 }
