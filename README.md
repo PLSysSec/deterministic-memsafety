@@ -120,6 +120,11 @@ here's the instructions.
    will also need to add flags to link in the DMS runtime. Really, for dynamic
    DMS passes you should just be using the Clang integration described above.
 
+## License
+
+DMS is licensed under the same license as LLVM and Clang -- namely, Apache 2.0
+with LLVM Exceptions.
+
 Original README follows.
 
 ---
