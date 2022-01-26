@@ -163,9 +163,16 @@ public:
   StaticResults run() {
     IterationResult res;
     res.changed = true;
+    unsigned iterationCount = 0;
+    const unsigned maxIterations = 100;
 
     while (res.changed) {
+      if (iterationCount >= maxIterations) {
+        errs() << "Failed to reach fixpoint for function " << F.getName() << " even after " << maxIterations << " iterations\n";
+        llvm_unreachable("fixpoint failure");
+      }
       res = doIteration(NULL, false);
+      iterationCount++;
     }
 
     if (settings.instrument_for_dynamic_counts) {
