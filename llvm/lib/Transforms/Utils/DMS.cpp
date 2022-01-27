@@ -16,6 +16,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -32,6 +33,18 @@ using namespace llvm;
 #define DEBUG_TYPE "DMS"
 
 static bool shouldCountCallForStatsPurposes(const CallNameInfo& CNI);
+
+/// Get a pretty version of the function name, for error reporting.
+/// Includes both mangled and demangled name if appropriate.
+static std::string prettyName(const Function& F) {
+  std::string mangled = F.getName().str();
+  std::string demangled = demangle(mangled);
+  if (mangled == demangled) {
+    return mangled;
+  } else {
+    return mangled + " (" + demangled + ")";
+  }
+}
 
 class DMSAnalysis final {
 public:
@@ -168,7 +181,7 @@ public:
 
     while (res.changed) {
       if (iterationCount >= maxIterations) {
-        errs() << "Failed to reach fixpoint for function " << F.getName() << " even after " << maxIterations << " iterations\n";
+        errs() << "Failed to reach fixpoint for function " << prettyName(F) << " even after " << maxIterations << " iterations\n";
         llvm_unreachable("fixpoint failure");
       }
       res = doIteration(NULL, false);
@@ -196,7 +209,7 @@ public:
     );
 
     if (verifyFunction(F, &errs())) {
-      errs() << "Verify failed for function " << F.getNameOrAsOperand() << " after DMS\n";
+      errs() << "Verify failed for function " << prettyName(F) << " after DMS\n";
       errs() << "Function IR is:\n";
       F.dump();
     }
@@ -207,7 +220,7 @@ public:
   }
 
   void reportStaticResults(StaticResults& results) {
-    dbgs() << "Static counts for " << F.getName() << ":\n";
+    dbgs() << "Static counts for " << prettyName(F) << ":\n";
     dbgs() << "Loads with clean addr: " << results.load_addrs.clean << "\n";
     dbgs() << "Loads with blemished16 addr: " << results.load_addrs.blemished16 << "\n";
     dbgs() << "Loads with blemished32 addr: " << results.load_addrs.blemished32 << "\n";
