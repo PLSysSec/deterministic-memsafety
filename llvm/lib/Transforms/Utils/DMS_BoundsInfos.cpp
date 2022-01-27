@@ -991,11 +991,13 @@ void BoundsInfos::propagate_bounds(CallBase& call, const IsAllocatingCall& IAC) 
               errs() << "LLVM memcpy or memmove src is bitcast from an unhandled array type:\n";
               array_ty->dump();
               llvm_unreachable("add handling for this memcpy or memmove src");
+              return;
             }
           } else {
             errs() << "LLVM memcpy or memmove src is bitcast from an unhandled type:\n";
             src_ptr_ty->dump();
             llvm_unreachable("add handling for this memcpy or memmove src");
+            return;
           }
         } else if (isa<IntToPtrInst>(src) || isa<GetElementPtrInst>(src) || isa<CallInst>(src)) {
           // memcpy src is an i8* directly produced from IntToPtr, GEP, or call.
@@ -1010,10 +1012,16 @@ void BoundsInfos::propagate_bounds(CallBase& call, const IsAllocatingCall& IAC) 
           // like a memcpy of a bunch of i8s -- i.e., we're just copying
           // non-pointer data; nothing to do.
           return;
+        } else if (isa<Argument>(src)) {
+          // memcpy src is an i8* that was passed to this function.  For now, we
+          // will assume that a buffer of this kind never contains pointer data;
+          // nothing to do.
+          return;
         } else {
           errs() << "LLVM memcpy or memmove src is of an unhandled kind:\n";
           src->dump();
           llvm_unreachable("add handling for this memcpy or memmove src");
+          return;
         }
       }
     }
