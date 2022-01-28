@@ -169,9 +169,9 @@ define i32 @blemished64_load() {
 define i32 @blemishedconst_load() {
   %ptr = alloca [64 x i32]
   %castedptr = bitcast [64 x i32]* %ptr to i32*
-  %newptr = getelementptr i32, i32* %castedptr, i32 50
+  %newptr = getelementptr i32, i32* %castedptr, i32 20
   %res = load i32, i32* %newptr
-  %newptr2 = getelementptr i32, i32* %castedptr, i32 50
+  %newptr2 = getelementptr i32, i32* %castedptr, i32 20
   store i32 2, i32* %newptr2
   ret i32 %res
 }
@@ -606,7 +606,7 @@ define void @select_ptrs(i1 %arg1, i1 %arg2, i32* %unkptr1, i32* %unkptr2, i32 %
   %initialptr2 = alloca [64 x i32]
   %cleanptr2 = bitcast [64 x i32]* %initialptr2 to i32*
   %blemptr = getelementptr i32, i32* %cleanptr1, i32 2
-  %blemconstptr = getelementptr i32, i32* %cleanptr1, i32 49
+  %blemconstptr = getelementptr i32, i32* %cleanptr1, i32 29
   %dirtyptr = getelementptr i32, i32* %cleanptr1, i32 %arg
   %ptr1 = select i1 %arg1, i32* %cleanptr1, i32* %cleanptr2  ; clean,clean = clean
   store i32 37, i32* %ptr1

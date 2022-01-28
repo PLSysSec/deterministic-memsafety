@@ -16,6 +16,15 @@ void PointerStatuses::mark_as(const Value* ptr, PointerStatus status) {
   // "not in the map" to mean `NotDefinedYet`
   assert(!status.is_notdefinedyet());
   LLVM_DEBUG(dbgs() << "DMS:     marking pointer " << ptr->getNameOrAsOperand() << " as status " << status.pretty() << "\n");
+  if (const PointerStatus::Blemished* blem = std::get_if<PointerStatus::Blemished>(&status.data)) {
+    if (blem->max_modification.has_value() && blem->max_modification->ugt(128)) {
+      // this loses precision, but avoids infinite loop (failure to converge) in
+      // pathological cases where the blemished amount keeps increasing each
+      // iteration without bound
+      status = PointerStatus::dirty();
+      LLVM_DEBUG(dbgs() << "DMS:     overriding to " << status.pretty() << "\n");
+    }
+  }
   // insert() does nothing if the key was already in the map.
   // instead, it appears we have to use operator[], which seems to
   // work whether or not `ptr` was already in the map
