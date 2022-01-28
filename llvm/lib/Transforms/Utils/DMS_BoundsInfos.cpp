@@ -987,6 +987,25 @@ void BoundsInfos::propagate_bounds(CallBase& call, const IsAllocatingCall& IAC) 
               Value* pointer_size_bytes = Builder.getInt64(DL.getPointerSize());
               call_dms_copy_bounds_in_interval(src, dst, len_bytes, pointer_size_bytes, Builder);
               return;
+            } else if (array_elem_ty->isStructTy()) {
+              DMSIRBuilder Builder(&call, DMSIRBuilder::AFTER, &added_insts);
+              // our src ptr was bitcasted from a type like [5 x struct_ty]*.
+              // (yes, we've seen a type like this in the wild in SPEC.)
+              // treat this just like struct_ty*
+              StructType* struct_ty = cast<StructType>(array_elem_ty);
+              auto struct_size_bytes = DL.getTypeAllocSize(struct_ty);
+              for (int64_t offset : get_pointer_offsets(struct_ty, DL, Builder)) {
+                Value* first_ptr_addr_src = Builder.add_offset_to_ptr(src, Builder.getInt64(offset));
+                Value* first_ptr_addr_dst = Builder.add_offset_to_ptr(dst, Builder.getInt64(offset));
+                call_dms_copy_bounds_in_interval(
+                  first_ptr_addr_src,
+                  first_ptr_addr_dst,
+                  Builder.CreateSub(len_bytes, Builder.getInt64(offset)),
+                  Builder.getInt64(struct_size_bytes),
+                  Builder
+                );
+              }
+              return;
             } else {
               errs() << "LLVM memcpy or memmove src is bitcast from an unhandled array type:\n";
               array_ty->dump();
