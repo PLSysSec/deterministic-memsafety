@@ -184,8 +184,9 @@ public:
         errs() << "Failed to reach fixpoint for function " << prettyName(F) << " even after " << maxIterations << " iterations\n";
         llvm_unreachable("fixpoint failure");
       }
-      res = doIteration(NULL, false);
       iterationCount++;
+      dbgs() << "DMS: starting iteration " << iterationCount << " through function " << F.getName();
+      res = doIteration(NULL, false);
     }
 
     if (settings.instrument_for_dynamic_counts) {
@@ -1144,9 +1145,22 @@ private:
     // Now that we've processed all the instructions, we have the final
     // statuses of pointers as of the end of the block
     DEBUG_WITH_TYPE("DMS-block-stats", dbgs() << "DMS:   at end of block, we now have " << ptr_statuses.describe() << "\n");
-    bool changed = !ptr_statuses.isEqualTo(pbs.ptrs_end).areEqual();
-    if (changed) {
-      LLVM_DEBUG(dbgs() << "DMS:   end-of-block pointer statuses have changed\n");
+    const MapEqualityResult<const Value*> MER = ptr_statuses.isEqualTo(pbs.ptrs_end);
+    bool changed = false;
+    if (const MapEqualityResult<const Value*>::NotEqualSameSize* neq = std::get_if<MapEqualityResult<const Value*>::NotEqualSameSize>(&MER.result)) {
+      changed = true;
+      LLVM_DEBUG(dbgs() << "DMS:   end-of-block pointer statuses have changed (eg, status for " << (*neq->disagreementKey)->getNameOrAsOperand() << " has changed)\n");
+    } else if (const MapEqualityResult<const Value*>::DifferentSizes* diff = std::get_if<MapEqualityResult<const Value*>::DifferentSizes>(&MER.result)) {
+      changed = true;
+      if (diff->unmatchedKey) {
+        LLVM_DEBUG(dbgs() << "DMS:   end-of-block pointer statuses have changed (eg, pointer " << (*diff->unmatchedKey)->getNameOrAsOperand() << " now has a status)\n");
+      } else {
+        LLVM_DEBUG(dbgs() << "DMS:   end-of-block pointer statuses have changed (an additional pointer has a status)\n");
+      }
+    } else if (std::holds_alternative<MapEqualityResult<const Value*>::Equal>(MER.result)) {
+      // do nothing
+    } else {
+      llvm_unreachable("Missing MapEqualityResult case");
     }
     pbs.ptrs_end = std::move(ptr_statuses);
     pbs.static_results = static_results;
