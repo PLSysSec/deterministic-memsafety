@@ -1017,6 +1017,14 @@ void BoundsInfos::propagate_bounds(CallBase& call, const IsAllocatingCall& IAC) 
           // will assume that a buffer of this kind never contains pointer data;
           // nothing to do.
           return;
+        } else if (isa<PHINode>(src)) {
+          // memcpy src is an i8* derived from a PHI node.
+          // this indicates some type of more-complicated operation, not just
+          // casting the pointer to i8*/void* immediately at the memcpy call
+          // site, so for now we'll assume that this is "actually" an i8* and
+          // treat it like a memcpy of a bunch of i8s -- i.e., we're just
+          // copying non-pointer data; nothing to do.
+          return;
         } else {
           errs() << "LLVM memcpy or memmove src is of an unhandled kind:\n";
           src->dump();
