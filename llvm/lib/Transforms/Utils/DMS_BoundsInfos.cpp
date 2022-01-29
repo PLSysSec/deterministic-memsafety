@@ -1018,7 +1018,7 @@ void BoundsInfos::propagate_bounds(CallBase& call, const IsAllocatingCall& IAC) 
             llvm_unreachable("add handling for this memcpy or memmove src");
             return;
           }
-        } else if (isa<IntToPtrInst>(src) || isa<GetElementPtrInst>(src) || isa<CallInst>(src)) {
+        } else if (isa<IntToPtrInst>(src) || isa<GetElementPtrInst>(src) || isa<CallBase>(src)) {
           // memcpy src is an i8* directly produced from IntToPtr, GEP, or call.
           // assume this is a "native" i8*, and treat it like a memcpy of a
           // bunch of i8s -- i.e., we're just copying non-pointer data; nothing
