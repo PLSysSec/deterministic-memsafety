@@ -12,6 +12,8 @@
 using namespace llvm;
 
 static bool areAllIndicesTrustworthy(const GetElementPtrInst &gep);
+/// Returns true if A is defined as a phi of B, or a phi of a phi of B, etc
+static bool isRecursivePHIOf(const Value* A, const Value* B);
 
 std::string GEPResultClassification::pretty() const {
   std::ostringstream out;
@@ -144,13 +146,8 @@ static GEPResultClassification classifyGEPResult_direct(
           // Specifically we check for a blemished pointer being incremented
           // (that's where we are right now) where the blemished pointer
           // is a PHI of this GEP result and anything else
-          if (const PHINode* input_ptr = dyn_cast<PHINode>(gep.getOperand(0))) {
-            for (const Value* incoming_val : input_ptr->incoming_values()) {
-              if (incoming_val == &gep) {
-                // this is the situation described above
-                grc.classification = PointerStatus::dirty();
-              }
-            }
+          if (isRecursivePHIOf(gep.getOperand(0), &gep)) {
+            grc.classification = PointerStatus::dirty();
           }
           return grc;
         } else {
@@ -387,3 +384,18 @@ GEPResultClassification classifyGEPResult(
 }
 
 } // end namespace llvm
+
+/// Returns true if A is defined as a phi of B, or a phi of a phi of B, etc
+static bool isRecursivePHIOf(const Value* A, const Value* B) {
+  if (const PHINode* phi = dyn_cast<PHINode>(A)) {
+    for (const Value* incoming_val : phi->incoming_values()) {
+      if (incoming_val == B) {
+        return true;
+      }
+      if (isRecursivePHIOf(A, incoming_val)) return true;
+    }
+    return false;
+  } else {
+    return false;
+  }
+}

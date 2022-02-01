@@ -245,6 +245,37 @@ done:
   ret i8 %new_sum
 }
 
+; Generalization of the above, where there is more than one phi in the cyclic
+; definition. Like the above, this is a simplified version of real code observed
+; in 471.omnetpp
+define i8 @loop_with_multiple_phi_ptrs(i8 %max) {
+entry:
+  br label %loop
+
+loop:
+  %ptr = phi i8* [ %new_ptr, %loop2 ], [ getelementptr inbounds ([96 x i8], [96 x i8]* @str, i32 0, i32 0), %entry ]
+  %sum = phi i8 [ %new_sum, %loop2 ], [ 0, %entry ]
+  %cmp1 = icmp eq i8 %max, 0
+  br i1 %cmp1, label %trueblock, label %falseblock
+
+trueblock:
+  br label %loop2
+
+falseblock:
+  br label %loop2
+
+loop2:
+  %ptr2 = phi i8* [ %ptr, %trueblock ], [ getelementptr inbounds ([96 x i8], [96 x i8]* @str, i32 0, i32 0), %falseblock ]
+  %new_ptr = getelementptr i8, i8* %ptr2, i32 1
+  %new_sum = add i8 %sum, 1
+  %cmp2 = icmp ult i8 %new_sum, %max
+  br i1 %cmp2, label %loop, label %done
+
+done:
+  %loaded = load i8, i8* %new_ptr
+  ret i8 %new_sum
+}
+
 ; In this case, since we _might not_ dereference the pointer in _every_ iteration,
 ; we can't use the induction assumption. This access has to be dirty.
 ; CHECK-LABEL: loop_might_not_deref
