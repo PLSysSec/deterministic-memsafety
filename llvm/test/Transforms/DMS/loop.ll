@@ -215,6 +215,36 @@ done:
   ret i16 %newsum
 }
 
+; In this loop, we continually increment a pointer without deref'ing it.
+; The eventual deref (after the loop) should be marked dirty, since the pointer
+; could be incremented without bound (from the standpoint of the static
+; analysis)
+; CHECK-LABEL: loop_with_phi_ptr
+; CHECK-NEXT: Loads with clean addr: 0
+; CHECK-NEXT: Loads with blemished16 addr: 0
+; CHECK-NEXT: Loads with blemished32 addr: 0
+; CHECK-NEXT: Loads with blemished64 addr: 0
+; CHECK-NEXT: Loads with blemishedconst addr: 0
+; CHECK-NEXT: Loads with dirty addr: 1
+; CHECK-NEXT: Loads with unknown addr: 0
+@str = private unnamed_addr constant [96 x i8] c"Hello world hello world hello world hello world hello world hello world hello world hello world\00", align 1
+define i8 @loop_with_phi_ptr(i8 %max) {
+entry:
+  br label %loop
+
+loop:
+  %ptr = phi i8* [ %new_ptr, %loop ], [ getelementptr inbounds ([96 x i8], [96 x i8]* @str, i32 0, i32 0), %entry ]
+  %sum = phi i8 [ %new_sum, %loop ], [ 0, %entry ]
+  %new_ptr = getelementptr i8, i8* %ptr, i32 1
+  %new_sum = add i8 %sum, 1
+  %cmp = icmp ult i8 %new_sum, %max
+  br i1 %cmp, label %loop, label %done
+
+done:
+  %loaded = load i8, i8* %new_ptr
+  ret i8 %new_sum
+}
+
 ; In this case, since we _might not_ dereference the pointer in _every_ iteration,
 ; we can't use the induction assumption. This access has to be dirty.
 ; CHECK-LABEL: loop_might_not_deref

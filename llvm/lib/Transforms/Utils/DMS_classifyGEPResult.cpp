@@ -134,6 +134,24 @@ static GEPResultClassification classifyGEPResult_direct(
       } else {
         if (blem->max_modification.has_value()) {
           grc.classification = PointerStatus::blemished(*grc.constant_offset + *blem->max_modification);
+          // we can have a problem with the pattern in the test loop_with_phi_ptr
+          // (based on a pattern observed in the wild in 471.omnetpp)
+          // specifically where a pointer is incremented continuously in a loop,
+          // without being dereferenced, which causes the fixpoint to fail
+          // because we just keep increasing the blemishedness of the pointer.
+          // As a result, we check for this pattern and just mark the pointer
+          // dirty.
+          // Specifically we check for a blemished pointer being incremented
+          // (that's where we are right now) where the blemished pointer
+          // is a PHI of this GEP result and anything else
+          if (const PHINode* input_ptr = dyn_cast<PHINode>(gep.getOperand(0))) {
+            for (const Value* incoming_val : input_ptr->incoming_values()) {
+              if (incoming_val == &gep) {
+                // this is the situation described above
+                grc.classification = PointerStatus::dirty();
+              }
+            }
+          }
           return grc;
         } else {
           grc.classification = PointerStatus::blemished(std::nullopt);
