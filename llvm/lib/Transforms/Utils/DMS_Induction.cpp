@@ -1,4 +1,5 @@
 #include "llvm/Transforms/Utils/DMS_Induction.h"
+#include <optional>
 
 using namespace llvm;
 
@@ -27,21 +28,16 @@ static InductionVarResult no_induction_var = { false, zero, zero };
 ///     equal to itself plus or minus a constant
 static InductionVarResult isInductionVar(const Value* val);
 
-/// Return type for `isValuePlusConstant`.
-///
-/// If the given `val` is equal to another `Value` plus a constant, then `valid`
-/// will be `true`; the given `val` is equal to `value` plus `constant`.
-///
-/// If the given `val` is not equal to another `Value` plus a constant, then
-/// `valid` will be `false`, and the other fields are undefined.
-struct ValPlusConstantResult {
-  bool valid;
+/// Return type for `isValuePlusConstant`. The given value is equal to `value`
+/// plus `constant`.
+struct ValPlusConstant {
   const Value* value;
   APInt constant;
 };
-static ValPlusConstantResult not_a_val_plus_constant = { false, NULL, zero };
 /// Is the given `val` defined as some other `Value` plus/minus a constant?
-static ValPlusConstantResult isValuePlusConstant(const Value* val);
+///
+/// If so, return the `ValPlusConstant`; otherwise, return nothing
+static std::optional<ValPlusConstant> isValuePlusConstant(const Value* val);
 
 /// Is the offset of the given GEP an induction pattern?
 /// This is looking for a pretty specific pattern for GEPs inside loops, which
@@ -63,15 +59,15 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
     if (ivr.is_induction_var) {
       LLVM_DEBUG(dbgs() << "DMS:     GEP single index is an induction var\n");
     } else {
-      ValPlusConstantResult vpcr = isValuePlusConstant(idx);
-      if (vpcr.valid) {
-        // GEP index is `vpcr.value` plus `vpcr.constant`. Let's see if
-        // `vpcr.value` is itself an induction variable. This can happen if we
+      const std::optional<ValPlusConstant> vpc = isValuePlusConstant(idx);
+      if (vpc.has_value()) {
+        // GEP index is `vpc->value` plus `vpc->constant`. Let's see if
+        // `vpc->value` is itself an induction variable. This can happen if we
         // are, say, accessing `arr[k+1]` in a loop over `k`
-        ivr = isInductionVar(vpcr.value);
+        ivr = isInductionVar(vpc->value);
         if (ivr.is_induction_var) {
-          LLVM_DEBUG(dbgs() << "DMS:     GEP single index is an induction var plus a constant " << vpcr.constant << "\n");
-          ivr.initial_val = ivr.initial_val + vpcr.constant;
+          LLVM_DEBUG(dbgs() << "DMS:     GEP single index is an induction var plus a constant " << vpc->constant << "\n");
+          ivr.initial_val = ivr.initial_val + vpc->constant;
           // the first iteration, it's the initial value of the induction variable
           // plus the constant it's always modified by. but the induction increment
           // doesn't care about the constant modification
@@ -160,17 +156,17 @@ static InductionVarResult isInductionVar(const Value* val) {
         found_initial_val = true;
         initial_val = phi_val_constint->getValue();
       } else {
-        ValPlusConstantResult vpcr = isValuePlusConstant(phi_val);
-        if (vpcr.valid) {
+        const std::optional<ValPlusConstant> vpc = isValuePlusConstant(phi_val);
+        if (vpc.has_value()) {
           if (found_induction_increment) {
             // two non-constants in this phi. For now, this isn't a pattern we'll consider for induction.
             return no_induction_var;
           }
           // we're looking for the case where we are adding or subbing a
           // constant from the same value
-          if (vpcr.value == val) {
+          if (vpc->value == val) {
             found_induction_increment = true;
-            induction_increment = vpcr.constant;
+            induction_increment = vpc->constant;
           }
         }
       }
@@ -193,7 +189,9 @@ static InductionVarResult isInductionVar(const Value* val) {
 }
 
 /// Is the given `val` defined as some other `Value` plus/minus a constant?
-static ValPlusConstantResult isValuePlusConstant(const Value* val) {
+///
+/// If so, return the `ValPlusConstant`; otherwise, return nothing
+static std::optional<ValPlusConstant> isValuePlusConstant(const Value* val) {
   if (const BinaryOperator* bop = dyn_cast<BinaryOperator>(val)) {
     switch (bop->getOpcode()) {
       case Instruction::Add:
@@ -207,7 +205,7 @@ static ValPlusConstantResult isValuePlusConstant(const Value* val) {
           if (const ConstantInt* op_const = dyn_cast<ConstantInt>(op)) {
             if (found_constant_operand) {
               // adding or subbing two constants. Shouldn't be valid LLVM, but we'll fail gracefully.
-              return not_a_val_plus_constant;
+              return std::nullopt;
             }
             found_constant_operand = true;
             constant_val = op_const->getValue();
@@ -217,7 +215,7 @@ static ValPlusConstantResult isValuePlusConstant(const Value* val) {
           } else {
             if (found_nonconstant_operand) {
               // two nonconstant operands
-              return not_a_val_plus_constant;
+              return std::nullopt;
             }
             found_nonconstant_operand = true;
             nonconstant_val = op;
@@ -225,20 +223,19 @@ static ValPlusConstantResult isValuePlusConstant(const Value* val) {
         }
         if (found_constant_operand && found_nonconstant_operand) {
           constant_val = constant_val.sextOrSelf(64);
-          ValPlusConstantResult vpcr;
-          vpcr.valid = true;
-          vpcr.value = std::move(nonconstant_val);
-          vpcr.constant = std::move(constant_val);
-          return vpcr;
+          ValPlusConstant vpc;
+          vpc.value = std::move(nonconstant_val);
+          vpc.constant = std::move(constant_val);
+          return vpc;
         } else {
-          return not_a_val_plus_constant;
+          return std::nullopt;
         }
       }
       default: {
-        return not_a_val_plus_constant;
+        return std::nullopt;
       }
     }
   } else {
-    return not_a_val_plus_constant;
+    return std::nullopt;
   }
 }
