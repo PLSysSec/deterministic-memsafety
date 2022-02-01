@@ -185,7 +185,7 @@ public:
         llvm_unreachable("fixpoint failure");
       }
       iterationCount++;
-      dbgs() << "DMS: starting iteration " << iterationCount << " through function " << F.getName();
+      dbgs() << "DMS: starting iteration " << iterationCount << " through function " << F.getName() << "\n";
       res = doIteration(NULL, false);
     }
 
