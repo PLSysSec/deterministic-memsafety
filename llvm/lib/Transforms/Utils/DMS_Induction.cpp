@@ -10,23 +10,21 @@ static const InductionPatternResult no_induction_pattern = { false, zero, zero }
 
 /// Return type for `isInductionVar`.
 ///
-/// If the given `val` is an induction variable, then `is_induction_var` will be
-/// `true`; `val` is equal to `initial_val` on the first loop iteration, and
-/// is incremented by `induction_increment` each iteration.
-///
-/// If `val` is not an induction variable, then `is_induction_var` will be
-/// `false`, and the other fields are undefined.
-struct InductionVarResult {
+/// If the given `val` is an induction variable, then `val` is equal to
+/// `initial_val` on the first loop iteration, and is incremented by
+/// `induction_increment` each iteration.
+struct InductionVar {
   bool is_induction_var;
   APInt induction_increment;
   APInt initial_val;
 };
-static InductionVarResult no_induction_var = { false, zero, zero };
 /// Is the given `val` an induction variable?
 /// Here, "induction variable" is narrowly defined as:
 ///     a PHI between a constant (initial value) and a variable (induction)
 ///     equal to itself plus or minus a constant
-static InductionVarResult isInductionVar(const Value* val);
+///
+/// If so, return the `InductionVar`; otherwise, return nothing
+static std::optional<InductionVar> isInductionVar(const Value* val);
 
 /// Return type for `isValuePlusConstant`. The given value is equal to `value`
 /// plus `constant`.
@@ -55,8 +53,8 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
     // note that this for loop goes exactly one iteration, due to the check above.
     // `idx` will be the one index of the GEP.
     const Value* idx = idx_as_use.get();
-    InductionVarResult ivr = isInductionVar(idx);
-    if (ivr.is_induction_var) {
+    std::optional<InductionVar> iv = isInductionVar(idx);
+    if (iv.has_value()) {
       LLVM_DEBUG(dbgs() << "DMS:     GEP single index is an induction var\n");
     } else {
       const std::optional<ValPlusConstant> vpc = isValuePlusConstant(idx);
@@ -64,17 +62,17 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
         // GEP index is `vpc->value` plus `vpc->constant`. Let's see if
         // `vpc->value` is itself an induction variable. This can happen if we
         // are, say, accessing `arr[k+1]` in a loop over `k`
-        ivr = isInductionVar(vpc->value);
-        if (ivr.is_induction_var) {
+        iv = isInductionVar(vpc->value);
+        if (iv.has_value()) {
           LLVM_DEBUG(dbgs() << "DMS:     GEP single index is an induction var plus a constant " << vpc->constant << "\n");
-          ivr.initial_val = ivr.initial_val + vpc->constant;
+          iv->initial_val = iv->initial_val + vpc->constant;
           // the first iteration, it's the initial value of the induction variable
           // plus the constant it's always modified by. but the induction increment
           // doesn't care about the constant modification
         }
       }
     }
-    if (!ivr.is_induction_var) {
+    if (!iv.has_value()) {
       LLVM_DEBUG(dbgs() << "DMS:     not an induction pattern\n");
       return no_induction_pattern;
     }
@@ -124,8 +122,8 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
       APInt ap_element_size = APInt(/* bits = */ 64, /* val = */ element_size);
       InductionPatternResult ipr;
       ipr.is_induction_pattern = true;
-      ipr.initial_offset = ivr.initial_val * ap_element_size;
-      ipr.induction_offset = ivr.induction_increment * ap_element_size;
+      ipr.initial_offset = iv->initial_val * ap_element_size;
+      ipr.induction_offset = iv->induction_increment * ap_element_size;
       LLVM_DEBUG(dbgs() << "DMS:     induction pattern with initial " << ipr.initial_offset << " and induction " << ipr.induction_offset << "\n");
       return ipr;
     } else {
@@ -140,7 +138,9 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
 /// Here, "induction variable" is narrowly defined as:
 ///     a PHI between a constant (initial value) and a variable (induction)
 ///     equal to itself plus or minus a constant
-static InductionVarResult isInductionVar(const Value* val) {
+///
+/// If so, return the `InductionVar`; otherwise, return nothing
+static std::optional<InductionVar> isInductionVar(const Value* val) {
   if (const PHINode* phi = dyn_cast<PHINode>(val)) {
     bool found_initial_val = false;
     bool found_induction_increment = false;
@@ -151,7 +151,7 @@ static InductionVarResult isInductionVar(const Value* val) {
       if (const ConstantInt* phi_val_constint = dyn_cast<ConstantInt>(phi_val)) {
         if (found_initial_val) {
           // two constants in this phi. For now, this isn't a pattern we'll consider for induction.
-          return no_induction_var;
+          return std::nullopt;
         }
         found_initial_val = true;
         initial_val = phi_val_constint->getValue();
@@ -160,7 +160,7 @@ static InductionVarResult isInductionVar(const Value* val) {
         if (vpc.has_value()) {
           if (found_induction_increment) {
             // two non-constants in this phi. For now, this isn't a pattern we'll consider for induction.
-            return no_induction_var;
+            return std::nullopt;
           }
           // we're looking for the case where we are adding or subbing a
           // constant from the same value
@@ -175,16 +175,16 @@ static InductionVarResult isInductionVar(const Value* val) {
       initial_val = initial_val.sextOrSelf(64);
       induction_increment = induction_increment.sextOrSelf(64);
       LLVM_DEBUG(dbgs() << "DMS:     Found an induction var, initial " << initial_val << " and induction " << induction_increment << "\n");
-      InductionVarResult ivr;
-      ivr.is_induction_var = true;
-      ivr.initial_val = std::move(initial_val);
-      ivr.induction_increment = std::move(induction_increment);
-      return ivr;
+      InductionVar iv;
+      iv.is_induction_var = true;
+      iv.initial_val = std::move(initial_val);
+      iv.induction_increment = std::move(induction_increment);
+      return iv;
     } else {
-      return no_induction_var;
+      return std::nullopt;
     }
   } else {
-    return no_induction_var;
+    return std::nullopt;
   }
 }
 
