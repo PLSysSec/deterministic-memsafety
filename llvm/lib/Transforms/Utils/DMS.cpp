@@ -870,21 +870,21 @@ private:
           GetElementPtrInst& gep = cast<GetElementPtrInst>(inst);
           Value* input_ptr = gep.getPointerOperand();
           PointerStatus input_status = ptr_statuses.getStatus(input_ptr);
-          InductionPatternResult ipr = isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree);
-          if (ipr.is_induction_pattern && ipr.induction_offset.isNonNegative() && ipr.initial_offset.isNonNegative())
+          std::optional<InductionPattern> ip = isOffsetAnInductionPattern(gep, DL, loopinfo, pdtree);
+          if (ip.has_value() && ip->induction_offset.isNonNegative() && ip->initial_offset.isNonNegative())
           {
-            if (ipr.initial_offset.sge(ipr.induction_offset)) {
-              ipr.induction_offset = std::move(ipr.initial_offset);
+            if (ip->initial_offset.sge(ip->induction_offset)) {
+              ip->induction_offset = std::move(ip->initial_offset);
             }
-            LLVM_DEBUG(dbgs() << "DMS:   found an induction GEP with offset effectively constant " << ipr.induction_offset << "\n");
+            LLVM_DEBUG(dbgs() << "DMS:   found an induction GEP with offset effectively constant " << ip->induction_offset << "\n");
           } else {
             // we don't consider it an induction pattern if it had negative initial and/or induction offsets
-            ipr.is_induction_pattern = false;
+            ip = std::nullopt;
           }
           GEPResultClassification grc = classifyGEPResult(
             gep, input_status, DL,
             settings.trust_llvm_struct_types,
-            ipr.is_induction_pattern ? &ipr.induction_offset : NULL,
+            ip.has_value() ? &ip->induction_offset : NULL,
             added_insts
           );
           mark_as(ptr_statuses, &gep, grc.classification);

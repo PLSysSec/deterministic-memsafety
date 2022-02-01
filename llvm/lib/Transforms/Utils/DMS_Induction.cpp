@@ -1,12 +1,8 @@
 #include "llvm/Transforms/Utils/DMS_Induction.h"
-#include <optional>
 
 using namespace llvm;
 
 #define DEBUG_TYPE "DMS-loop-induction"
-
-static const APInt zero = APInt(/* bits = */ 64, /* val = */ 0);
-static const InductionPatternResult no_induction_pattern = { false, zero, zero };
 
 /// Return type for `isInductionVar`.
 ///
@@ -14,7 +10,6 @@ static const InductionPatternResult no_induction_pattern = { false, zero, zero }
 /// `initial_val` on the first loop iteration, and is incremented by
 /// `induction_increment` each iteration.
 struct InductionVar {
-  bool is_induction_var;
   APInt induction_increment;
   APInt initial_val;
 };
@@ -40,7 +35,9 @@ static std::optional<ValPlusConstant> isValuePlusConstant(const Value* val);
 /// Is the offset of the given GEP an induction pattern?
 /// This is looking for a pretty specific pattern for GEPs inside loops, which
 /// we can optimize checks for.
-InductionPatternResult llvm::isOffsetAnInductionPattern(
+///
+/// If so, return the `InductionPattern`; else, return nothing.
+std::optional<InductionPattern> llvm::isOffsetAnInductionPattern(
   const GetElementPtrInst &gep,
   const DataLayout &DL,
   const LoopInfo& loopinfo,
@@ -48,7 +45,7 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
 ) {
   LLVM_DEBUG(dbgs() << "DMS:   Checking the following gep for induction:\n");
   LLVM_DEBUG(gep.dump());
-  if (gep.getNumIndices() != 1) return no_induction_pattern; // we only handle simple cases for now
+  if (gep.getNumIndices() != 1) return std::nullopt; // we only handle simple cases for now
   for (const Use& idx_as_use : gep.indices()) {
     // note that this for loop goes exactly one iteration, due to the check above.
     // `idx` will be the one index of the GEP.
@@ -74,7 +71,7 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
     }
     if (!iv.has_value()) {
       LLVM_DEBUG(dbgs() << "DMS:     not an induction pattern\n");
-      return no_induction_pattern;
+      return std::nullopt;
     }
     // If we get to here, we've found an induction pattern, described by
     // `ivr.initial_val` and `ivr.induction_increment`.
@@ -90,7 +87,7 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
     const Loop* geploop = loopinfo.getLoopFor(gep.getParent());
     if (!geploop) {
       LLVM_DEBUG(dbgs() << "DMS:     expected GEP to be in a loop, but it's not... weird\n");
-      return no_induction_pattern;
+      return std::nullopt;
     }
     for (const User* user : gep.users()) {
       if (isa<LoadInst>(user) || isa<StoreInst>(user)) {
@@ -120,15 +117,14 @@ InductionPatternResult llvm::isOffsetAnInductionPattern(
       auto element_size = DL.getTypeStoreSize(gep.getSourceElementType()).getFixedSize();
       assert(element_size > 0);
       APInt ap_element_size = APInt(/* bits = */ 64, /* val = */ element_size);
-      InductionPatternResult ipr;
-      ipr.is_induction_pattern = true;
-      ipr.initial_offset = iv->initial_val * ap_element_size;
-      ipr.induction_offset = iv->induction_increment * ap_element_size;
-      LLVM_DEBUG(dbgs() << "DMS:     induction pattern with initial " << ipr.initial_offset << " and induction " << ipr.induction_offset << "\n");
-      return ipr;
+      InductionPattern ip;
+      ip.initial_offset = iv->initial_val * ap_element_size;
+      ip.induction_offset = iv->induction_increment * ap_element_size;
+      LLVM_DEBUG(dbgs() << "DMS:     induction pattern with initial " << ip.initial_offset << " and induction " << ip.induction_offset << "\n");
+      return ip;
     } else {
       LLVM_DEBUG(dbgs() << "DMS:     but failed the dereference-inside-loop check\n");
-      return no_induction_pattern;
+      return std::nullopt;
     }
   }
   llvm_unreachable("should return from inside the for loop");
@@ -176,7 +172,6 @@ static std::optional<InductionVar> isInductionVar(const Value* val) {
       induction_increment = induction_increment.sextOrSelf(64);
       LLVM_DEBUG(dbgs() << "DMS:     Found an induction var, initial " << initial_val << " and induction " << induction_increment << "\n");
       InductionVar iv;
-      iv.is_induction_var = true;
       iv.initial_val = std::move(initial_val);
       iv.induction_increment = std::move(induction_increment);
       return iv;
