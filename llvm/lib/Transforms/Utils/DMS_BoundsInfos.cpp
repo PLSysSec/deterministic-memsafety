@@ -1044,6 +1044,15 @@ void BoundsInfos::propagate_bounds(CallBase& call, const IsAllocatingCall& IAC) 
           // treat it like a memcpy of a bunch of i8s -- i.e., we're just
           // copying non-pointer data; nothing to do.
           return;
+        } else if (isa<SelectInst>(src)) {
+          // memcpy src is an i8* derived from a select between two other i8*.
+          // for now, we'll assume that this is "actually" an i8* and treat it
+          // like a memcpy of a bunch of i8s -- i.e., we're just copying
+          // non-pointer data; nothing to do.
+          // In the future, we could like at the arguments of the Select. In
+          // one concrete case in 471.omnetpp, they're both constexpr GEPs, we
+          // could somehow reduce that to the isa<Constant> case
+          return;
         } else {
           errs() << "LLVM memcpy or memmove src is of an unhandled kind:\n";
           src->dump();
