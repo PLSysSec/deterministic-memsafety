@@ -12,7 +12,7 @@ BoundsInfos::BoundsInfos(
   Function& F,
   const DataLayout& DL,
   DenseSet<const Instruction*>& added_insts,
-  DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+  DenseMap<const Value*, SmallDenseSet<Value*, 4>>& pointer_aliases
 ) :
   notdefinedyet_binfo(BoundsInfo::notdefinedyet()),
   unknown_binfo(BoundsInfo::unknown()),
@@ -130,7 +130,7 @@ bool BoundsInfos::module_initialization(Module& mod) {
   // __DMS_bounds_initialization function, so we just have some here that we'll
   // throw away when we're done
   DenseSet<const Instruction*> added_insts;
-  DenseMap<const Value*, SmallDenseSet<const Value*, 4>> pointer_aliases;
+  DenseMap<const Value*, SmallDenseSet<Value*, 4>> pointer_aliases;
   DMSIRBuilder Builder(EntryBlock, DMSIRBuilder::BEGINNING, &added_insts);
   BoundsInfos binfos(*new_func, mod.getDataLayout(), added_insts, pointer_aliases);
   for (GlobalObject& gobj : mod.global_objects()) {
@@ -1026,7 +1026,25 @@ void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* src, Value* siz
       llvm_unreachable("add handling for this memcpy or memmove src");
       return;
     }
-  } else if (isa<IntToPtrInst>(src) || isa<GetElementPtrInst>(src) || isa<CallBase>(src)) {
+  } else if (isa<IntToPtrInst>(src)) {
+    if (pointer_aliases.count(src)) {
+      // this inttoptr has a pointer alias.
+      // treat the memcpy as if that other pointer was the src.
+      // infinite recursion if the alias is also an IntToPtrInst, but that
+      // shouldn't ever happen.
+      // if there are multiple aliases, we use the first one arbitrarily.
+      Value* other_src = *pointer_aliases[src].begin();
+      assert(!isa<IntToPtrInst>(other_src));
+      propagate_bounds_for_memcpy(dst, other_src, size_bytes, Builder);
+      return;
+    } else {
+      // memcpy src is produced from an IntToPtr, but not one of "ours" (or it
+      // would have an alias).
+      // assume this is a "native" i8*, and treat it like a memcpy of a bunch of
+      // i8s -- i.e., we're just copying non-pointer data; nothing to do.
+      return;
+    }
+  } else if (isa<GetElementPtrInst>(src) || isa<CallBase>(src)) {
     // memcpy src is an i8* directly produced from GEP or call.
     // assume this is a "native" i8*, and treat it like a memcpy of a bunch of
     // i8s -- i.e., we're just copying non-pointer data; nothing to do.

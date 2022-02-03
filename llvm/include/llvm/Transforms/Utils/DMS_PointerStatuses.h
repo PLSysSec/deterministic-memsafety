@@ -31,7 +31,7 @@ private:
   DenseSet<const Instruction*>& added_insts;
 
   /// Reference to the `pointer_aliases` for this function; see notes there
-  DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
+  DenseMap<const Value*, SmallDenseSet<Value*, 4>>& pointer_aliases;
 
 public:
   PointerStatuses(
@@ -40,7 +40,7 @@ public:
     const bool trust_llvm_struct_types,
     const PointerStatus inttoptr_status,
     DenseSet<const Instruction*>& added_insts,
-    DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+    DenseMap<const Value*, SmallDenseSet<Value*, 4>>& pointer_aliases
   ) :
     block(block),
     DL(DL),

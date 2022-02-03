@@ -131,7 +131,7 @@ static const char* boundscheckfail_func = "_ZN5__dms21__dms_boundscheckfailEPv";
 /// The arguments `addr`, `base`, and `max` can be any pointer type (not
 /// necessarily `void*`). They should be UNENCODED values, ie with all upper
 /// bits clear.
-CallInst* call_dms_store_bounds(Value* addr, Value* base, Value* max, DMSIRBuilder& Builder) {
+CallInst* call_dms_store_bounds(const Value* addr, const Value* base, const Value* max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static FunctionType* StoreBoundsTy = FunctionType::get(
@@ -152,7 +152,7 @@ CallInst* call_dms_store_bounds(Value* addr, Value* base, Value* max, DMSIRBuild
 ///
 /// The `addr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
-CallInst* call_dms_store_infinite_bounds(Value* addr, DMSIRBuilder& Builder) {
+CallInst* call_dms_store_infinite_bounds(const Value* addr, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static FunctionType* StoreBoundsInfTy = FunctionType::get(
@@ -174,7 +174,7 @@ CallInst* call_dms_store_infinite_bounds(Value* addr, DMSIRBuilder& Builder) {
 ///
 /// `output_base` and `output_max` are output parameters and should have LLVM
 /// type i8**.
-CallInst* call_dms_get_bounds(Value* addr, Value* output_base, Value* output_max, DMSIRBuilder& Builder) {
+CallInst* call_dms_get_bounds(const Value* addr, Value* output_base, Value* output_max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static Type* CharStarStarTy = CharStarTy->getPointerTo();
@@ -198,7 +198,7 @@ CallInst* call_dms_get_bounds(Value* addr, Value* output_base, Value* output_max
 ///
 /// The arguments `src` and `dst` can be any pointer type (not necessarily
 /// `void*`). They should be UNENCODED values, ie with all upper bits clear.
-llvm::CallInst* call_dms_copy_single_bounds(llvm::Value* src, llvm::Value* dst, llvm::DMSIRBuilder& Builder) {
+llvm::CallInst* call_dms_copy_single_bounds(const llvm::Value* src, const llvm::Value* dst, llvm::DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   FunctionType* CopySingleBoundsTy = FunctionType::get(
@@ -218,7 +218,7 @@ llvm::CallInst* call_dms_copy_single_bounds(llvm::Value* src, llvm::Value* dst, 
 ///
 /// The arguments `src` and `dst` can be any pointer type (not necessarily
 /// `void*`). They should be UNENCODED values, ie with all upper bits clear.
-llvm::CallInst* call_dms_copy_bounds_in_interval(llvm::Value* src, llvm::Value* dst, llvm::Value* len_bytes, llvm::Value* stride, llvm::DMSIRBuilder& Builder) {
+llvm::CallInst* call_dms_copy_bounds_in_interval(const llvm::Value* src, const llvm::Value* dst, llvm::Value* len_bytes, llvm::Value* stride, llvm::DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static Type* SizeTTy = Builder.getInt64Ty();
@@ -243,7 +243,7 @@ llvm::CallInst* call_dms_copy_bounds_in_interval(llvm::Value* src, llvm::Value* 
 ///
 /// The arguments `arr` and `max` can be any pointer type (not necessarily
 /// `void*`). They should be UNENCODED values, ie with all upper bits clear.
-CallInst* call_dms_store_globalarraysize(GlobalValue* arr, Value* max, DMSIRBuilder& Builder) {
+CallInst* call_dms_store_globalarraysize(const GlobalValue* arr, const Value* max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static FunctionType* StoreGlobalArraySizeTy = FunctionType::get(
@@ -265,7 +265,7 @@ CallInst* call_dms_store_globalarraysize(GlobalValue* arr, Value* max, DMSIRBuil
 /// and should be an UNENCODED value, ie with all upper bits clear.
 ///
 /// `output_max` is an output parameter and should have LLVM type i8**.
-CallInst* call_dms_get_globalarraysize(GlobalValue* arr, Value* output_max, DMSIRBuilder& Builder) {
+CallInst* call_dms_get_globalarraysize(const GlobalValue* arr, Value* output_max, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   static Type* CharStarStarTy = CharStarTy->getPointerTo();
@@ -287,7 +287,7 @@ CallInst* call_dms_get_globalarraysize(GlobalValue* arr, Value* output_max, DMSI
 ///
 /// The `ptr` argument can be any pointer type (not necessarily `void*`),
 /// and should be an UNENCODED value, ie with all upper bits clear.
-CallInst* call_dms_boundscheckfail(Value* ptr, DMSIRBuilder& Builder) {
+CallInst* call_dms_boundscheckfail(const Value* ptr, DMSIRBuilder& Builder) {
   Module* mod = Builder.GetInsertBlock()->getModule();
   static Type* CharStarTy = Builder.getInt8PtrTy();
   FunctionType* BoundsCheckFailTy = FunctionType::get(

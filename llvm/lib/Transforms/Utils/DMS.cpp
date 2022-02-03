@@ -310,7 +310,7 @@ private:
   /// If a status is updated for this pointer at a given program point, the
   /// status of the other pointers at that program point will be updated as
   /// well.
-  DenseMap<const Value*, SmallDenseSet<const Value*>> pointer_aliases;
+  DenseMap<const Value*, SmallDenseSet<Value*, 4>> pointer_aliases;
 
   /// Map from Store instructions which store pointers, to the _original_
   /// pointer being stored (ie, before pointer encoding), and to the status
@@ -333,7 +333,7 @@ private:
       const bool trust_llvm_struct_types,
       const PointerStatus inttoptr_status,
       DenseSet<const Instruction*>& added_insts,
-      DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+      DenseMap<const Value*, SmallDenseSet<Value*, 4>>& pointer_aliases
     ) :
       ptrs_beg(PointerStatuses(block, DL, trust_llvm_struct_types, inttoptr_status, added_insts, pointer_aliases)),
       ptrs_end(PointerStatuses(block, DL, trust_llvm_struct_types, inttoptr_status, added_insts, pointer_aliases)),
@@ -371,7 +371,7 @@ private:
       const bool trust_llvm_struct_types,
       const PointerStatus inttoptr_status,
       DenseSet<const Instruction*>& added_insts,
-      DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+      DenseMap<const Value*, SmallDenseSet<Value*, 4>>& pointer_aliases
     ) :
       DL(DL),
       trust_llvm_struct_types(trust_llvm_struct_types),
@@ -438,7 +438,7 @@ private:
     DenseSet<const Instruction*>& added_insts;
 
     /// Reference to the `pointer_aliases` for this function; see notes there
-    DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
+    DenseMap<const Value*, SmallDenseSet<Value*, 4>>& pointer_aliases;
   };
 
   BlockStates block_states;
@@ -907,7 +907,7 @@ private:
         case Instruction::AddrSpaceCast:
         {
           if (inst.getType()->isPointerTy()) {
-            const Value* input_ptr = inst.getOperand(0);
+            Value* input_ptr = inst.getOperand(0);
             mark_as(ptr_statuses, &inst, ptr_statuses.getStatus(input_ptr));
             pointer_aliases[input_ptr].insert(&inst);
             pointer_aliases[&inst].insert(input_ptr);

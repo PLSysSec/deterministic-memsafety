@@ -41,7 +41,7 @@ public:
     Function&,
     const DataLayout&,
     DenseSet<const Instruction*>& added_insts,
-    DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases
+    DenseMap<const Value*, SmallDenseSet<Value*, 4>>& pointer_aliases
   );
 
   ~BoundsInfos() {
@@ -131,7 +131,7 @@ private:
 
   /// Reference to the `pointer_aliases` for this function; see notes on
   /// `pointer_aliases` in `DMSAnalysis`
-  DenseMap<const Value*, SmallDenseSet<const Value*, 4>>& pointer_aliases;
+  DenseMap<const Value*, SmallDenseSet<Value*, 4>>& pointer_aliases;
 
   /// RuntimeStackSlots for use in this function. See notes on
   /// `RuntimeStackSlots`
