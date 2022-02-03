@@ -171,6 +171,10 @@ private:
   /// not sure, it will return NULL.
   BoundsInfo* try_get_binfo_for_const_int(const Constant*);
 
+  /// Propagate bounds info for a memcpy/memmove from `src` to `dst` of size
+  /// `size_bytes`.
+  void propagate_bounds_for_memcpy(Value* dst, Value* src, Value* size_bytes, DMSIRBuilder& Builder);
+
   /// Value type for the below map
   class BoundsStoringCall final {
   public:
