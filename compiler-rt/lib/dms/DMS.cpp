@@ -122,6 +122,7 @@ void __dms_copy_single_bounds(void* src, void* dst) {
 /// any/all of the memory locations in the src interval. In that case this is a
 /// no-op.
 void __dms_copy_bounds_in_interval(void* src, void* dst, size_t len_bytes, size_t stride) {
+  if (len_bytes == 0) return;  // in this case src or dst may be NULL
   assert(src != NULL);
   assert(dst != NULL);
   for (
