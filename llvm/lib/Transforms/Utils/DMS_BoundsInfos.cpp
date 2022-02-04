@@ -937,7 +937,16 @@ void BoundsInfos::propagate_bounds(CallBase& call, const IsAllocatingCall& IAC) 
 
 /// Propagate bounds info for a memcpy/memmove from `src` to `dst` of size
 /// `size_bytes`.
+/// This version requires a decoded `src`.
 void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* src, Value* size_bytes, DMSIRBuilder& Builder) {
+  propagate_bounds_for_memcpy(dst, NULL, src, size_bytes, Builder);
+}
+
+/// Propagate bounds info for a memcpy/memmove from `src` to `dst` of size
+/// `size_bytes`. This version takes both an encoded and decoded version of the
+/// `src` pointer; if there is no encoded version or if we don't know the
+/// encoded version yet, NULL is acceptable for `enc_src`.
+void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* enc_src, Value* dec_src, Value* size_bytes, DMSIRBuilder& Builder) {
   // if we're copying pointers stored in memory we also need to copy the
   // metadata entries in the global table, so that the new pointer
   // locations are valid keys
@@ -945,97 +954,69 @@ void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* src, Value* siz
   // (and if so, at what addresses)
   // memcpy and memmove src and dest arguments are always i8*, but let's check
   // how the src i8* was produced
-  if (const BitCastInst* bitcast = dyn_cast<BitCastInst>(src)) {
+  // For the purposes of these heuristics and determining the memcpy type, we
+  // care about the `enc_src` if it's present -- the `dec_src` will just be the
+  // result of a decoding operation
+  Value* src_for_heuristic_purposes = enc_src ? enc_src : dec_src;
+  if (const BitCastInst* bitcast = dyn_cast<BitCastInst>(src_for_heuristic_purposes)) {
     // src was bitcasted from another pointer (LLVM doesn't allow bitcasting
     // from int to ptr, that would have to be IntToPtr).
-    // let's check the type of that pointer
+    // treat that memcpy as if the src is the pre-bitcast type
     Type* src_ptr_ty = bitcast->getOperand(0)->getType();
     assert(src_ptr_ty->isPointerTy());
-    Type* src_elem_ty = cast<PointerType>(src_ptr_ty)->getElementType();
-    if (src_elem_ty->isIntegerTy() || src_elem_ty->isFloatingPointTy()) {
-      // our src ptr was bitcasted from a type like i64*. let's assume we're
-      // just copying non-pointer data. Nothing to do.
-      return;
-    } else if (src_elem_ty->isPointerTy()) {
-      // our src ptr was bitcasted from a pointer type like i8**.
-      // assume that every element of the memcpy is a pointer.
-      // we need to propagate bounds metadata in the global table for every
-      // pointer in the memcpy.
-      Value* pointer_size_bytes = Builder.getInt64(DL.getPointerSize());
-      call_dms_copy_bounds_in_interval(src, dst, size_bytes, pointer_size_bytes, Builder);
-      // nothing else we need to do (memcpy and memmove return void)
-      return;
-    } else if (src_elem_ty->isStructTy()) {
-      StructType* struct_ty = cast<StructType>(src_elem_ty);
-      auto struct_size_bytes = DL.getTypeAllocSize(struct_ty);
-      // our src ptr was bitcasted from struct_ty*.
-      // if struct_ty contains pointers, we need to propagate bounds
-      for (int64_t offset : get_pointer_offsets(struct_ty, DL, Builder)) {
-        Value* first_ptr_addr_src = Builder.add_offset_to_ptr(src, Builder.getInt64(offset));
-        Value* first_ptr_addr_dst = Builder.add_offset_to_ptr(dst, Builder.getInt64(offset));
-        call_dms_copy_bounds_in_interval(
-          first_ptr_addr_src,
-          first_ptr_addr_dst,
-          Builder.CreateSub(size_bytes, Builder.getInt64(offset)),
-          Builder.getInt64(struct_size_bytes),
-          Builder
-        );
+    propagate_bounds_for_memcpy(dst, dec_src, cast<PointerType>(src_ptr_ty), size_bytes, Builder);
+    return;
+  } else if (isa<LoadInst>(src_for_heuristic_purposes)) {
+    // memcpy src is an i8* produced from a load instruction, ie, from a load of
+    // an i8**.
+    // you'd think that this would "actually" be an i8*, ie, all non-pointer data.
+    // but, in at least one real case (from 471.omnetpp) it is not:
+    // C++ excerpt:
+    //   class cArray {
+    //     cObject** vect;  // vector of objects
+    //     int size;        // size of vect
+    //     // other fields ...
+    //   };
+    //   // later in some cArray method
+    //   // reallocate bigger vector
+    //   cObject** bigger = new cObject[bigger_size];
+    //   memcpy(bigger, vect, sizeof(cObject*)*size);
+    // LLVM IR for the memcpy:
+    //   cObject*** a = &this->vect  (this is a GEP operation)
+    //   i8** b = bitcast a to i8**
+    //   i8* c = load b
+    //   i8* d = decode c
+    //   memcpy(bigger, d, product)
+    // So, we check if the load address (b in the example) is a bitcasted type,
+    // and if so, handle the memcpy as if the src is a deref of that type
+    // instead of a deref of i8**.  In this example, that allows us to correctly
+    // handle the memcpy src as an array of cObject*.
+    Value* load_addr = cast<LoadInst>(src_for_heuristic_purposes)->getPointerOperand();
+    if (isa<BitCastInst>(load_addr)) {
+      Type* old_type = cast<BitCastInst>(load_addr)->getOperand(0)->getType();
+      assert(old_type->isPointerTy());
+      // treat src as if it was loaded from an address of old_type, ie,
+      // src_ty will be the deref of old_type
+      Type* src_ty = old_type->getPointerElementType();
+      if (src_ty->isPointerTy()) {
+        propagate_bounds_for_memcpy(dst, dec_src, cast<PointerType>(src_ty), size_bytes, Builder);
       }
       return;
-    } else if (src_elem_ty->isArrayTy()) {
-      ArrayType* array_ty = cast<ArrayType>(src_elem_ty);
-      Type* array_elem_ty = array_ty->getElementType();
-      if (array_elem_ty->isIntegerTy() || array_elem_ty->isFloatingPointTy()) {
-        // our src ptr was bitcasted from a type like [5 x i64]*. let's
-        // assume we're just copying non-pointer data. Nothing to do.
-        return;
-      } else if (array_elem_ty->isPointerTy()) {
-        // our src ptr was bitcasted from a type like [5 x i8*]*. assume
-        // that every element of the memcpy is a pointer, and propagate
-        // bounds metadata in the global table just like we do for i8**.
-        Value* pointer_size_bytes = Builder.getInt64(DL.getPointerSize());
-        call_dms_copy_bounds_in_interval(src, dst, size_bytes, pointer_size_bytes, Builder);
-        return;
-      } else if (array_elem_ty->isStructTy()) {
-        // our src ptr was bitcasted from a type like [5 x struct_ty]*.
-        // (yes, we've seen a type like this in the wild in SPEC.)
-        // treat this just like struct_ty*
-        StructType* struct_ty = cast<StructType>(array_elem_ty);
-        auto struct_size_bytes = DL.getTypeAllocSize(struct_ty);
-        for (int64_t offset : get_pointer_offsets(struct_ty, DL, Builder)) {
-          Value* first_ptr_addr_src = Builder.add_offset_to_ptr(src, Builder.getInt64(offset));
-          Value* first_ptr_addr_dst = Builder.add_offset_to_ptr(dst, Builder.getInt64(offset));
-          call_dms_copy_bounds_in_interval(
-            first_ptr_addr_src,
-            first_ptr_addr_dst,
-            Builder.CreateSub(size_bytes, Builder.getInt64(offset)),
-            Builder.getInt64(struct_size_bytes),
-            Builder
-          );
-        }
-        return;
-      } else {
-        errs() << "LLVM memcpy or memmove src is bitcast from an unhandled array type:\n";
-        array_ty->dump();
-        llvm_unreachable("add handling for this memcpy or memmove src");
-        return;
-      }
     } else {
-      errs() << "LLVM memcpy or memmove src is bitcast from an unhandled type:\n";
-      src_ptr_ty->dump();
-      llvm_unreachable("add handling for this memcpy or memmove src");
+      // not the special case, so assume it's a "native" i8*, ie, all
+      // non-pointer data.  Nothing to do.
       return;
     }
-  } else if (isa<IntToPtrInst>(src)) {
-    if (pointer_aliases.count(src)) {
+  } else if (isa<IntToPtrInst>(src_for_heuristic_purposes)) {
+    if (pointer_aliases.count(src_for_heuristic_purposes)) {
       // this inttoptr has a pointer alias.
       // treat the memcpy as if that other pointer was the src.
       // infinite recursion if the alias is also an IntToPtrInst, but that
       // shouldn't ever happen.
       // if there are multiple aliases, we use the first one arbitrarily.
-      Value* other_src = *pointer_aliases[src].begin();
+      Value* other_src = *pointer_aliases[src_for_heuristic_purposes].begin();
       assert(!isa<IntToPtrInst>(other_src));
-      propagate_bounds_for_memcpy(dst, other_src, size_bytes, Builder);
+      propagate_bounds_for_memcpy(dst, other_src, dec_src, size_bytes, Builder);
       return;
     } else {
       // memcpy src is produced from an IntToPtr, but not one of "ours" (or it
@@ -1044,24 +1025,24 @@ void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* src, Value* siz
       // i8s -- i.e., we're just copying non-pointer data; nothing to do.
       return;
     }
-  } else if (isa<GetElementPtrInst>(src) || isa<CallBase>(src)) {
+  } else if (isa<GetElementPtrInst>(src_for_heuristic_purposes) || isa<CallBase>(src_for_heuristic_purposes)) {
     // memcpy src is an i8* directly produced from GEP or call.
     // assume this is a "native" i8*, and treat it like a memcpy of a bunch of
     // i8s -- i.e., we're just copying non-pointer data; nothing to do.
     return;
-  } else if (isa<Constant>(src)) {
+  } else if (isa<Constant>(src_for_heuristic_purposes)) {
     // memcpy src is an i8* that is a compile-time constant (possibly constant
     // expression).
     // For now, we will again assume this is a "native" i8*, and treat it like a
     // memcpy of a bunch of i8s -- i.e., we're just copying non-pointer data;
     // nothing to do.
     return;
-  } else if (isa<Argument>(src)) {
+  } else if (isa<Argument>(src_for_heuristic_purposes)) {
     // memcpy src is an i8* that was passed to this function.  For now, we will
     // assume that a buffer of this kind never contains pointer data; nothing to
     // do.
     return;
-  } else if (isa<PHINode>(src)) {
+  } else if (isa<PHINode>(src_for_heuristic_purposes)) {
     // memcpy src is an i8* derived from a PHI node.
     // this indicates some type of more-complicated operation, not just casting
     // the pointer to i8*/void* immediately at the memcpy call site, so for now
@@ -1069,7 +1050,7 @@ void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* src, Value* siz
     // a bunch of i8s -- i.e., we're just copying non-pointer data; nothing to
     // do.
     return;
-  } else if (isa<SelectInst>(src)) {
+  } else if (isa<SelectInst>(src_for_heuristic_purposes)) {
     // memcpy src is an i8* derived from a select between two other i8*.
     // for now, we'll assume that this is "actually" an i8* and treat it like a
     // memcpy of a bunch of i8s -- i.e., we're just copying non-pointer data;
@@ -1080,8 +1061,68 @@ void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* src, Value* siz
     return;
   } else {
     errs() << "LLVM memcpy or memmove src is of an unhandled kind:\n";
-    src->dump();
+    src_for_heuristic_purposes->dump();
     llvm_unreachable("add handling for this memcpy or memmove src");
     return;
+  }
+}
+
+/// Propagate bounds info for a memcpy/memmove from `src` to `dst` of size
+/// `size_bytes`. Assume `src` has type `src_ty` instead of i8*.
+/// This version requires a decoded `src`.
+void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* src, PointerType* src_ty, Value* size_bytes, DMSIRBuilder& Builder) {
+  Type* src_elem_ty = src_ty->getElementType();
+  if (src_elem_ty->isIntegerTy() || src_elem_ty->isFloatingPointTy()) {
+    // our src ptr is a type like i64*. let's assume we're just copying
+    // non-pointer data. Nothing to do.
+  } else if (src_elem_ty->isPointerTy()) {
+    // our src ptr is a type like i8**.
+    // assume that every element of the memcpy is a pointer.
+    // we need to propagate bounds metadata in the global table for every
+    // pointer in the memcpy.
+    Value* pointer_size_bytes = Builder.getInt64(DL.getPointerSize());
+    call_dms_copy_bounds_in_interval(src, dst, size_bytes, pointer_size_bytes, Builder);
+  } else if (src_elem_ty->isStructTy()) {
+    StructType* struct_ty = cast<StructType>(src_elem_ty);
+    auto struct_size_bytes = DL.getTypeAllocSize(struct_ty);
+    // our src ptr is a type like struct_ty*.
+    // if struct_ty contains pointers, we need to propagate bounds
+    for (int64_t offset : get_pointer_offsets(struct_ty, DL, Builder)) {
+      Value* first_ptr_addr_src = Builder.add_offset_to_ptr(src, Builder.getInt64(offset));
+      Value* first_ptr_addr_dst = Builder.add_offset_to_ptr(dst, Builder.getInt64(offset));
+      call_dms_copy_bounds_in_interval(
+        first_ptr_addr_src,
+        first_ptr_addr_dst,
+        Builder.CreateSub(size_bytes, Builder.getInt64(offset)),
+        Builder.getInt64(struct_size_bytes),
+        Builder
+      );
+    }
+  } else if (src_elem_ty->isArrayTy()) {
+    ArrayType* array_ty = cast<ArrayType>(src_elem_ty);
+    Type* array_elem_ty = array_ty->getElementType();
+    if (array_elem_ty->isIntegerTy() || array_elem_ty->isFloatingPointTy()) {
+      // our src ptr is a type like [5 x i64]*. let's assume we're just copying
+      // non-pointer data. Nothing to do.
+    } else if (array_elem_ty->isPointerTy()) {
+      // our src ptr is a type like [5 x i8*]*. assume that every element of the
+      // memcpy is a pointer, and propagate bounds metadata in the global table
+      // just like we do for i8**.
+      Value* pointer_size_bytes = Builder.getInt64(DL.getPointerSize());
+      call_dms_copy_bounds_in_interval(src, dst, size_bytes, pointer_size_bytes, Builder);
+    } else if (array_elem_ty->isStructTy()) {
+      // our src ptr is a type like [5 x struct_ty]*.
+      // (yes, we've seen a type like this in the wild in SPEC.)
+      // treat this just like struct_ty*
+      propagate_bounds_for_memcpy(dst, src, array_elem_ty->getPointerTo(), size_bytes, Builder);
+    } else {
+      errs() << "propagate_bounds_for_memcpy: src_ty is an unhandled array type:\n";
+      array_ty->dump();
+      llvm_unreachable("add handling for this src_ty");
+    }
+  } else {
+    errs() << "propagate_bounds_for_memcpy: src_ty is an unhandled type:\n";
+    src_ty->dump();
+    llvm_unreachable("add handling for this src_ty");
   }
 }

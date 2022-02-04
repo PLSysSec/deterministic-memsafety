@@ -173,7 +173,19 @@ private:
 
   /// Propagate bounds info for a memcpy/memmove from `src` to `dst` of size
   /// `size_bytes`.
+  /// This version requires a decoded `src`.
   void propagate_bounds_for_memcpy(Value* dst, Value* src, Value* size_bytes, DMSIRBuilder& Builder);
+
+  /// Propagate bounds info for a memcpy/memmove from `src` to `dst` of size
+  /// `size_bytes`. This version takes both an encoded and decoded version of the
+  /// `src` pointer; if there is no encoded version or if we don't know the
+  /// encoded version yet, NULL is acceptable for `enc_src`.
+  void propagate_bounds_for_memcpy(Value* dst, Value* enc_src, Value* dec_src, Value* size_bytes, DMSIRBuilder& Builder);
+
+  /// Propagate bounds info for a memcpy/memmove from `src` to `dst` of size
+  /// `size_bytes`. Assume `src` has type `src_ty` instead of i8*.
+  /// This version requires a decoded `src`.
+  void propagate_bounds_for_memcpy(Value* dst, Value* src, PointerType* src_ty, Value* size_bytes, DMSIRBuilder& Builder);
 
   /// Value type for the below map
   class BoundsStoringCall final {
