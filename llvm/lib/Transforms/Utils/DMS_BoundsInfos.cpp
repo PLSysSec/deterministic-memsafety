@@ -1115,6 +1115,11 @@ void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* src, PointerTyp
       // (yes, we've seen a type like this in the wild in SPEC.)
       // treat this just like struct_ty*
       propagate_bounds_for_memcpy(dst, src, array_elem_ty->getPointerTo(), size_bytes, Builder);
+    } else if (array_elem_ty->isArrayTy()) {
+      // our src ptr is a type like [8 x [8 x i32]]*.
+      // (yes, we've seen a type like this in the wild in SPEC, in 464.h264ref.)
+      // treat this just like a single array -- eg [8 x i32]* in that example
+      propagate_bounds_for_memcpy(dst, src, array_elem_ty->getPointerTo(), size_bytes, Builder);
     } else {
       errs() << "propagate_bounds_for_memcpy: src_ty is an unhandled array type:\n";
       array_ty->dump();
