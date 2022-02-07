@@ -101,12 +101,19 @@ void __dms_copy_single_bounds(void* src, void* dst) {
   assert(src != NULL);
   assert(dst != NULL);
   if (src == dst) return;
-  BoundsMap::Handle src_h(&bounds_map, (__sanitizer::uptr)src, /* remove = */ false, /* create = */ false);
-  if (!src_h.exists()) return;
-  assert(!src_h.created());
+  void* src_base;
+  void* src_max;
+  {
+    BoundsMap::Handle src_h(&bounds_map, (__sanitizer::uptr)src, /* remove = */ false, /* create = */ false);
+    if (!src_h.exists()) return;
+    assert(!src_h.created());
+    src_base = src_h->base;
+    src_max = src_h->max;
+    // src_h is dropped, and lock released, at end of scope
+  }
   BoundsMap::Handle dst_h(&bounds_map, (__sanitizer::uptr)dst);
-  dst_h->base = src_h->base;
-  dst_h->max = src_h->max;
+  dst_h->base = src_base;
+  dst_h->max = src_max;
 }
 
 /// Copy the current bounds for every pointer stored in the memory interval

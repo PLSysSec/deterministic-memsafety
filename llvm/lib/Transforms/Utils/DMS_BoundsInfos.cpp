@@ -1011,12 +1011,17 @@ void BoundsInfos::propagate_bounds_for_memcpy(Value* dst, Value* enc_src, Value*
     if (pointer_aliases.count(src_for_heuristic_purposes)) {
       // this inttoptr has a pointer alias.
       // treat the memcpy as if that other pointer was the src.
-      // infinite recursion if the alias is also an IntToPtrInst, but that
-      // shouldn't ever happen.
       // if there are multiple aliases, we use the first one arbitrarily.
       Value* other_src = *pointer_aliases[src_for_heuristic_purposes].begin();
-      assert(!isa<IntToPtrInst>(other_src));
-      propagate_bounds_for_memcpy(dst, other_src, dec_src, size_bytes, Builder);
+      if (isa<IntToPtrInst>(other_src)) {
+        // to avoid infinite recursion, we do nothing in this case.
+        // At any rate, doing nothing is probably correct here, as probably this
+        // other_src is an "actual" IntToPtr, not one of "ours" from a decoding
+        // operation, in which case we assume it is a "native" i8* (see below
+        // case).
+      } else {
+        propagate_bounds_for_memcpy(dst, other_src, dec_src, size_bytes, Builder);
+      }
       return;
     } else {
       // memcpy src is produced from an IntToPtr, but not one of "ours" (or it
