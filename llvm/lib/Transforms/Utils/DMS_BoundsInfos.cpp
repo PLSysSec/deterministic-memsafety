@@ -169,8 +169,10 @@ bool BoundsInfos::module_initialization(Module& mod) {
     }
   }
   Builder.CreateRetVoid();
-  // Ensure `new_func` is called during module construction. 65535 should ensure
-  // it's called after any other such hooks
+  // Ensure `new_func` is called during module construction.
+  // The third argument is a priority, where we use 65535 (the max) to run as
+  // late as possible.  Even with 65534, this seems to run before the
+  // initialization of the global bounds table (hashmap), causing a segfault
   appendToGlobalCtors(mod, new_func, 65535);
   return true;
 }
